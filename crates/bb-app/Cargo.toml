@@ -1,0 +1,36 @@
+[package]
+name = "bb-app"
+description = "BlackBox HFT application: run pipeline, run store, HTTP API and the `blackbox` command line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "bb_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "blackbox"
+path = "src/main.rs"
+
+[dependencies]
+bb-core.workspace = true
+bb-data.workspace = true
+bb-strategies.workspace = true
+bb-sim.workspace = true
+bb-forensics.workspace = true
+serde.workspace = true
+# `float_roundtrip`: stored runs are read back from JSON and must reproduce every f64 exactly,
+# otherwise a reloaded run would no longer match its own `result_sha256`. serde_json's default
+# float parser is allowed to be off by one unit in the last place.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+anyhow.workspace = true
+thiserror.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
