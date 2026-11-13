@@ -36,6 +36,10 @@ Rust type with the same name in `crates/bb-core/src` — that crate is the sourc
 | GET | `/api/runs/{run_id}/tape` | query `TapeQuery` | `TapePage` |
 | POST | `/api/compare` | `CompareRequest` | `Comparison` |
 | POST | `/api/grids` | `GridSpec` | `GridResult` |
+| GET | `/api/runs/{run_id}/timeline` | query `TimelineQuery` | `RunTimeline` |
+| GET | `/api/runs/{run_id}/report` | – | `text/markdown` attachment (research report) |
+| GET | `/api/runs/{run_id}/export` | – | `RunResult` JSON attachment (complete run) |
+| GET | `/api/demos` | query `dataset_id` (optional; default: first dataset) | `Demo[]` |
 
 `POST /api/runs` is synchronous and idempotent: a configuration that was already simulated on the
 same dataset returns the stored run (same `run_id`, same `result_sha256`). `POST /api/grids` is
@@ -115,3 +119,67 @@ struct CompareRequest {
     b: String,                 // run_id
 }
 ```
+
+## Replay terminal, demos and exports
+
+```rust
+struct TimelineQuery {         // all optional
+    t0: Option<i64>,           // default: run start (first equity sample ts, else 0)
+    t1: Option<i64>,           // default: min(run end, t0 + 60 s)
+    max_events: Option<u32>,   // default 5000, max 50000
+}
+
+/// Everything the run-level replay terminal overlays on the dataset's ReplayWindow for [t0, t1].
+struct RunTimeline {
+    run_id: String,
+    dataset_id: String,
+    t0: i64,
+    t1: i64,
+    /// Tape events whose `ts` is in [t0, t1] on either clock, in `seq` order, capped at
+    /// max_events (earliest kept).
+    events: Vec<FlightEvent>,
+    events_total: u64,         // in the window before capping
+    events_truncated: bool,
+    /// Fills with exchange ts in [t0, t1].
+    fills: Vec<FillRecord>,
+    /// Equity samples with ts in [t0, t1], plus the last sample before t0 when one exists
+    /// (so the terminal knows the state in force at t0).
+    equity: Vec<EquitySample>,
+    /// Orders alive at some point in [t0, t1]: decision_ts <= t1 and (terminal_ts, else the
+    /// ts of the order's last event, else run end) >= t0. Ascending order_id.
+    orders: Vec<OrderRecord>,
+    /// Run span: first and last equity sample ts.
+    run_start: i64,
+    run_end: i64,
+}
+
+/// A canonical, reproducible experiment: a set of run configurations on one dataset that differ
+/// only in the listed variables.
+struct Demo {
+    id: String,                // "cost_of_latency" | "queue_position" | "gross_vs_net"
+    title: String,
+    question: String,          // the research question in one sentence
+    /// Dotted RunConfig paths that differ between the runs.
+    varied: Vec<String>,
+    /// Plain-language list of what is held identical (dataset hash, strategy params, seed, ...).
+    controlled: Vec<String>,
+    /// How to read the result, without asserting what it will be.
+    how_to_read: String,
+    runs: Vec<DemoRun>,
+    /// CLI commands that reproduce every run of the demo.
+    reproduce: Vec<String>,
+}
+
+struct DemoRun {
+    label: String,             // e.g. "1 ms order latency"
+    config: RunConfig,
+}
+```
+
+Demo runs are created through the ordinary idempotent `POST /api/runs`, so a demo that was run
+before returns the stored runs instantly and the same run ids every time.
+
+The research report (`/report`) contains: dataset provenance (id, kind, source, hashes, local
+timestamp provenance, worst quality severity), engine name and version, run and config hashes,
+the full configuration as JSON, every assumption in plain language, all metrics, the engine
+cross-check, the CLI command that reproduces the run, and the standard limitations.
