@@ -1,6 +1,7 @@
 //! Hand-built tapes and results for unit tests. Compiled only for tests.
 
 use bb_core::{
+    OrdType, OrderStatus, RelNs, ReqKind, Side, Tif,
     config::{
         ExchangeModel, ExecutionConfig, FeeConfig, OrderLatencyConfig, QueueModelConfig,
         RecordConfig, RiskConfig, RunConfig, ScriptedParams, StrategyConfig, StrategyKind,
@@ -10,8 +11,7 @@ use bb_core::{
     result::{
         DatasetRef, EngineInfo, EngineStateCheck, EquitySample, FillRecord, RunManifest, RunResult,
     },
-    strategy::{split_order_id, MarketView},
-    OrdType, OrderStatus, RelNs, ReqKind, Side, Tif,
+    strategy::{MarketView, split_order_id},
 };
 
 pub(crate) const MS: i64 = 1_000_000;
@@ -365,6 +365,7 @@ pub(crate) fn run_result(
             contract_version: bb_core::CONTRACT_VERSION,
             run_id: run_id.into(),
             blackbox_version: "0.1.0".into(),
+            simulation_revision: bb_core::SIMULATION_REVISION,
             engine: EngineInfo {
                 name: bb_core::ENGINE_NAME.into(),
                 version: bb_core::ENGINE_VERSION.into(),

@@ -27,7 +27,11 @@ pub use metrics::{compute_metrics, enrich_fills};
 pub use orders::build_orders;
 
 /// SHA-256 over the flight tape, fills and equity samples: the `result_sha256` of a run manifest.
-pub fn result_sha256(tape: &[FlightEvent], fills: &[FillRecord], equity: &[EquitySample]) -> String {
+pub fn result_sha256(
+    tape: &[FlightEvent],
+    fills: &[FillRecord],
+    equity: &[EquitySample],
+) -> String {
     bb_core::hash::sha256_json(&(tape, fills, equity))
 }
 
@@ -36,7 +40,7 @@ mod tests {
     use bb_core::{OrderStatus, Side, Tif};
 
     use super::*;
-    use crate::testkit::{Tape, MS};
+    use crate::testkit::{MS, Tape};
 
     #[test]
     fn result_hash_is_stable_and_sensitive_to_content() {

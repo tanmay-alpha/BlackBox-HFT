@@ -4,23 +4,28 @@
 //! the latency breakdown are all read off that structure. Every step names its [`Basis`] and the
 //! tape events it rests on. Wording rules:
 //!
-//! * displayed quantities and trade prints are *observed*; queue positions, latencies, fills and
-//!   fees are *modeled*; nothing modeled is ever described as having happened at an exchange;
+//! * historical book snapshots are *observed*; queue positions, latencies, fills and fees are
+//!   *modeled*; sums, time differences and queue movement summaries are *derived*, even when their
+//!   inputs are measured; nothing modeled is described as a real exchange execution;
 //! * an unknown queue estimate is reported as unknown, never as zero;
 //! * when the tape cannot tell two causes apart (a trade through the price versus the opposite
 //!   best crossing it), the statement names both and says so.
+//! * a negative queue estimate can arise from depth updates, not just trades; fill events,
+//!   rather than negative estimates alone, establish simulated executions;
+//! * `fill_reset` is simulator bookkeeping after a partial fill, never market activity;
+//! * an unchanged cancel-flight interval does not establish a different-latency counterfactual.
 
 use bb_core::{
+    Basis, Clock, OrdType, OrderStatus, RelNs, ReqKind, Side, Tif,
     config::{ExchangeModel, OrderLatencyConfig, QueueModelConfig, RunConfig},
     dataset::{InstrumentMeta, LocalTsProvenance},
-    explain::{ExplainStep, Explanation, LatencyBreakdown, QueuePoint, Question, Verdict},
+    explain::{ExplainStep, Explanation, LatencyBreakdown, Question, QueuePoint, Verdict},
     flight::{FlightBody, FlightEvent, QueueCause, RiskRule},
     result::{OrderOutcome, OrderRecord},
     strategy::MarketView,
-    Basis, Clock, OrdType, OrderStatus, RelNs, ReqKind, Side, Tif,
 };
 
-use crate::text::{at, count, dur, num, rule_label, side_verb, status_label, tif_label, Fmt};
+use crate::text::{Fmt, at, count, dur, num, rule_label, side_verb, status_label, tif_label};
 
 pub(crate) const CAVEAT_QUEUE: &str = "Queue position is a model estimate: this is \
     Market-By-Price (L2) data, which shows the total quantity at each price and not individual \
@@ -109,6 +114,7 @@ struct Local {
     status: OrderStatus,
     rejected: bool,
     exec_qty: f64,
+    leaves_qty: f64,
     exch_ts: RelNs,
 }
 
@@ -329,6 +335,7 @@ impl<'a> Life<'a> {
                     status,
                     request_rejected,
                     exec_qty,
+                    leaves_qty,
                     exch_ts,
                     ..
                 } => life.local.push(Local {
@@ -338,6 +345,7 @@ impl<'a> Life<'a> {
                     rejected: *request_rejected,
                     exec_qty: *exec_qty,
                     exch_ts: *exch_ts,
+                    leaves_qty: *leaves_qty,
                 }),
                 FlightBody::QueueTruncated { dropped } => life.truncated = Some(*dropped),
             }
@@ -500,16 +508,16 @@ fn queue_model_clause(model: &QueueModelConfig) -> String {
         QueueModelConfig::LogProb => {
             split("f(back) / (f(back) + f(front)) with f(x) = ln(1 + x)".into())
         }
-        QueueModelConfig::LogProb2 => split("f(back) / f(back + front) with f(x) = ln(1 + x)".into()),
+        QueueModelConfig::LogProb2 => {
+            split("f(back) / f(back + front) with f(x) = ln(1 + x)".into())
+        }
         QueueModelConfig::PowerProb { n } => {
             split(format!("f(back) / (f(back) + f(front)) with f(x) = x^{n}"))
         }
         QueueModelConfig::PowerProb2 { n } => {
             split(format!("f(back) / f(back + front) with f(x) = x^{n}"))
         }
-        QueueModelConfig::PowerProb3 { n } => {
-            split(format!("1 - (front / (front + back))^{n}"))
-        }
+        QueueModelConfig::PowerProb3 { n } => split(format!("1 - (front / (front + back))^{n}")),
     }
 }
 
@@ -627,10 +635,15 @@ impl Ctx<'_> {
                 self.fmt.qty(o.qty)
             ),
             OrdType::Limit => format!(
-                "{} {} at {} with a {} limit order",
+                "{} {} at {} with {} {} limit order",
                 side_verb(o.side),
                 self.fmt.qty(o.qty),
                 self.price(),
+                if matches!(o.tif, Tif::Ioc | Tif::Fok) {
+                    "an"
+                } else {
+                    "a"
+                },
                 tif_label(o.tif)
             ),
         };
@@ -655,7 +668,7 @@ impl Ctx<'_> {
         self.staleness(intent, out);
     }
 
-    /// How old the strategy's market view was, and whether that age is a measurement.
+    /// Arithmetic over feed timestamps, with their measured or modeled provenance stated.
     fn staleness(&self, intent: &Decision<'_>, out: &mut Steps) {
         let Some(received) = intent.market.feed_local_ts else {
             out.push(
@@ -681,46 +694,45 @@ impl Ctx<'_> {
         }
         let offset = self.config.execution.feed_latency_offset_ns;
         let plus_offset = if offset != 0 {
-            format!(" plus the configured feed latency offset of {}", dur(offset))
+            format!(
+                " plus the configured feed latency offset of {}",
+                dur(offset)
+            )
         } else {
             String::new()
         };
-        let basis = match self.local_ts {
+        match self.local_ts {
             LocalTsProvenance::Measured if offset == 0 => {
                 s.push_str(
-                    " Receipt times in this dataset were recorded by the capturing host, so \
-                     these are measurements at that host's location, which is generally not \
-                     where a strategy would run.",
+                    " Receipt timestamps in this dataset were recorded by the capturing host. \
+                     The intervals above are derived from those timestamps and the strategy's \
+                     decision time, not direct measurements at a strategy's location.",
                 );
-                Basis::Observed
             }
             LocalTsProvenance::Measured => {
                 s.push_str(&format!(
                     " Receipt times were recorded by the capturing host, but the configured feed \
-                     latency offset of {} is added to every one of them, so these values are \
-                     modeled, not measured.",
+                     latency offset of {} is added to every one of them; the intervals above \
+                     are derived from these shifted, modeled timestamps.",
                     dur(offset)
                 ));
-                Basis::Modeled
             }
             LocalTsProvenance::Synthetic => {
                 s.push_str(&format!(
                     " Receipt times in this dataset were produced by the synthetic generator \
-                     from a configured latency{plus_offset}, so these values are modeled, not \
-                     measured."
+                     from a configured latency{plus_offset}; the intervals above are derived \
+                     from modeled timestamps, not measured."
                 ));
-                Basis::Modeled
             }
             LocalTsProvenance::Assumed => {
                 s.push_str(&format!(
                     " The source data had no receipt times; they were set to the exchange time \
-                     plus an assumed latency{plus_offset}, so these values are modeled \
-                     assumptions, not measurements."
+                     plus an assumed latency{plus_offset}; the intervals above are derived \
+                     from modeled assumptions, not measurements."
                 ));
-                Basis::Modeled
             }
-        };
-        out.push(basis, s, vec![intent.seq]);
+        }
+        out.push(Basis::Derived, s, vec![intent.seq]);
     }
 
     // --- request ---
@@ -817,7 +829,7 @@ impl Ctx<'_> {
         out.push(
             Basis::Observed,
             format!(
-                "When the order arrived at the exchange at {}, the historical book displayed {} \
+                "At the modeled exchange arrival time {}, the historical book displayed {} \
                  at {}; the best bid was {} and the best ask {}.",
                 at(q.ts),
                 self.fmt.qty(q.level_qty),
@@ -828,6 +840,12 @@ impl Ctx<'_> {
             vec![q.seq],
         );
         let assigned = match q.queue_ahead {
+            Some(ahead) if q.level_qty == 0.0 => format!(
+                "The historical book had no displayed quantity at this order's price. The queue \
+                 model assigned {} ahead; this is an estimate at an empty price level, not \
+                 evidence that the order joined the best bid or ask.",
+                self.fmt.est(ahead)
+            ),
             Some(ahead) => format!(
                 "The queue model assigned {} ahead of the order: its assumption that the order \
                  joins the queue behind everything displayed at that price.",
@@ -860,9 +878,7 @@ impl Ctx<'_> {
         // Consecutive executions at one price read as one line.
         let mut levels: Vec<(i64, f64)> = Vec::new();
         for f in &takers {
-            let same_level = levels
-                .last()
-                .is_some_and(|(tick, _)| *tick == f.price_tick);
+            let same_level = levels.last().is_some_and(|(tick, _)| *tick == f.price_tick);
             if same_level {
                 if let Some((_, qty)) = levels.last_mut() {
                     *qty += f.qty;
@@ -942,7 +958,7 @@ impl Ctx<'_> {
                 .map(|u| u.seq)
                 .collect();
             out.push(
-                Basis::Observed,
+                Basis::Derived,
                 format!(
                     "While the order rested, {} totalling {} occurred at {price}.{dropped}",
                     count(prints, "trade print"),
@@ -952,7 +968,7 @@ impl Ctx<'_> {
             );
         } else {
             out.push(
-                Basis::Observed,
+                Basis::Derived,
                 format!(
                     "No trade printed at {price} while the order rested: the tape holds no \
                      trade-driven queue update for it.{dropped}"
@@ -975,23 +991,34 @@ impl Ctx<'_> {
         }
 
         let m = life.movement();
-        let depth = count(m.depth_changes, "change");
+        let movement = |delta: f64, cause: &str| {
+            let amount = self.fmt.est(delta.abs());
+            if amount.bytes().all(|b| b == b'0' || b == b'.') {
+                format!("did not change at displayed precision through {cause}")
+            } else {
+                let direction = if delta > 0.0 { "fell" } else { "rose" };
+                format!("{direction} by {amount} through {cause}")
+            }
+        };
+        let depth = format!(
+            "{} in the displayed quantity at the price",
+            count(m.depth_changes, "change")
+        );
         let mut s = match (prints > 0, m.depth_changes > 0) {
             (true, true) => format!(
-                "The modeled quantity ahead fell by {} through those trades and by {} through \
-                 {depth} in the displayed quantity at the price.",
-                self.fmt.est(m.by_trades),
-                self.fmt.est(m.by_depth)
+                "The modeled quantity ahead {}; it {}.",
+                movement(m.by_trades, "those trades"),
+                movement(m.by_depth, &depth)
             ),
             (true, false) => format!(
-                "The modeled quantity ahead fell by {} through those trades.",
-                self.fmt.est(m.by_trades)
+                "The modeled quantity ahead {}.",
+                movement(m.by_trades, "those trades")
             ),
-            (false, _) => format!(
-                "The modeled quantity ahead fell by {} through {depth} in the displayed quantity \
-                 at the price.",
-                self.fmt.est(m.by_depth)
+            (false, true) => format!(
+                "The modeled quantity ahead {}.",
+                movement(m.by_depth, &depth)
             ),
+            (false, false) => "No trade- or depth-driven queue movement was recorded.".to_string(),
         };
         if m.depth_changes > 0 {
             s.push_str(&format!(
@@ -1008,8 +1035,9 @@ impl Ctx<'_> {
             .min_by(f64::total_cmp);
         match lowest {
             Some(low) if low < 0.0 => s.push_str(&format!(
-                " The estimate reached zero; trades went up to {} beyond it.",
-                self.fmt.est(-low)
+                " The smallest raw modeled estimate was {}. A negative queue estimate alone \
+                 is not evidence of a fill; the fill events establish executions.",
+                self.fmt.est(low)
             )),
             Some(low) => s.push_str(&format!(
                 " The smallest modeled quantity ahead reached was {}.",
@@ -1024,10 +1052,35 @@ impl Ctx<'_> {
             ));
         }
         out.push(
-            Basis::Modeled,
+            Basis::Derived,
             s,
             life.updates.iter().map(|u| u.seq).collect(),
         );
+        for reset in life
+            .updates
+            .iter()
+            .filter(|u| matches!(u.cause, QueueCause::FillReset))
+        {
+            let mut seqs = vec![reset.seq];
+            seqs.extend(
+                life.fills
+                    .iter()
+                    .rev()
+                    .find(|f| f.seq < reset.seq)
+                    .map(|f| f.seq),
+            );
+            out.push(
+                Basis::Modeled,
+                format!(
+                    "At {} after a partial maker fill, the exchange model reset the remaining \
+                     order's queue estimate to {}. This is model bookkeeping, not a trade or \
+                     a change in historical displayed depth.",
+                    at(reset.ts),
+                    self.ahead_txt(reset.after)
+                ),
+                seqs,
+            );
+        }
     }
 
     // --- fill mechanism ---
@@ -1090,7 +1143,10 @@ impl Ctx<'_> {
                 None => String::new(),
             };
             let left = if self.fmt.has_qty(f.leaves_qty) {
-                format!(" {} of the order stayed resting.", self.fmt.qty(f.leaves_qty))
+                format!(
+                    " {} of the order stayed resting.",
+                    self.fmt.qty(f.leaves_qty)
+                )
             } else {
                 String::new()
             };
@@ -1191,10 +1247,15 @@ impl Ctx<'_> {
             out.push(
                 Basis::Modeled,
                 format!(
-                    "After those executions {} of the order was left. A {} order does not rest \
+                    "After those executions {} of the order was left. {} {} order does not rest \
                      and the exchange model found no further displayed liquidity{scope}, so it \
                      expired the remainder at {}.",
                     self.fmt.qty(self.remaining()),
+                    if matches!(o.tif, Tif::Ioc | Tif::Fok) {
+                        "An"
+                    } else {
+                        "A"
+                    },
                     self.kind(),
                     at(resp.ts)
                 ),
@@ -1259,30 +1320,39 @@ impl Ctx<'_> {
         let elapsed = dur(resp.ts - intent.ts);
         let known_price = self.fmt.price(known);
         let gap = count((o.price_tick - known).unsigned_abs(), "tick");
-        let s = match (post_only, marketable_in_view) {
-            (true, false) => format!(
-                "At decision time the strategy knew a best {opposite} of {known_price}, {gap} \
-                 away from the order's price, so the order did not cross the book the strategy \
-                 saw. The book it met at the exchange {elapsed} later was different: the \
-                 strategy's view was out of date, the market moved while the request was in \
-                 flight, or both."
-            ),
-            (true, true) => format!(
-                "At decision time the order's price already crossed the best {opposite} the \
-                 strategy knew ({known_price})."
-            ),
-            (false, true) => format!(
-                "At decision time the strategy knew a best {opposite} of {known_price}, which \
-                 the order's price reached, so the order was marketable against the book the \
-                 strategy saw. The book it met at the exchange {elapsed} later no longer offered \
-                 that: the strategy's view was out of date, the market moved while the request \
-                 was in flight, or both."
-            ),
-            (false, false) => format!(
-                "At decision time the order's price did not reach the best {opposite} the \
-                 strategy knew ({known_price}), so it was not marketable against the \
-                 strategy's own view either."
-            ),
+        let s = if o.tif == Tif::Fok {
+            format!(
+                "At decision time the strategy knew a best {opposite} of {known_price}. \
+                 A marketable limit price alone does not guarantee enough displayed quantity \
+                 to fill a FOK order completely; the order tape does not record the full \
+                 arrival book used for that check."
+            )
+        } else {
+            match (post_only, marketable_in_view) {
+                (true, false) => format!(
+                    "At decision time the strategy knew a best {opposite} of {known_price}, {gap} \
+                     away from the order's price, so the order did not cross the book the strategy \
+                     saw. The book it met at the exchange {elapsed} later was different: the \
+                     strategy's view was out of date, the market moved while the request was in \
+                     flight, or both."
+                ),
+                (true, true) => format!(
+                    "At decision time the order's price already crossed the best {opposite} the \
+                     strategy knew ({known_price})."
+                ),
+                (false, true) => format!(
+                    "At decision time the strategy knew a best {opposite} of {known_price}, which \
+                     the order's price reached, so the order was marketable against the book the \
+                     strategy saw. The book it met at the exchange {elapsed} later no longer offered \
+                     that: the strategy's view was out of date, the market moved while the request \
+                     was in flight, or both."
+                ),
+                (false, false) => format!(
+                    "At decision time the order's price did not reach the best {opposite} the \
+                     strategy knew ({known_price}), so it was not marketable against the \
+                     strategy's own view either."
+                ),
+            }
         };
         out.push(Basis::Derived, s, vec![intent.seq, resp.seq]);
     }
@@ -1348,7 +1418,11 @@ impl Ctx<'_> {
                     let gone = match self.life.terminal() {
                         Some(t) if t.seq < r.seq => {
                             seqs.push(t.seq);
-                            format!(" (it had become {} at {})", status_label(t.status), at(t.ts))
+                            format!(
+                                " (it had become {} at {})",
+                                status_label(t.status),
+                                at(t.ts)
+                            )
                         }
                         _ => String::new(),
                     };
@@ -1489,7 +1563,8 @@ impl Ctx<'_> {
         } else {
             format!(
                 "During {flight}, no trade at {price} was recorded for the order and it \
-                 received no fill, so no fill was won or lost to the cancel's latency."
+                 received no fill. This describes the recorded interval only; it does not \
+                 establish what a different cancel latency would have produced."
             )
         };
         out.push(Basis::Modeled, s, seqs);
@@ -1590,7 +1665,7 @@ impl Ctx<'_> {
             let value: f64 = life.fills.iter().map(|f| f.value).sum();
             let rates = self.config.execution.fees;
             out.push(
-                Basis::Modeled,
+                Basis::Derived,
                 format!(
                     "The fee model charged {} on {} of simulated traded value, in quote \
                      currency (configured rates as a fraction of traded value: maker {}, taker \
@@ -1634,24 +1709,45 @@ impl Ctx<'_> {
                 at(first.local_arrival_ts)
             )),
         }
+        out.push(Basis::Modeled, s, seqs);
         if let Some(fill) = life.fills.first() {
-            match life.local.iter().find(|l| self.fmt.has_qty(l.exec_qty)) {
+            let notice = life.local.iter().find(|l| {
+                l.exch_ts >= fill.ts
+                    && !l.rejected
+                    && (self.fmt.has_qty(l.exec_qty)
+                        || self.fmt.has_qty(self.order.qty - l.leaves_qty))
+            });
+            match notice {
                 Some(l) => {
-                    seqs.push(l.seq);
-                    seqs.push(fill.seq);
-                    s.push_str(&format!(
-                        " The strategy learned of its first fill at {}, {} after the fill at \
-                         the simulated exchange.",
-                        at(l.ts),
-                        dur(l.ts - fill.ts)
-                    ));
+                    let detail = if self.fmt.has_qty(l.exec_qty) {
+                        " Its execution quantity explicitly reports a fill.".to_string()
+                    } else {
+                        format!(
+                            " Its execution quantity was zero, but its remaining quantity of {} \
+                             implies a fill relative to the original order quantity of {}.",
+                            self.fmt.qty(l.leaves_qty),
+                            self.fmt.qty(self.order.qty)
+                        )
+                    };
+                    out.push(
+                        Basis::Derived,
+                        format!(
+                            "The first local response evidencing a fill reached the strategy at \
+                             {}, {} after the first simulated exchange fill.{detail}",
+                            at(l.ts),
+                            dur(l.ts - fill.ts)
+                        ),
+                        vec![fill.seq, l.seq],
+                    );
                 }
-                None => s.push_str(
-                    " No fill notification had reached the strategy when the data ended.",
+                None => out.push(
+                    Basis::Derived,
+                    "No local response evidencing a fill was recorded before the data ended."
+                        .to_string(),
+                    vec![fill.seq],
                 ),
             }
         }
-        out.push(Basis::Modeled, s, seqs);
     }
 
     // --- what cannot be known ---
@@ -1704,7 +1800,8 @@ impl Ctx<'_> {
         let feed_local = life.intent.as_ref().and_then(|i| i.market.feed_local_ts);
         let feed_exch = life.intent.as_ref().and_then(|i| i.market.feed_exch_ts);
         let decided = life.intent.as_ref().map(|i| i.ts);
-        let non_negative = |sent: &Sent| (sent.entry_latency_ns >= 0).then_some(sent.entry_latency_ns);
+        let non_negative =
+            |sent: &Sent| (sent.entry_latency_ns >= 0).then_some(sent.entry_latency_ns);
         LatencyBreakdown {
             feed_staleness_ns: decided.zip(feed_local).map(|(d, l)| d - l),
             feed_latency_ns: feed_local.zip(feed_exch).map(|(l, e)| l - e),
@@ -1784,6 +1881,9 @@ impl Ctx<'_> {
                     .and_then(|f| life.ahead_before(f.seq))
                     .map(|(_, a)| a);
                 let regardless = match ahead {
+                    Some(a) if a <= 0.0 => "regardless of queue position (nothing modeled \
+                        ahead at the last recorded estimate)"
+                        .to_string(),
                     Some(a) => format!(
                         "regardless of the modeled {} still queued ahead",
                         self.fmt.est(a.max(0.0))
@@ -1869,6 +1969,15 @@ impl Ctx<'_> {
                     .map_or(u64::MAX, |r| r.seq);
                 let last = life.ahead_before(end).map(|(_, a)| a);
                 match (life.queued.is_some(), last) {
+                    (true, Some(l)) if l <= 0.0 && prints > 0 => format!(
+                        "Not filled: cancelled with nothing modeled ahead at the last recorded \
+                         estimate, after {} traded at {price}.",
+                        self.fmt.qty(traded)
+                    ),
+                    (true, Some(l)) if l <= 0.0 => format!(
+                        "Not filled: cancelled with nothing modeled ahead at the last recorded \
+                         estimate; no trade printed at {price} while it rested."
+                    ),
                     (true, Some(l)) if prints > 0 => format!(
                         "Not filled: cancelled with the modeled {} still queued ahead, after {} \
                          traded at {price}.",
@@ -1895,6 +2004,11 @@ impl Ctx<'_> {
                     "Not filled: the market order found no displayed liquidity on arrival and \
                      expired."
                         .to_string()
+                } else if o.tif == Tif::Fok {
+                    format!(
+                        "Not filled: the FOK order found insufficient displayed liquidity to \
+                         fill completely at {price} or better on arrival and expired."
+                    )
                 } else {
                     format!(
                         "Not filled: the {} order found no displayed liquidity it could execute \
@@ -1985,7 +2099,7 @@ mod tests {
     use super::*;
     use crate::{
         build_orders,
-        testkit::{config, Tape, INSTRUMENT, MS},
+        testkit::{INSTRUMENT, MS, Tape, config},
     };
 
     /// Explains order `id` of `tape` and checks the invariants every explanation must hold.
@@ -2077,12 +2191,12 @@ mod tests {
              0.800 queued ahead."
         );
 
-        // The decision comes first, with the strategy's own reason; its staleness is a
-        // measurement on a dataset with recorded receipt times.
+        // The decision comes first, with the strategy's own reason; staleness is derived
+        // arithmetic even on a dataset with recorded receipt timestamps.
         assert_eq!(e.steps[0].basis, Basis::Derived);
         assert!(e.steps[0].statement.contains("join the touch"));
         assert!(e.steps[0].statement.contains("buy 1.000 at 10000.0"));
-        assert_eq!(e.steps[1].basis, Basis::Observed);
+        assert_eq!(e.steps[1].basis, Basis::Derived);
         assert!(e.steps[1].statement.contains("1 ms old"));
 
         // Observed market data and modeled estimates are separate steps.
@@ -2092,7 +2206,7 @@ mod tests {
         assert_eq!(assigned.basis, Basis::Modeled);
         assert_eq!(assigned.event_seqs, vec![queued]);
         let prints = step_with(&e, "2 trade prints totalling 1.250");
-        assert_eq!(prints.basis, Basis::Observed);
+        assert_eq!(prints.basis, Basis::Derived);
         assert_eq!(prints.event_seqs, vec![t1, t2]);
 
         // The mechanism cites the exhausting trade, the fill and its response.
@@ -2116,8 +2230,11 @@ mod tests {
                 cancel_entry_latency_ns: None,
             }
         );
-        let path: Vec<(u64, RelNs, f64)> =
-            e.queue_path.iter().map(|p| (p.seq, p.ts, p.ahead)).collect();
+        let path: Vec<(u64, RelNs, f64)> = e
+            .queue_path
+            .iter()
+            .map(|p| (p.seq, p.ts, p.ahead))
+            .collect();
         assert_eq!(
             path,
             vec![
@@ -2154,14 +2271,14 @@ mod tests {
         assert_eq!(mechanism.event_seqs, vec![depth, fill, resp]);
 
         let none = step_with(&e, "No trade printed at 10000.0");
-        assert_eq!(none.basis, Basis::Observed);
+        assert_eq!(none.basis, Basis::Derived);
         let moved = step_with(&e, "the configured queue model (risk_adverse) decides it");
-        assert_eq!(moved.basis, Basis::Modeled);
+        assert_eq!(moved.basis, Basis::Derived);
         assert_eq!(moved.event_seqs, vec![depth]);
         assert!(moved.statement.contains("fell by 0.500 through 1 change"));
 
         // The data ended before the fill notification reached the strategy.
-        step_with(&e, "No fill notification had reached the strategy");
+        step_with(&e, "No local response evidencing a fill was recorded");
     }
 
     #[test]
@@ -2250,7 +2367,10 @@ mod tests {
         let view = step_with(&e, "did not cross the book the strategy saw");
         assert_eq!(view.basis, Basis::Derived);
         assert_eq!(view.event_seqs, vec![intent, expired]);
-        assert!(view.statement.contains("a best ask of 10001.0, 2 ticks away"));
+        assert!(
+            view.statement
+                .contains("a best ask of 10001.0, 2 ticks away")
+        );
         assert!(e.queue_path.is_empty());
     }
 
@@ -2306,14 +2426,24 @@ mod tests {
              at 10000.0."
         );
 
-        assert!(step_with(&e, "decided to cancel the order").statement.contains("requote"));
+        assert!(
+            step_with(&e, "decided to cancel the order")
+                .statement
+                .contains("requote")
+        );
         let race = step_with(&e, "Latency race");
         assert_eq!(race.basis, Basis::Modeled);
         assert_eq!(race.event_seqs, vec![sent, racing, canceled]);
-        assert!(race.statement.contains("1.000 traded at 10000.0 in 1 trade print"));
+        assert!(
+            race.statement
+                .contains("1.000 traded at 10000.0 in 1 trade print")
+        );
         assert!(race.statement.contains("moved from 2.500 to 1.500"));
 
-        let state = step_with(&e, "When the cancel took effect the modeled quantity ahead was 1.500");
+        let state = step_with(
+            &e,
+            "When the cancel took effect the modeled quantity ahead was 1.500",
+        );
         assert_eq!(state.event_seqs, vec![queued, racing, canceled]);
         assert!(state.statement.contains("it was 3.000 at entry"));
 
@@ -2374,10 +2504,11 @@ mod tests {
         assert_eq!(rule.event_seqs, vec![blocked]);
         assert!(rule.statement.contains("position 9.5 + 1 exceeds 10"));
         // Nothing reached an exchange model, so there is no modeled or unobservable claim.
-        assert!(e
-            .steps
-            .iter()
-            .all(|s| !matches!(s.basis, Basis::Modeled | Basis::Unobservable)));
+        assert!(
+            e.steps
+                .iter()
+                .all(|s| !matches!(s.basis, Basis::Modeled | Basis::Unobservable))
+        );
         assert!(e.queue_path.is_empty());
         assert_eq!(e.latency.entry_latency_ns, None);
         assert_eq!(e.latency.feed_staleness_ns, Some(MS));
@@ -2424,7 +2555,11 @@ mod tests {
         let request = step_with(&e, "the dataset ended before the request arrived");
         assert_eq!(request.basis, Basis::Modeled);
         assert_eq!(request.event_seqs, vec![sent]);
-        assert!(request.statement.contains("constant: 1 ms entry, 1 ms response"));
+        assert!(
+            request
+                .statement
+                .contains("constant: 1 ms entry, 1 ms response")
+        );
         assert!(e.steps.iter().any(|s| s.basis == Basis::Unobservable));
         assert_eq!(e.latency.entry_latency_ns, Some(MS));
         assert_eq!(e.latency.response_latency_ns, None);
@@ -2446,10 +2581,16 @@ mod tests {
             "Not filled: 0.500 traded at 10000.0 while the order rested, leaving 1.500 of the \
              modeled 2.000 queued ahead when the dataset ended."
         );
-        let end = step_with(&e, "The dataset ended with the order still resting and unfilled");
+        let end = step_with(
+            &e,
+            "The dataset ended with the order still resting and unfilled",
+        );
         assert_eq!(end.basis, Basis::Modeled);
         assert_eq!(end.event_seqs, vec![queued, trade]);
-        assert!(end.statement.contains("the estimate went from 2.000 to 1.500"));
+        assert!(
+            end.statement
+                .contains("the estimate went from 2.000 to 1.500")
+        );
         assert_eq!(e.latency.resting_time_ns, None);
     }
 
@@ -2480,7 +2621,10 @@ mod tests {
         assert_eq!(order.queue_ahead_at_entry, None);
         assert_eq!(e.verdict, Verdict::NotFilledNoTradeAtPrice);
         step_with(&e, "it is not treated as zero");
-        step_with(&e, "The modeled quantity ahead stayed at an unknown quantity");
+        step_with(
+            &e,
+            "The modeled quantity ahead stayed at an unknown quantity",
+        );
         assert!(e.queue_path.is_empty());
     }
 
@@ -2491,7 +2635,14 @@ mod tests {
         let trade = t.trade(20 * MS, 256, 1.0, 0.5, -0.5);
         let fill = t.fill(20 * MS, 256, 20_002, 0.5, true, 0.5, 1.5);
         let resp = t.resp(20 * MS, 256, OrderStatus::PartiallyFilled, 1.5);
-        t.local(21 * MS, 256, OrderStatus::PartiallyFilled, 0.5, 1.5, 20 * MS);
+        t.local(
+            21 * MS,
+            256,
+            OrderStatus::PartiallyFilled,
+            0.5,
+            1.5,
+            20 * MS,
+        );
         t.cancel_intent(40 * MS, 256, "inventory limit");
         t.sent(40 * MS, 256, ReqKind::Cancel, MS);
         let canceled = t.resp(41 * MS, 256, OrderStatus::Canceled, 1.5);
@@ -2515,40 +2666,58 @@ mod tests {
         let mechanism = step_with(&e, "it exhausted the modeled queue ahead");
         assert_eq!(mechanism.event_seqs, vec![trade, fill, resp]);
         assert!(mechanism.statement.contains("partial-fill exchange model"));
-        assert!(mechanism.statement.contains("1.500 of the order stayed resting"));
+        assert!(
+            mechanism
+                .statement
+                .contains("1.500 of the order stayed resting")
+        );
         let removed = step_with(&e, "removing the order with 1.500 unfilled");
         assert!(removed.event_seqs.contains(&canceled));
-        step_with(&e, "no fill was won or lost to the cancel's latency");
-        step_with(&e, "The strategy learned of its first fill at t=0.021s, 1 ms after");
+        step_with(
+            &e,
+            "does not establish what a different cancel latency would have produced",
+        );
+        step_with(
+            &e,
+            "at t=0.021s, 1 ms after the first simulated exchange fill",
+        );
         let fees = step_with(&e, "The fee model charged 0.5");
-        assert_eq!(fees.basis, Basis::Modeled);
+        assert_eq!(fees.basis, Basis::Derived);
         assert_eq!(fees.event_seqs, vec![fill]);
         assert_eq!(e.latency.time_to_first_fill_ns, Some(9 * MS));
     }
 
     #[test]
-    fn staleness_basis_follows_the_provenance_of_receipt_times() {
+    fn staleness_arithmetic_preserves_receipt_timestamp_provenance() {
         let mut t = Tape::new();
         t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(2.0));
         let cfg = config();
 
         let (_, measured) = explain_with(&t, 256, &cfg, LocalTsProvenance::Measured);
-        assert_eq!(measured.steps[1].basis, Basis::Observed);
-        assert!(measured.steps[1].statement.contains("a feed latency of 2 ms"));
+        assert_eq!(measured.steps[1].basis, Basis::Derived);
+        assert!(
+            measured.steps[1]
+                .statement
+                .contains("a feed latency of 2 ms")
+        );
 
         let (_, synthetic) = explain_with(&t, 256, &cfg, LocalTsProvenance::Synthetic);
-        assert_eq!(synthetic.steps[1].basis, Basis::Modeled);
-        assert!(synthetic.steps[1].statement.contains("modeled, not measured"));
+        assert_eq!(synthetic.steps[1].basis, Basis::Derived);
+        assert!(
+            synthetic.steps[1]
+                .statement
+                .contains("modeled timestamps, not measured")
+        );
 
         let (_, assumed) = explain_with(&t, 256, &cfg, LocalTsProvenance::Assumed);
-        assert_eq!(assumed.steps[1].basis, Basis::Modeled);
+        assert_eq!(assumed.steps[1].basis, Basis::Derived);
         assert!(assumed.steps[1].statement.contains("not measurements"));
 
         // A configured offset turns even recorded receipt times into model output.
         let mut shifted = config();
         shifted.execution.feed_latency_offset_ns = 250_000;
         let (_, offset) = explain_with(&t, 256, &shifted, LocalTsProvenance::Measured);
-        assert_eq!(offset.steps[1].basis, Basis::Modeled);
+        assert_eq!(offset.steps[1].basis, Basis::Derived);
         assert!(offset.steps[1].statement.contains("offset of 250 µs"));
     }
 
@@ -2563,29 +2732,244 @@ mod tests {
 
         let (_, e) = explain(&t, 256, &cfg);
         assert_eq!(e.verdict, Verdict::NotFilledQueueNotReached);
-        let moved = step_with(&e, "the configured queue model (power_prob3(n=3)) decides it");
-        assert_eq!(moved.basis, Basis::Modeled);
-        assert!(moved
-            .statement
-            .contains("fell by 0.500 through those trades and by 0.600 through 1 change"));
+        let moved = step_with(
+            &e,
+            "the configured queue model (power_prob3(n=3)) decides it",
+        );
+        assert_eq!(moved.basis, Basis::Derived);
+        assert!(
+            moved
+                .statement
+                .contains("fell by 0.500 through those trades; it fell by 0.600 through 1 change")
+        );
         assert!(moved.statement.contains("1 - (front / (front + back))^3"));
-        assert!(moved
-            .statement
-            .contains("The smallest modeled quantity ahead reached was 0.900"));
+        assert!(
+            moved
+                .statement
+                .contains("The smallest modeled quantity ahead reached was 0.900")
+        );
     }
 
     #[test]
     fn truncation_adds_its_own_caveat() {
         let mut t = Tape::new();
         t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(2.0));
-        t.push(20 * MS, Some(256), FlightBody::QueueTruncated { dropped: 12 });
+        t.push(
+            20 * MS,
+            Some(256),
+            FlightBody::QueueTruncated { dropped: 12 },
+        );
 
         let (_, e) = explain(&t, 256, &config());
         assert_eq!(e.caveats.len(), 5);
         assert!(e.caveats[4].contains("12 updates"));
         // The grammar only truncates depth updates, never evidence of trades.
-        assert!(step_with(&e, "No trade printed at 10000.0")
-            .statement
-            .contains("Trade-driven updates are always retained"));
+        assert!(
+            step_with(&e, "No trade printed at 10000.0")
+                .statement
+                .contains("Trade-driven updates are always retained")
+        );
+    }
+
+    #[test]
+    fn depth_negative_estimate_is_not_attributed_to_trades() {
+        let mut t = Tape::new();
+        t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(0.272));
+        let depth = t.depth(20 * MS, 256, 0.850, 0.0, 0.272, -0.0214724);
+        let (_, e) = explain(&t, 256, &config());
+        let moved = step_with(&e, "smallest raw modeled estimate was -0.02147");
+        assert_eq!(moved.basis, Basis::Derived);
+        assert_eq!(moved.event_seqs, vec![depth]);
+        assert!(!moved.statement.contains("trades went"));
+        assert!(
+            moved
+                .statement
+                .contains("negative queue estimate alone is not evidence of a fill")
+        );
+        assert!(!e.steps.iter().any(|s| s.statement.contains("it exhausted")));
+    }
+
+    #[test]
+    fn arithmetic_steps_are_derived_not_observed_or_model_outputs() {
+        let mut t = Tape::new();
+        t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(0.5));
+        t.trade(20 * MS, 256, 1.0, 0.5, -0.5);
+        t.fill(20 * MS, 256, 20_000, 1.0, true, 1.0, 0.0);
+        t.resp(20 * MS, 256, OrderStatus::Filled, 0.0);
+        let (_, e) = explain(&t, 256, &config());
+        for needle in [
+            "That view was",
+            "trade print totalling",
+            "The modeled quantity ahead",
+            "The fee model charged",
+        ] {
+            assert_eq!(step_with(&e, needle).basis, Basis::Derived, "{needle}");
+        }
+        assert_eq!(
+            step_with(&e, "historical book displayed").basis,
+            Basis::Observed
+        );
+        assert_eq!(step_with(&e, "it exhausted").basis, Basis::Modeled);
+    }
+
+    #[test]
+    fn empty_price_level_does_not_imply_joining_the_touch() {
+        let mut t = Tape::new();
+        let queued = t.rest(10 * MS, 256, Side::Buy, 19_000, 1.0, Tif::Gtc, Some(0.0));
+        let (_, e) = explain(&t, 256, &config());
+        let assigned = step_with(&e, "estimate at an empty price level");
+        assert_eq!(assigned.basis, Basis::Modeled);
+        assert_eq!(assigned.event_seqs, vec![queued]);
+        assert!(assigned.statement.contains("assigned 0.000 ahead"));
+        assert!(
+            assigned
+                .statement
+                .contains("not evidence that the order joined the best bid or ask")
+        );
+        assert!(!assigned.statement.contains("behind everything displayed"));
+        let arrival = step_with(&e, "modeled exchange arrival time");
+        assert!(arrival.statement.contains("displayed 0.000 at 9500.0"));
+        assert!(arrival.statement.contains("best bid was 10000.0"));
+    }
+
+    #[test]
+    fn unchanged_queue_is_not_described_as_a_zero_sized_fall() {
+        let mut t = Tape::new();
+        t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(0.0));
+        t.depth(20 * MS, 256, 0.0, 2.0, 0.0, 0.0);
+        t.depth(30 * MS, 256, 2.0, 1.0, 0.0, 0.0);
+        let (_, e) = explain(&t, 256, &config());
+        step_with(
+            &e,
+            "did not change at displayed precision through 2 changes",
+        );
+        assert!(
+            !e.steps
+                .iter()
+                .any(|s| s.statement.contains("fell by 0.000"))
+        );
+    }
+
+    #[test]
+    fn cancel_interval_does_not_claim_a_latency_counterfactual() {
+        let mut t = Tape::new();
+        t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(1.0));
+        t.cancel_intent(20 * MS, 256, "requote");
+        t.sent(20 * MS, 256, ReqKind::Cancel, MS);
+        t.resp(21 * MS, 256, OrderStatus::Canceled, 1.0);
+        let (_, e) = explain(&t, 256, &config());
+        let interval = step_with(&e, "This describes the recorded interval only");
+        assert!(interval.statement.contains("received no fill"));
+        assert!(
+            interval
+                .statement
+                .contains("does not establish what a different cancel latency")
+        );
+        assert!(
+            !e.steps
+                .iter()
+                .any(|s| s.statement.contains("no fill was won or lost"))
+        );
+    }
+
+    #[test]
+    fn fill_reset_is_explained_as_bookkeeping_not_market_activity() {
+        let mut t = Tape::new();
+        t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(0.5));
+        t.trade(20 * MS, 256, 0.7, 0.5, -0.2);
+        let fill = t.fill(20 * MS, 256, 20_000, 0.2, true, 0.2, 0.8);
+        let reset = t.push(
+            20 * MS,
+            Some(256),
+            FlightBody::QueueUpdate {
+                cause: QueueCause::FillReset,
+                ahead_before: Some(-0.2),
+                ahead_after: Some(0.0),
+            },
+        );
+        t.resp(20 * MS, 256, OrderStatus::PartiallyFilled, 0.8);
+        let (_, e) = explain(&t, 256, &partial_fill_config());
+        let bookkeeping = step_with(&e, "This is model bookkeeping");
+        assert_eq!(bookkeeping.basis, Basis::Modeled);
+        assert_eq!(bookkeeping.event_seqs, vec![fill, reset]);
+        assert!(
+            bookkeeping
+                .statement
+                .contains("reset the remaining order's queue estimate to 0.000")
+        );
+        step_with(&e, "1 trade print totalling 0.700");
+        assert_eq!(e.queue_path.last().unwrap().ahead, 0.0);
+    }
+
+    #[test]
+    fn partial_ioc_fill_is_inferred_from_remaining_quantity_when_exec_qty_is_zero() {
+        let mut t = Tape::new();
+        t.intent(10 * MS, 256, Side::Buy, 20_002, 1.0, Tif::Ioc);
+        t.sent(10 * MS, 256, ReqKind::New, MS);
+        let fill = t.fill(11 * MS, 256, 20_002, 0.2, false, 0.2, 0.8);
+        t.resp(11 * MS, 256, OrderStatus::Expired, 0.8);
+        let local = t.local(12 * MS, 256, OrderStatus::Expired, 0.0, 0.8, 11 * MS);
+        let (_, e) = explain(&t, 256, &partial_fill_config());
+        let notice = step_with(&e, "execution quantity was zero");
+        assert_eq!(notice.basis, Basis::Derived);
+        assert_eq!(notice.event_seqs, vec![fill, local]);
+        assert!(notice.statement.contains("remaining quantity of 0.800"));
+        assert!(notice.statement.contains("at t=0.012s, 1 ms after"));
+        assert!(
+            !e.steps
+                .iter()
+                .any(|s| s.statement.contains("No local response evidencing"))
+        );
+    }
+
+    #[test]
+    fn fok_expiry_does_not_imply_zero_liquidity_or_a_changed_book() {
+        let mut t = Tape::new();
+        t.intent(10 * MS, 256, Side::Buy, 20_002, 1.0, Tif::Fok);
+        t.sent(10 * MS, 256, ReqKind::New, MS);
+        t.resp(11 * MS, 256, OrderStatus::Expired, 1.0);
+        let (_, e) = explain(&t, 256, &partial_fill_config());
+        assert!(
+            e.headline
+                .contains("insufficient displayed liquidity to fill completely")
+        );
+        assert!(!e.headline.contains("no displayed liquidity"));
+        step_with(
+            &e,
+            "marketable limit price alone does not guarantee enough displayed quantity",
+        );
+        assert!(!e.steps.iter().any(|s| s.statement.contains("book it met")));
+    }
+
+    #[test]
+    fn zero_ahead_headlines_do_not_claim_quantity_still_queued() {
+        let mut t = Tape::new();
+        t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(0.0));
+        t.cancel_intent(20 * MS, 256, "requote");
+        t.sent(20 * MS, 256, ReqKind::Cancel, MS);
+        t.resp(21 * MS, 256, OrderStatus::Canceled, 1.0);
+        let (_, canceled) = explain(&t, 256, &config());
+        assert!(canceled.headline.contains("with nothing modeled ahead"));
+        assert!(!canceled.headline.contains("0.000 still queued"));
+
+        let mut t = Tape::new();
+        t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(0.0));
+        t.fill(20 * MS, 256, 20_000, 1.0, true, 1.0, 0.0);
+        t.resp(20 * MS, 256, OrderStatus::Filled, 0.0);
+        let (_, filled) = explain(&t, 256, &config());
+        assert!(filled.headline.contains("nothing modeled ahead"));
+        assert!(!filled.headline.contains("0.000 still queued"));
+    }
+
+    #[test]
+    fn ioc_order_articles_follow_the_initial_vowel_sound() {
+        let mut t = Tape::new();
+        t.intent(10 * MS, 256, Side::Buy, 20_002, 1.0, Tif::Ioc);
+        t.sent(10 * MS, 256, ReqKind::New, MS);
+        t.fill(11 * MS, 256, 20_002, 0.2, false, 0.2, 0.8);
+        t.resp(11 * MS, 256, OrderStatus::Expired, 0.8);
+        let (_, e) = explain(&t, 256, &partial_fill_config());
+        step_with(&e, "with an IOC limit order");
+        step_with(&e, "An IOC order does not rest");
     }
 }

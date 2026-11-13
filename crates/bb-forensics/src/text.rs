@@ -4,7 +4,7 @@
 //! instrument's tick and lot, so a reader can match them against the book without converting.
 
 use bb_core::{
-    dataset::InstrumentMeta, flight::RiskRule, result::OrderOutcome, OrderStatus, RelNs, Side, Tif,
+    OrderStatus, RelNs, Side, Tif, dataset::InstrumentMeta, flight::RiskRule, result::OrderOutcome,
 };
 
 /// Decimal places needed to print multiples of `step` exactly (at most 9).

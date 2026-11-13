@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use bb_core::{
+    Clock, OrderStatus, ReqKind,
     flight::{FlightBody, FlightEvent, QueueCause},
     result::{OrderOutcome, OrderRecord},
-    Clock, OrderStatus, ReqKind,
 };
 
 /// An order record under construction, plus the facts that decide its outcome.
@@ -116,7 +116,9 @@ pub fn build_orders(tape: &[FlightEvent]) -> Vec<OrderRecord> {
             });
         }
 
-        let Some(b) = orders.get_mut(&id) else { continue };
+        let Some(b) = orders.get_mut(&id) else {
+            continue;
+        };
         let rec = &mut b.rec;
         rec.last_seq = ev.seq;
         if ev.clock == Clock::Exchange && rec.exch_arrival_ts.is_none() {
@@ -216,10 +218,10 @@ pub fn build_orders(tape: &[FlightEvent]) -> Vec<OrderRecord> {
 
 #[cfg(test)]
 mod tests {
-    use bb_core::{flight::RiskRule, OrdType, Side, Tif};
+    use bb_core::{OrdType, Side, Tif, flight::RiskRule};
 
     use super::*;
-    use crate::testkit::{Tape, MS};
+    use crate::testkit::{MS, Tape};
 
     #[test]
     fn records_are_sorted_by_order_id_and_cover_the_lifecycle() {

@@ -3,14 +3,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bb_core::{
+    RelNs, ReqKind,
     dataset::{InstrumentMeta, Quantiles},
     flight::{FlightBody, FlightEvent},
     market::BboSeries,
     result::{
-        EquitySample, FillRecord, MarkoutStat, Metrics, OrderOutcome, OrderRecord,
-        MARKOUT_HORIZONS_NS,
+        EquitySample, FillRecord, MARKOUT_HORIZONS_NS, MarkoutStat, Metrics, OrderOutcome,
+        OrderRecord,
     },
-    RelNs, ReqKind,
 };
 
 /// Sets `mid_tick` and `markout_ticks` on every fill from the dataset's top-of-book series.
@@ -200,7 +200,12 @@ pub fn compute_metrics(
                 capture_qty += f.qty;
             }
         }
-        for (i, markout) in f.markout_ticks.iter().take(MARKOUT_HORIZONS_NS.len()).enumerate() {
+        for (i, markout) in f
+            .markout_ticks
+            .iter()
+            .take(MARKOUT_HORIZONS_NS.len())
+            .enumerate()
+        {
             if let Some(m) = markout {
                 markout_sum[i] += m * f.qty;
                 markout_qty[i] += f.qty;
@@ -279,12 +284,12 @@ pub fn compute_metrics(
 
 #[cfg(test)]
 mod tests {
-    use bb_core::{flight::RiskRule, OrderStatus, Side, Tif};
+    use bb_core::{OrderStatus, Side, Tif, flight::RiskRule};
 
     use super::*;
     use crate::{
         build_orders,
-        testkit::{close, equity_sample, fill_record, Tape, INSTRUMENT, MS},
+        testkit::{INSTRUMENT, MS, Tape, close, equity_sample, fill_record},
     };
 
     fn q(values: &[f64]) -> Quantiles {
@@ -296,7 +301,10 @@ mod tests {
         assert_eq!(quantiles(Vec::new()), None);
 
         let one = q(&[7.0]);
-        assert_eq!((one.n, one.min, one.p50, one.p90, one.p99, one.max), (1, 7.0, 7.0, 7.0, 7.0, 7.0));
+        assert_eq!(
+            (one.n, one.min, one.p50, one.p90, one.p99, one.max),
+            (1, 7.0, 7.0, 7.0, 7.0, 7.0)
+        );
         assert_eq!(one.mean, 7.0);
 
         // Unsorted input; n = 3: ceil(1.5) = 2nd, ceil(2.7) = 3rd, ceil(2.97) = 3rd.
@@ -307,7 +315,10 @@ mod tests {
         // n = 10: 5th, 9th, 10th.
         let ten: Vec<f64> = (1..=10).map(f64::from).collect();
         let ten = q(&ten);
-        assert_eq!((ten.min, ten.p50, ten.p90, ten.p99, ten.max), (1.0, 5.0, 9.0, 10.0, 10.0));
+        assert_eq!(
+            (ten.min, ten.p50, ten.p90, ten.p99, ten.max),
+            (1.0, 5.0, 9.0, 10.0, 10.0)
+        );
         assert_eq!(ten.mean, 5.5);
 
         // n = 100: exactly the 50th, 90th and 99th values, not one above.
@@ -349,7 +360,17 @@ mod tests {
         );
 
         // One-sided book at the horizon: unavailable, not guessed.
-        let mut late = vec![fill_record(2, 768, 1_150 * MS, Side::Buy, 203, 1.0, true, 0.0, 1.0)];
+        let mut late = vec![fill_record(
+            2,
+            768,
+            1_150 * MS,
+            Side::Buy,
+            203,
+            1.0,
+            true,
+            0.0,
+            1.0,
+        )];
         enrich_fills(&mut late, &bbo);
         assert_eq!(late[0].mid_tick, Some(202.5));
         assert_eq!(late[0].markout_ticks, vec![None, Some(-4.5), None, None]);
@@ -450,7 +471,10 @@ mod tests {
         assert!(m.risk_halted);
 
         // Fills: 3 of 4 submitted orders filled; 6 of 2 + 1 + 3 + 2 = 8 quantity.
-        assert_eq!((m.fill_count, m.maker_fill_count, m.taker_fill_count), (3, 2, 1));
+        assert_eq!(
+            (m.fill_count, m.maker_fill_count, m.taker_fill_count),
+            (3, 2, 1)
+        );
         assert!(close(m.fill_ratio_orders.unwrap(), 0.75));
         assert!(close(m.fill_ratio_qty.unwrap(), 0.75));
         assert!(close(m.volume, 6.0));
@@ -480,7 +504,10 @@ mod tests {
         assert_eq!(m.markouts.len(), 4);
         assert_eq!(m.markouts[0].horizon_ns, MARKOUT_HORIZONS_NS[0]);
         assert_eq!(m.markouts[0].fills, 3);
-        assert!(close(m.markouts[0].mean_ticks.unwrap(), (2.0 - 2.0 + 3.0) / 6.0));
+        assert!(close(
+            m.markouts[0].mean_ticks.unwrap(),
+            (2.0 - 2.0 + 3.0) / 6.0
+        ));
         assert_eq!(m.markouts[1].fills, 2);
         assert!(close(m.markouts[1].mean_ticks.unwrap(), (4.0 - 3.0) / 5.0));
         assert_eq!(m.markouts[2].fills, 0);
@@ -516,7 +543,11 @@ mod tests {
         assert_eq!(m.mean_abs_position, 0.0);
         assert_eq!(m.spread_capture_ticks, None);
         assert_eq!(m.markouts.len(), MARKOUT_HORIZONS_NS.len());
-        assert!(m.markouts.iter().all(|s| s.fills == 0 && s.mean_ticks.is_none()));
+        assert!(
+            m.markouts
+                .iter()
+                .all(|s| s.fills == 0 && s.mean_ticks.is_none())
+        );
         assert!(!m.risk_halted);
     }
 }
