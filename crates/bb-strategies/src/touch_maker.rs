@@ -81,8 +81,8 @@ impl Strategy for TouchMaker {
 mod tests {
     use super::*;
     use crate::testutil::{
-        INSTRUMENT, cancelled, market, pending_cancel, pending_new, placed, reasons, resting,
-        run, view,
+        INSTRUMENT, cancelled, market, pending_cancel, pending_new, placed, reasons, resting, run,
+        view,
     };
     use bb_core::Tif;
     use bb_core::strategy::order_id;
@@ -102,7 +102,10 @@ mod tests {
     #[test]
     fn joins_both_sides_on_a_fresh_book() {
         let mut s = maker(0, 0.0);
-        let out = run(&mut s, &view(0, market(Some(10_000), Some(10_010)), 0.0, &[]));
+        let out = run(
+            &mut s,
+            &view(0, market(Some(10_000), Some(10_010)), 0.0, &[]),
+        );
         assert_eq!(
             placed(&out),
             vec![
@@ -130,7 +133,10 @@ mod tests {
     #[test]
     fn offset_quotes_behind_the_touch() {
         let mut s = maker(2, 0.0);
-        let out = run(&mut s, &view(0, market(Some(10_000), Some(10_010)), 0.0, &[]));
+        let out = run(
+            &mut s,
+            &view(0, market(Some(10_000), Some(10_010)), 0.0, &[]),
+        );
         assert_eq!(
             placed(&out),
             vec![
@@ -161,7 +167,10 @@ mod tests {
             resting(order_id(0, 0), Side::Buy, 10_000),
             resting(order_id(0, 1), Side::Sell, 10_010),
         ];
-        let out = run(&mut s, &view(1, market(Some(10_001), Some(10_010)), 0.0, &open));
+        let out = run(
+            &mut s,
+            &view(1, market(Some(10_001), Some(10_010)), 0.0, &open),
+        );
         // Only the bid moved, so only the bid is replaced; the ask keeps its queue position.
         assert_eq!(cancelled(&out), vec![order_id(0, 0)]);
         assert_eq!(placed(&out), vec![(0, Side::Buy, 10_001, 1.0, Tif::Gtx)]);
@@ -271,7 +280,10 @@ mod tests {
             pending_new(order_id(0, 0), Side::Buy, 9_990),
             pending_cancel(order_id(0, 1), Side::Sell, 10_020),
         ];
-        let out = run(&mut s, &view(1, market(Some(10_000), Some(10_010)), 0.0, &open));
+        let out = run(
+            &mut s,
+            &view(1, market(Some(10_000), Some(10_010)), 0.0, &open),
+        );
         assert!(cancelled(&out).is_empty());
         assert_eq!(
             placed(&out),
@@ -282,7 +294,10 @@ mod tests {
         );
 
         // Not even when the side is disabled or the book is one-sided.
-        let maxed = run(&mut s, &view(2, market(Some(10_000), Some(10_010)), 3.0, &open));
+        let maxed = run(
+            &mut s,
+            &view(2, market(Some(10_000), Some(10_010)), 3.0, &open),
+        );
         assert!(cancelled(&maxed).is_empty());
         assert!(run(&mut s, &view(3, market(None, Some(10_010)), 0.0, &open)).is_empty());
     }
@@ -296,7 +311,10 @@ mod tests {
             pending_cancel(order_id(0, 0), Side::Buy, 10_000),
             pending_new(order_id(0, 1), Side::Sell, 10_010),
         ];
-        let out = run(&mut s, &view(1, market(Some(10_000), Some(10_010)), 0.0, &open));
+        let out = run(
+            &mut s,
+            &view(1, market(Some(10_000), Some(10_010)), 0.0, &open),
+        );
         assert!(cancelled(&out).is_empty());
         assert_eq!(placed(&out), vec![(0, Side::Buy, 10_000, 1.0, Tif::Gtx)]);
     }

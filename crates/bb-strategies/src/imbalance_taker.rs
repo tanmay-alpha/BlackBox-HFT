@@ -57,16 +57,31 @@ impl ImbalanceTaker {
             return;
         }
         let market = &view.market;
-        let (Some(imbalance), Some(best_bid), Some(best_ask)) =
-            (market.imbalance(), market.best_bid_tick, market.best_ask_tick)
-        else {
+        let (Some(imbalance), Some(best_bid), Some(best_ask)) = (
+            market.imbalance(),
+            market.best_bid_tick,
+            market.best_ask_tick,
+        ) else {
             return;
         };
-        let (side, price_tick, direction, touch, relation, threshold) = if imbalance > p.threshold
-        {
-            (Side::Buy, best_ask, "long", "best ask", "above", p.threshold)
+        let (side, price_tick, direction, touch, relation, threshold) = if imbalance > p.threshold {
+            (
+                Side::Buy,
+                best_ask,
+                "long",
+                "best ask",
+                "above",
+                p.threshold,
+            )
         } else if imbalance < -p.threshold {
-            (Side::Sell, best_bid, "short", "best bid", "below", -p.threshold)
+            (
+                Side::Sell,
+                best_bid,
+                "short",
+                "best bid",
+                "below",
+                -p.threshold,
+            )
         } else {
             return;
         };
@@ -266,7 +281,10 @@ mod tests {
         let retry = run(&mut s, &view(5, bid_heavy(), 0.4, &[]));
         let orders = placed(&retry);
         assert_eq!(orders.len(), 1);
-        assert_eq!((orders[0].0, orders[0].1, orders[0].2), (1, Side::Sell, 10_000));
+        assert_eq!(
+            (orders[0].0, orders[0].1, orders[0].2),
+            (1, Side::Sell, 10_000)
+        );
         assert!((orders[0].3 - 0.4).abs() < 1e-12);
 
         // No bid to sell into: wait.
@@ -290,7 +308,10 @@ mod tests {
     #[test]
     fn honours_cooldown() {
         let mut s = taker(3, 5);
-        assert_eq!(placed(&run(&mut s, &view(0, bid_heavy(), 0.0, &[]))).len(), 1);
+        assert_eq!(
+            placed(&run(&mut s, &view(0, bid_heavy(), 0.0, &[]))).len(),
+            1
+        );
         // The entry expired unfilled; the signal persists but the cooldown blocks re-entry.
         for tick_no in 1..5 {
             assert!(run(&mut s, &view(tick_no, bid_heavy(), 0.0, &[])).is_empty());

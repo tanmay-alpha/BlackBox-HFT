@@ -219,7 +219,7 @@ mod tests {
     /// the per-tick variance is 0.01 and, on a 0.1 s grid, `sigma^2 = 0.1` per second. The book
     /// is 100 ticks wide so that no quote in these tests is clamped.
     fn book(tick_no: u64) -> MarketView {
-        let shift = if tick_no % 2 == 0 { 0 } else { 10 };
+        let shift = if tick_no.is_multiple_of(2) { 0 } else { 10 };
         market(Some(10_000 + shift), Some(10_100 + shift))
     }
 

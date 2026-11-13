@@ -102,8 +102,14 @@ impl Strategy for Scripted {
             let price_tick = match script.price {
                 ScriptedPrice::Tick { tick } => Some(tick),
                 ScriptedPrice::FromTouch { offset } => match script.side {
-                    Side::Buy => view.market.best_bid_tick.map(|bid| bid.saturating_add(offset)),
-                    Side::Sell => view.market.best_ask_tick.map(|ask| ask.saturating_sub(offset)),
+                    Side::Buy => view
+                        .market
+                        .best_bid_tick
+                        .map(|bid| bid.saturating_add(offset)),
+                    Side::Sell => view
+                        .market
+                        .best_ask_tick
+                        .map(|ask| ask.saturating_sub(offset)),
                 },
             };
             let Some(price_tick) = price_tick else {
@@ -134,8 +140,8 @@ impl Strategy for Scripted {
 mod tests {
     use super::*;
     use crate::testutil::{
-        INSTRUMENT, cancelled, market, pending_cancel, pending_new, placed, reasons, resting,
-        run, view,
+        INSTRUMENT, cancelled, market, pending_cancel, pending_new, placed, reasons, resting, run,
+        view,
     };
     use bb_core::{OrdType, Tif};
 
@@ -167,8 +173,20 @@ mod tests {
     fn places_at_the_right_tick_with_both_price_modes() {
         // Listed out of order on purpose: the script is sorted by (at_tick, slot).
         let mut s = scripted(vec![
-            order(3, 1, Side::Sell, ScriptedPrice::FromTouch { offset: -2 }, None),
-            order(3, 0, Side::Buy, ScriptedPrice::FromTouch { offset: 1 }, None),
+            order(
+                3,
+                1,
+                Side::Sell,
+                ScriptedPrice::FromTouch { offset: -2 },
+                None,
+            ),
+            order(
+                3,
+                0,
+                Side::Buy,
+                ScriptedPrice::FromTouch { offset: 1 },
+                None,
+            ),
             order(2, 4, Side::Buy, ScriptedPrice::Tick { tick: 9_950 }, None),
         ]);
         let book = market(Some(10_000), Some(10_010));
@@ -189,7 +207,10 @@ mod tests {
                 (1, Side::Sell, 10_012, 1.0, Tif::Gtc),
             ]
         );
-        assert_eq!(reasons(&out), vec!["demo Buy at tick 3", "demo Sell at tick 3"]);
+        assert_eq!(
+            reasons(&out),
+            vec!["demo Buy at tick 3", "demo Sell at tick 3"]
+        );
 
         for tick_no in 4..10 {
             assert!(run(&mut s, &view(tick_no, book, 0.0, &[])).is_empty());
@@ -304,8 +325,20 @@ mod tests {
     #[test]
     fn skips_permanently_when_the_touch_is_missing() {
         let mut s = scripted(vec![
-            order(1, 0, Side::Buy, ScriptedPrice::FromTouch { offset: 0 }, Some(1)),
-            order(1, 1, Side::Sell, ScriptedPrice::FromTouch { offset: 0 }, None),
+            order(
+                1,
+                0,
+                Side::Buy,
+                ScriptedPrice::FromTouch { offset: 0 },
+                Some(1),
+            ),
+            order(
+                1,
+                1,
+                Side::Sell,
+                ScriptedPrice::FromTouch { offset: 0 },
+                None,
+            ),
         ]);
         // Only the ask exists on tick 1: the sell is placed, the buy is skipped.
         let out = run(&mut s, &view(1, market(None, Some(10_010)), 0.0, &[]));

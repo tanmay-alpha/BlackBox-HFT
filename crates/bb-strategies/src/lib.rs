@@ -41,11 +41,9 @@ pub use touch_maker::TouchMaker;
 pub fn build(cfg: &StrategyConfig, instrument: &InstrumentMeta) -> Box<dyn Strategy> {
     match &cfg.kind {
         StrategyKind::TouchMaker(params) => Box::new(TouchMaker::new(*params, instrument)),
-        StrategyKind::AvellanedaStoikov(params) => Box::new(AvellanedaStoikov::new(
-            *params,
-            cfg.interval_ns,
-            instrument,
-        )),
+        StrategyKind::AvellanedaStoikov(params) => {
+            Box::new(AvellanedaStoikov::new(*params, cfg.interval_ns, instrument))
+        }
         StrategyKind::ImbalanceTaker(params) => Box::new(ImbalanceTaker::new(*params, instrument)),
         StrategyKind::Scripted(params) => Box::new(Scripted::new(params, instrument)),
     }
@@ -149,7 +147,10 @@ mod tests {
         let book = market_with_qty(Some(10_000), Some(10_010), 9.0, 1.0);
 
         // TouchMaker: two post-only quotes at the touch.
-        let out = run(&mut *build(&touch_maker(), &INSTRUMENT), &view(0, book, 0.0, &[]));
+        let out = run(
+            &mut *build(&touch_maker(), &INSTRUMENT),
+            &view(0, book, 0.0, &[]),
+        );
         assert_eq!(
             placed(&out),
             vec![
@@ -172,7 +173,11 @@ mod tests {
                 (1, Side::Sell, 10_007, 1.0, Tif::Gtx),
             ]
         );
-        assert!(reasons(&out).iter().all(|r| r.starts_with("avellaneda_stoikov: ")));
+        assert!(
+            reasons(&out)
+                .iter()
+                .all(|r| r.starts_with("avellaneda_stoikov: "))
+        );
 
         // ImbalanceTaker: one IOC at the opposite touch.
         let out = run(
@@ -183,7 +188,10 @@ mod tests {
         assert!(reasons(&out)[0].starts_with("imbalance_taker: "));
 
         // Scripted: exactly the scripted order, labelled with the script's text.
-        let out = run(&mut *build(&scripted(), &INSTRUMENT), &view(0, book, 0.0, &[]));
+        let out = run(
+            &mut *build(&scripted(), &INSTRUMENT),
+            &view(0, book, 0.0, &[]),
+        );
         assert_eq!(placed(&out), vec![(3, Side::Buy, 9_990, 1.0, Tif::Gtc)]);
         assert_eq!(reasons(&out), vec!["resting bid far from the touch"]);
     }
