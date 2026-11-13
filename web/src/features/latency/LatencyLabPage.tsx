@@ -9,17 +9,17 @@ import { api } from '../../api/client';
 import type {
   Comparison,
   Demo,
-  JsonValue,
   MetricRow,
   OrderPair,
   PairClass,
   RunSummary,
 } from '../../api/types';
+import { ConfigValue, metricLabel } from '../../components/configValue';
 import { assumptionsLabel, strategyLabel } from '../../components/describe';
 import { fmtDuration, fmtNum, fmtSigned, words } from '../../components/fmt';
 import { PageHeader, usePageTitle } from '../../components/page';
 import { Badge, BasisBadge, ClockText, Empty, ErrorBox, Panel, Spinner, useAsync } from '../../components/ui';
-import { outcomeKind } from '../forensics/labels';
+import { fmtSignedDuration, outcomeKind } from '../forensics/labels';
 import { fmtQuoteSigned } from '../runs/format';
 import '../compare/compare.css';
 import './latency.css';
@@ -71,19 +71,24 @@ const UNIT_SUFFIX: Record<string, string> = {
   ticks: 'ticks',
 };
 
+/** Fixed decimals; a value that rounds to zero at this precision prints as an unsigned 0. */
+function fixed(v: number, digits: number): string {
+  return fmtNum(Number(v.toFixed(digits)) === 0 ? 0 : v, digits);
+}
+
 function fmtMetric(v: number | null, unit: string): string {
   if (v === null) return '\u2014';
   switch (unit) {
     case 'count':
-      return fmtNum(v, 0);
+      return fixed(v, 0);
     case 'ratio':
-      return `${(v * 100).toFixed(2)}%`;
+      return `${fixed(v * 100, 2)}%`;
     case 'ns':
       return fmtDuration(v);
     case 'ticks':
-      return fmtNum(v, 3);
+      return fixed(v, 3);
     default:
-      return fmtNum(v, 4);
+      return fixed(v, 4);
   }
 }
 
@@ -93,18 +98,15 @@ function fmtDelta(v: number | null, unit: string): string {
     case 'count':
       return fmtSigned(v, 0);
     case 'ratio':
+      // A difference of two ratios is in percentage points, not percent.
       return `${fmtSigned(v * 100, 2)} pp`;
     case 'ns':
-      return `${v > 0 ? '+' : ''}${fmtDuration(v)}`;
+      return fmtSignedDuration(v);
     case 'ticks':
       return fmtSigned(v, 3);
     default:
       return fmtSigned(v, 4);
   }
-}
-
-function jsonText(v: JsonValue): string {
-  return typeof v === 'string' ? v : JSON.stringify(v);
 }
 
 function parseRuns(raw: string | null): string[] {
@@ -400,8 +402,8 @@ function VariablesPanel({ ids, runs, comparisons }: PairPanelProps) {
                           <th scope="row" className="mono">
                             {d.path}
                           </th>
-                          <td className="mono wrap">{jsonText(d.a)}</td>
-                          <td className="mono wrap">{jsonText(d.b)}</td>
+                          <ConfigValue path={d.path} value={d.a} />
+                          <ConfigValue path={d.path} value={d.b} />
                         </tr>
                       ))}
                     </tbody>
@@ -449,7 +451,7 @@ function MetricsPanel({ ids, runs, comparisons }: PairPanelProps) {
               return (
                 <tr key={k}>
                   <th scope="row" title={k}>
-                    {any.label} <span className="dim small">({UNIT_SUFFIX[any.unit] ?? any.unit})</span>
+                    {metricLabel(any)} <span className="dim small">({UNIT_SUFFIX[any.unit] ?? any.unit})</span>
                   </th>
                   <td className="num">{fmtMetric(any.a, any.unit)}</td>
                   {rowsByKey.map((m, i) => {

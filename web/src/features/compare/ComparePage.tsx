@@ -12,9 +12,9 @@ import type {
   PairClass,
   RunSummary,
 } from "../../api/types";
-import { fmtDuration, fmtDurationExact, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
+import { ConfigValue, metricLabel } from "../../components/configValue";
+import { fmtDuration, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
 import { Badge, Empty, ErrorBox, Panel, Spinner, useAsync } from "../../components/ui";
-import { fractionToBps } from "../../components/describe";
 import { ClockText, EvidenceLegend } from "../forensics/evidence";
 import {
   EM_DASH,
@@ -395,35 +395,6 @@ function ConfigDiffTable({ cmp }: { cmp: Comparison }) {
       </tbody>
     </table>
   );
-}
-
-/**
- * A differing config value. Nanosecond fields also read as a duration and fee fractions as basis
- * points; the stored value is always shown.
- */
-function ConfigValue({ path, value }: { path: string; value: unknown }) {
-  const raw = JSON.stringify(value);
-  if (path.endsWith("_ns") && typeof value === "number" && Number.isFinite(value)) {
-    return (
-      <td className="mono cmp-json" title={`${raw} ns as stored`}>
-        {fmtDurationExact(value)} <span className="dim">({fmtNum(value, 0)} ns)</span>
-      </td>
-    );
-  }
-  if (path.startsWith("execution.fees.") && typeof value === "number" && Number.isFinite(value)) {
-    return (
-      <td className="mono cmp-json">
-        {raw} <span className="dim">({fractionToBps(value)} bp)</span>
-      </td>
-    );
-  }
-  return <td className="mono cmp-json">{raw}</td>;
-}
-
-/** Server labels markout horizons in raw milliseconds (`Markout 30000 ms`); show them as durations. */
-function metricLabel(row: MetricRow): string {
-  const m = /^markout_(\d+)ms$/.exec(row.key);
-  return m ? `Markout ${fmtDuration(Number(m[1]) * 1_000_000)}` : row.label;
 }
 
 const UNIT_LABEL: Record<string, string> = {

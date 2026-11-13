@@ -210,10 +210,6 @@
   white-space: nowrap;
 }
 
-.cmp-json {
-  overflow-wrap: anywhere;
-}
-
 .cmp-diffs tbody th,
 .cmp-metrics tbody th,
 .cmp-classes tbody th,
