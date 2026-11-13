@@ -282,7 +282,23 @@ pub fn export_static(
     };
     for (a, b) in &pairs {
         let (run_a, run_b) = (load(store, a)?, load(store, b)?);
-        let comparison = bb_forensics::compare_runs(&run_a, &label(a), &run_b, &label(b));
+        // Same rule as the server: the instrument comes from the run's own dataset, refused if
+        // its events changed since the run.
+        let inst_a = datasets::manifest_for_run(data_root, &run_a.manifest)?.instrument;
+        let inst_b = datasets::manifest_for_run(data_root, &run_b.manifest)?.instrument;
+        let (label_a, label_b) = (label(a), label(b));
+        let comparison = bb_forensics::compare_runs(
+            bb_forensics::CompareInput {
+                run: &run_a,
+                label: &label_a,
+                instrument: Some(&inst_a),
+            },
+            bb_forensics::CompareInput {
+                run: &run_b,
+                label: &label_b,
+                instrument: Some(&inst_b),
+            },
+        );
         let key = format!("{a}__{b}");
         bundle.json(&format!("api/compare/{key}.json"), &comparison)?;
         compares.push(key);

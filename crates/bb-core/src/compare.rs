@@ -1,12 +1,14 @@
 //! Counterfactual comparison of two runs and bounded sensitivity grids.
 //!
-//! A comparison never attributes a P&L difference to one parameter. It reports which parameters
-//! differ, which decisions and outcomes diverged, and which statements the two simulations support.
+//! A comparison never attributes a P&L difference to one parameter. It first checks whether the
+//! two runs can be compared order by order at all ([`Eligibility`]), then reports which parameters
+//! differ, which decisions, outcomes and timings diverged, and which statements the two
+//! simulations support.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Basis, RelNs, Side,
+    Basis, OrdType, OrderStatus, RelNs, Side, Tif,
     config::{QueueModelConfig, RunConfig},
     result::{Metrics, OrderOutcome},
 };
@@ -37,29 +39,101 @@ pub struct MetricRow {
     pub delta: Option<f64>,
 }
 
+/// What an eligibility difference does to a comparison.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EligibilityEffect {
+    /// The same order id does not name the same decision in both runs (different market,
+    /// instrument, strategy, decision grid or simulator revision). No per-order alignment is
+    /// produced; metric deltas are still returned, labelled not like-for-like.
+    NoAlignment,
+    /// Order ids still name the same decisions, but metric deltas and pair differences also
+    /// reflect this field, not only the configured assumptions.
+    NotLikeForLike,
+}
+
+/// One identity field that differs between the runs (or could not be verified).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EligibilityReason {
+    /// Dotted name, e.g. `strategy.interval_ns`, `dataset.sha256`, `instrument.tick_size`.
+    pub field: String,
+    /// The value in run A; `null` when unknown.
+    pub a: serde_json::Value,
+    pub b: serde_json::Value,
+    pub effect: EligibilityEffect,
+    pub explanation: String,
+}
+
+/// Whether two runs can be compared order by order and like for like. Checked before any
+/// per-order alignment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Eligibility {
+    /// Per-order alignment was produced: no reason has [`EligibilityEffect::NoAlignment`].
+    pub aligned: bool,
+    /// No reason at all: metric deltas compare the same market, instrument, strategy kind,
+    /// decision grid, sampling and simulator.
+    pub like_for_like: bool,
+    pub reasons: Vec<EligibilityReason>,
+}
+
 /// What one scenario did with a decision.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DecisionOutcome {
     pub side: Side,
     pub price_tick: i64,
     pub qty: f64,
+    pub tif: Tif,
+    pub ord_type: OrdType,
+    /// Local clock.
+    pub decision_ts: RelNs,
     pub outcome: OrderOutcome,
+    pub final_status: OrderStatus,
     pub filled_qty: f64,
     pub avg_fill_tick: Option<f64>,
+    pub maker_qty: f64,
+    pub taker_qty: f64,
+    pub fees: f64,
+    pub fill_count: u32,
     pub queue_ahead_at_entry: Option<f64>,
+    /// Exchange clock.
     pub exch_arrival_ts: Option<RelNs>,
+    /// Local clock.
+    pub first_response_ts: Option<RelNs>,
+    /// Exchange clock.
     pub first_fill_ts: Option<RelNs>,
+    /// Exchange clock.
+    pub last_fill_ts: Option<RelNs>,
+    /// Local clock.
+    pub cancel_sent_ts: Option<RelNs>,
+    /// Exchange clock: when the order became terminal (its completion).
+    pub terminal_ts: Option<RelNs>,
 }
 
-/// How a pair of same-id orders relate.
+/// How a pair of same-id orders relate. For two present orders the classes are checked in the
+/// order listed; the first group that differs decides the class. `identical` therefore means
+/// that nothing below differs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairClass {
-    /// Same decision, same outcome and filled quantity.
+    /// Same decision (side, price, quantity, time in force, order type) and decision time, same
+    /// exchange arrival, first response, cancel and terminal times, same final status and
+    /// outcome, every fill equal in time, price, quantity, maker/taker and fee, and the same
+    /// recorded lifecycle events.
     Identical,
-    /// The strategy made the same decision (side, price, quantity) in both scenarios but the
-    /// simulated execution differed. This is a direct effect of the execution assumptions on
-    /// this order, given everything that had already diverged before it.
+    /// Decision, timing and every fill are identical, but the recorded lifecycle differs (for
+    /// example the modeled queue ahead, queue updates, a rejected cancel or the market the
+    /// strategy saw): identical fills under distinct causal histories.
+    SameFillsDifferentHistory,
+    /// Decision, timing and fills (time, price, quantity, maker/taker) are identical; only the
+    /// fees charged differ.
+    SameFillsDifferentFees,
+    /// Same decision, outcome and fills (price, quantity, maker/taker), but at least one
+    /// timestamp differs: decision, exchange arrival, first response, a fill, cancel or terminal
+    /// time (or exists in only one run).
+    SameOutcomeDifferentTiming,
+    /// The strategy made the same decision in both scenarios but the simulated execution
+    /// differed: outcome, final status, filled quantity, fill count, or a fill's price, quantity
+    /// or maker/taker side.
     SameDecisionDifferentOutcome,
     /// The strategy decided differently at this tick/slot: its inputs (position, working orders)
     /// had already diverged.
@@ -70,13 +144,69 @@ pub enum PairClass {
     OnlyB,
 }
 
+impl PairClass {
+    /// The decision or its fills differ (or exist in one run only), as opposed to a pair whose
+    /// decision and fills agree and that differs only in timing, fees or recorded history.
+    pub fn is_outcome_divergence(self) -> bool {
+        matches!(
+            self,
+            PairClass::SameDecisionDifferentOutcome
+                | PairClass::DifferentDecision
+                | PairClass::OnlyA
+                | PairClass::OnlyB
+        )
+    }
+}
+
+/// Per-pair timing deltas, B minus A in nanoseconds. A field is `null` unless both orders have
+/// the timestamp.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairTiming {
+    pub decision_ns: Option<i64>,
+    pub exch_arrival_ns: Option<i64>,
+    pub first_response_ns: Option<i64>,
+    pub first_fill_ns: Option<i64>,
+    /// Terminal (completion) time at the exchange.
+    pub completion_ns: Option<i64>,
+}
+
+/// Distribution of one timing delta (B minus A, nanoseconds) over the pairs that have it.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeltaStats {
+    /// Pairs where both orders have the timestamp.
+    pub count: u64,
+    /// Of those, pairs where the delta is not zero.
+    pub nonzero: u64,
+    pub min: Option<i64>,
+    /// Mean of the two middle values when `count` is even.
+    pub median: Option<f64>,
+    pub max: Option<i64>,
+}
+
+/// Timing deltas summarised over every pair present in both runs with the same decision (all
+/// classes except `different_decision`, `only_a` and `only_b`), identical pairs included.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimingSummary {
+    pub decision: DeltaStats,
+    pub exch_arrival: DeltaStats,
+    pub first_response: DeltaStats,
+    pub first_fill: DeltaStats,
+    pub completion: DeltaStats,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OrderPair {
     pub order_id: u64,
     pub tick_no: u64,
-    /// Local-clock decision time (identical in both scenarios by construction of the tick grid).
+    /// Local-clock decision time in A (in B for `only_b`). Each side's own time is in `a`/`b`.
     pub decision_ts: RelNs,
     pub class: PairClass,
+    /// Every compared field that differs, most significant group first (e.g. `price_tick`,
+    /// `outcome`, `fills`, `exch_arrival_ts`, `fill_ts`, `fees`, `queue_ahead_at_entry`,
+    /// `lifecycle_events`). Empty for `identical`, `only_a` and `only_b`.
+    pub differences: Vec<String>,
+    /// `null` unless the order exists in both runs.
+    pub timing: Option<PairTiming>,
     pub a: Option<DecisionOutcome>,
     pub b: Option<DecisionOutcome>,
 }
@@ -84,13 +214,20 @@ pub struct OrderPair {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Alignment {
     pub identical: u64,
+    pub same_fills_different_history: u64,
+    pub same_fills_different_fees: u64,
+    pub same_outcome_different_timing: u64,
     pub same_decision_different_outcome: u64,
     pub different_decision: u64,
     pub only_a: u64,
     pub only_b: u64,
-    /// The earliest non-identical pair. Everything before it is the same in both scenarios;
-    /// everything after it may differ as a knock-on effect.
+    /// The earliest non-identical pair in decision order (tick, slot). Every pair before it is
+    /// `identical`; everything after it may differ as a knock-on effect.
     pub first_divergence: Option<OrderPair>,
+    /// The earliest pair whose decision or fills differ (see [`PairClass::is_outcome_divergence`]).
+    /// Pairs before it may differ in timing, fees or recorded history, never in decision or fills.
+    pub first_outcome_divergence: Option<OrderPair>,
+    pub timing: TimingSummary,
     /// Non-identical pairs in decision order, capped at `pairs_cap`.
     pub pairs: Vec<OrderPair>,
     pub pairs_cap: u64,
@@ -110,13 +247,12 @@ pub struct Comparison {
     pub run_b: String,
     pub label_a: String,
     pub label_b: String,
-    /// Both runs used the same dataset hash.
-    pub same_dataset: bool,
-    /// Both runs used the same strategy configuration.
-    pub same_strategy: bool,
+    pub eligibility: Eligibility,
     pub config_diffs: Vec<ConfigDiff>,
+    /// Returned even when `eligibility.like_for_like` is false; they are then not like-for-like.
     pub metrics: Vec<MetricRow>,
-    pub alignment: Alignment,
+    /// `None` when `eligibility.aligned` is false: order ids would not name the same decisions.
+    pub alignment: Option<Alignment>,
     /// Supported and unsupported readings of the difference.
     pub interpretation: Vec<InterpretationNote>,
 }

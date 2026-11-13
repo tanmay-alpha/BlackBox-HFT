@@ -21,7 +21,7 @@ use bb_core::{
     result::{EquitySample, FillRecord},
 };
 
-pub use compare::compare_runs;
+pub use compare::{CompareInput, compare_runs, config_diffs};
 pub use explain::explain_order;
 pub use metrics::{compute_metrics, enrich_fills};
 pub use orders::build_orders;

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type { Download, Page, Response } from '@playwright/test';
-import type { Demo, OrderDetail, RunConfig, RunResult, RunSummary } from '../src/api/types';
+import type { Comparison, Demo, OrderDetail, RunConfig, RunResult, RunSummary } from '../src/api/types';
 import { test, expect } from './fixtures';
 
 function panel(page: Page, title: string) {
@@ -70,9 +70,13 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
     await expect(experiment.getByText('Controlled', { exact: true })).toBeVisible();
     for (const varied of demo.varied) await expect(experiment).toContainText(varied);
     for (const controlled of demo.controlled) await expect(experiment).toContainText(controlled);
-    await expect(panel(page, 'Varied versus controlled').getByRole('table')).toBeVisible();
+    const variables = panel(page, 'Varied versus controlled');
+    await expect(variables.getByRole('table')).toBeVisible();
+    await expect(variables).toContainText('aligned by decision');
+    await expect(variables).not.toContainText('not like-for-like');
     const divergence = panel(page, 'Decision alignment and first divergence');
     await expect(divergence).toContainText('First divergence: order');
+    await expect(divergence).toContainText('Every pair before it is identical, timing included.');
     await expect(divergence.getByRole('link', { name: 'Baseline forensics', exact: true })).toBeVisible();
   });
 
@@ -135,6 +139,19 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
     const cells = rows.nth(1).getByRole('cell');
     await expect(cells.nth(2)).toHaveText(/[+\-\d]/);
     await expect(page.getByRole('region', { name: 'Scenarios' })).toContainText(ids[0]);
+    // 1 ms versus 50 ms each way on the same grid: aligned, like-for-like, and every pair that
+    // reached the exchange in both runs arrived exactly 49 ms later, so none of them is identical.
+    const compared = await request.post('/api/compare', { data: { a: ids[0], b: ids[1] } });
+    expect(compared.ok()).toBeTruthy();
+    const comparison = (await compared.json()) as Comparison;
+    expect(comparison.eligibility).toEqual({ aligned: true, like_for_like: true, reasons: [] });
+    const arrival = comparison.alignment!.timing.exch_arrival;
+    expect(arrival.count).toBeGreaterThan(0);
+    expect([arrival.nonzero, arrival.min, arrival.max]).toEqual([arrival.count, 49_000_000, 49_000_000]);
+    const alignment = panel(page, 'Order alignment');
+    await expect(alignment.getByRole('row', { name: /^Exchange arrival/ })).toContainText(String(arrival.count));
+    await expect(alignment).toContainText('Same outcome, different timing');
+    await expect(page.getByRole('note', { name: 'Comparison eligibility' })).toHaveCount(0);
     await expect(page.getByRole('region', { name: 'Scenarios' })).toContainText(ids[1]);
   });
 

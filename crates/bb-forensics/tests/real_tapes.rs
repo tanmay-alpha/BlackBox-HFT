@@ -1,9 +1,10 @@
 //! Exercise the forensics contract against real recorder output, not hand-authored events.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bb_core::{
-    Clock, OrderStatus, ReqKind,
+    Clock, OrderStatus, ReqKind, Source,
+    compare::{EligibilityEffect, PairClass},
     config::{
         ExchangeModel, ExecutionConfig, FeeConfig, ImbalanceTakerParams, OrderLatencyConfig,
         QueueModelConfig, RecordConfig, RiskConfig, RunConfig, StrategyConfig, StrategyKind,
@@ -12,11 +13,16 @@ use bb_core::{
     dataset::LocalTsProvenance,
     explain::{Question, Verdict},
     flight::{FlightBody, FlightEvent},
-    result::{DatasetRef, EngineInfo, OrderOutcome, RunManifest, RunResult},
+    result::{DatasetRef, EngineInfo, OrderOutcome, OrderRecord, RunManifest, RunResult},
 };
-use bb_data::synthetic::{SyntheticConfig, generate};
-use bb_forensics::{build_orders, compare_runs, compute_metrics, explain_order, result_sha256};
-use bb_sim::{SimInput, simulate};
+use bb_data::{
+    BuiltDataset,
+    synthetic::{SyntheticConfig, generate},
+};
+use bb_forensics::{
+    CompareInput, build_orders, compare_runs, compute_metrics, explain_order, result_sha256,
+};
+use bb_sim::{SimInput, SimOutput, simulate};
 
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
@@ -257,57 +263,270 @@ fn synthetic_recorder_tapes_support_orders_explanations_metrics_and_self_compari
                 orders.iter().map(|o| u64::from(o.fill_count)).sum::<u64>(),
                 "{context}"
             );
-            let run = RunResult {
-                manifest: RunManifest {
-                    contract_version: bb_core::CONTRACT_VERSION,
-                    run_id: "real-tape-test".into(),
-                    blackbox_version: env!("CARGO_PKG_VERSION").into(),
-                    simulation_revision: bb_core::SIMULATION_REVISION,
-                    engine: EngineInfo {
-                        name: bb_core::ENGINE_NAME.into(),
-                        version: bb_core::ENGINE_VERSION.into(),
-                        features: vec!["backtest".into()],
-                    },
-                    platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
-                    profile: "debug".into(),
-                    dataset: DatasetRef {
-                        id: data.manifest.id.clone(),
-                        sha256: data.manifest.events_sha256.clone(),
-                        rows: data.events.len() as u64,
-                        origin_ns: synthetic.origin_ns.to_string(),
-                    },
-                    config,
-                    config_sha256: String::new(),
-                    result_sha256: result_sha256(&out.tape, &out.fills, &out.equity),
-                    created_unix_ms: 0,
-                    wall_time_ms: 0,
+            let run = assemble(&data, synthetic.origin_ns, config, out);
+            assert_eq!(run.orders, orders, "{context}");
+            assert_eq!(run.metrics, metrics, "{context}");
+            let comparison = compare_runs(
+                CompareInput {
+                    run: &run,
+                    label: "original",
+                    instrument: Some(instrument),
                 },
-                metrics,
-                engine_check: out.engine_check,
-                ticks: out.ticks,
-                orders,
-                fills: out.fills,
-                equity: out.equity,
-                tape: out.tape,
-            };
-            let comparison = compare_runs(&run, "original", &run, "self");
-            assert_eq!(
-                comparison.alignment.identical,
-                run.orders.len() as u64,
-                "{context}"
+                CompareInput {
+                    run: &run,
+                    label: "self",
+                    instrument: Some(instrument),
+                },
             );
-            assert_eq!(
-                (
-                    comparison.alignment.same_decision_different_outcome,
-                    comparison.alignment.different_decision,
-                    comparison.alignment.only_a,
-                    comparison.alignment.only_b
-                ),
-                (0, 0, 0, 0),
-                "{context}"
-            );
-            assert!(comparison.alignment.first_divergence.is_none(), "{context}");
-            assert!(comparison.alignment.pairs.is_empty(), "{context}");
+            assert!(comparison.eligibility.like_for_like, "{context}");
+            let alignment = comparison.alignment.expect("a run aligns with itself");
+            assert_eq!(alignment.identical, run.orders.len() as u64, "{context}");
+            assert!(alignment.first_divergence.is_none(), "{context}");
+            assert!(alignment.pairs.is_empty(), "{context}");
+            assert_eq!(alignment.timing.exch_arrival.nonzero, 0, "{context}");
+            assert_eq!(alignment.timing.first_fill.nonzero, 0, "{context}");
         }
     }
+}
+
+/// A stored-run-shaped result for `out`, with orders and metrics derived by this crate.
+fn assemble(data: &BuiltDataset, origin_ns: i64, config: RunConfig, out: SimOutput) -> RunResult {
+    let orders = build_orders(&out.tape);
+    let metrics = compute_metrics(
+        &out.tape,
+        &orders,
+        &out.fills,
+        &out.equity,
+        &data.manifest.instrument,
+    );
+    RunResult {
+        manifest: RunManifest {
+            contract_version: bb_core::CONTRACT_VERSION,
+            run_id: "real-tape-test".into(),
+            blackbox_version: env!("CARGO_PKG_VERSION").into(),
+            simulation_revision: bb_core::SIMULATION_REVISION,
+            engine: EngineInfo {
+                name: bb_core::ENGINE_NAME.into(),
+                version: bb_core::ENGINE_VERSION.into(),
+                features: vec!["backtest".into()],
+            },
+            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            profile: "debug".into(),
+            dataset: DatasetRef {
+                id: data.manifest.id.clone(),
+                sha256: data.manifest.events_sha256.clone(),
+                rows: data.events.len() as u64,
+                origin_ns: origin_ns.to_string(),
+            },
+            config,
+            config_sha256: String::new(),
+            result_sha256: result_sha256(&out.tape, &out.fills, &out.equity),
+            created_unix_ms: 0,
+            wall_time_ms: 0,
+        },
+        metrics,
+        engine_check: out.engine_check,
+        ticks: out.ticks,
+        orders,
+        fills: out.fills,
+        equity: out.equity,
+        tape: out.tape,
+    }
+}
+
+/// The touch maker on `data` with the given queue model and evaluation interval.
+fn simulated_maker(
+    data: &BuiltDataset,
+    origin_ns: i64,
+    queue_model: QueueModelConfig,
+    interval_ns: i64,
+) -> RunResult {
+    let lot = data.manifest.instrument.lot_size;
+    let config = RunConfig {
+        dataset_id: data.manifest.id.clone(),
+        strategy: StrategyConfig {
+            interval_ns,
+            kind: StrategyKind::TouchMaker(TouchMakerParams {
+                order_qty: 5.0 * lot,
+                max_position: 40.0 * lot,
+                offset_ticks: 0,
+                skew_ticks_per_unit: 0.5,
+            }),
+        },
+        execution: ExecutionConfig {
+            exchange_model: ExchangeModel::NoPartialFill,
+            queue_model,
+            order_latency: OrderLatencyConfig::Constant {
+                entry_ns: 1_000_000,
+                response_ns: 1_000_000,
+            },
+            feed_latency_offset_ns: 0,
+            fees: FeeConfig {
+                maker: 0.0002,
+                taker: 0.0005,
+            },
+        },
+        risk: RiskConfig {
+            max_position: 60.0 * lot,
+            max_order_qty: 20.0 * lot,
+            max_open_orders: 6,
+            max_drawdown: None,
+        },
+        record: RecordConfig::default(),
+        seed: 7,
+    };
+    let out = simulate(
+        &SimInput {
+            events: &data.events,
+            instrument: data.manifest.instrument,
+            origin_ns,
+            config: &config,
+        },
+        bb_strategies::build(&config.strategy, &data.manifest.instrument),
+    )
+    .expect("simulate generated dataset");
+    assemble(data, origin_ns, config, out)
+}
+
+fn compare<'a>(
+    data: &'a BuiltDataset,
+    a: &'a RunResult,
+    b: &'a RunResult,
+) -> bb_core::compare::Comparison {
+    let side = |run: &'a RunResult, label: &'a str| CompareInput {
+        run,
+        label,
+        instrument: Some(&data.manifest.instrument),
+    };
+    compare_runs(side(a, "A"), side(b, "B"))
+}
+
+/// Each order's lifecycle without tape positions: what "the same recorded lifecycle" means.
+type Lifecycle = Vec<(i64, Clock, Source, FlightBody)>;
+
+fn lifecycles(run: &RunResult) -> BTreeMap<u64, Lifecycle> {
+    let mut out: BTreeMap<u64, Lifecycle> = BTreeMap::new();
+    for e in &run.tape {
+        if let Some(id) = e.order_id {
+            out.entry(id)
+                .or_default()
+                .push((e.ts, e.clock, e.source, e.body.clone()));
+        }
+    }
+    out
+}
+
+/// AT-2 on recorder output: a queue-model switch (BASELINE_AUDIT §5.1). Re-derives, independently
+/// of the classifier, that a pair is `identical` exactly when the two order records (apart from
+/// tape positions) and lifecycles are equal, and so that every pair before the first divergence
+/// really is identical, timing included.
+#[test]
+fn queue_model_switch_never_hides_a_difference_before_the_first_divergence() {
+    let synthetic = SyntheticConfig {
+        duration_ns: 20_000_000_000,
+        ..SyntheticConfig::default()
+    };
+    let data = generate(&synthetic).expect("generate short synthetic market");
+    let a = simulated_maker(
+        &data,
+        synthetic.origin_ns,
+        QueueModelConfig::PowerProb { n: 3.0 },
+        5_000_000,
+    );
+    let b = simulated_maker(
+        &data,
+        synthetic.origin_ns,
+        QueueModelConfig::RiskAdverse,
+        5_000_000,
+    );
+    let c = compare(&data, &a, &b);
+    assert!(c.eligibility.like_for_like);
+    let al = c
+        .alignment
+        .as_ref()
+        .expect("same dataset and grid: aligned");
+    let first = al
+        .first_divergence
+        .as_ref()
+        .expect("the queue model changes at least one recorded lifecycle");
+
+    let (la, lb) = (lifecycles(&a), lifecycles(&b));
+    let strip = |o: &OrderRecord| OrderRecord {
+        first_seq: 0,
+        last_seq: 0,
+        ..o.clone()
+    };
+    let ids_a: BTreeMap<u64, &OrderRecord> = a.orders.iter().map(|o| (o.order_id, o)).collect();
+    let ids_b: BTreeMap<u64, &OrderRecord> = b.orders.iter().map(|o| (o.order_id, o)).collect();
+    let listed: BTreeMap<u64, PairClass> = al.pairs.iter().map(|p| (p.order_id, p.class)).collect();
+    let horizon = if al.pairs_truncated {
+        al.pairs.last().unwrap().order_id
+    } else {
+        u64::MAX
+    };
+    let all: BTreeSet<u64> = ids_a.keys().chain(ids_b.keys()).copied().collect();
+    let mut checked = 0;
+    for id in all.into_iter().take_while(|&id| id <= horizon) {
+        let same = match (ids_a.get(&id), ids_b.get(&id)) {
+            (Some(x), Some(y)) => strip(x) == strip(y) && la[&id] == lb[&id],
+            _ => false,
+        };
+        assert_eq!(same, !listed.contains_key(&id), "order {id}");
+        if id < first.order_id {
+            assert!(same, "order {id} precedes the first divergence but differs");
+        }
+        checked += 1;
+    }
+    assert!(checked > 0);
+    let total = al.identical
+        + al.same_fills_different_history
+        + al.same_fills_different_fees
+        + al.same_outcome_different_timing
+        + al.same_decision_different_outcome
+        + al.different_decision
+        + al.only_a
+        + al.only_b;
+    assert_eq!(
+        total,
+        ids_a
+            .keys()
+            .chain(ids_b.keys())
+            .collect::<BTreeSet<_>>()
+            .len() as u64
+    );
+    // Only a fee change could produce this class; the queue model never does.
+    assert_eq!(al.same_fills_different_fees, 0);
+}
+
+/// AT-1 on recorder output: a 5 ms versus 10 ms evaluation interval is refused alignment.
+#[test]
+fn different_intervals_on_real_tapes_refuse_alignment() {
+    let synthetic = SyntheticConfig {
+        duration_ns: 5_000_000_000,
+        ..SyntheticConfig::default()
+    };
+    let data = generate(&synthetic).expect("generate short synthetic market");
+    let a = simulated_maker(
+        &data,
+        synthetic.origin_ns,
+        QueueModelConfig::RiskAdverse,
+        5_000_000,
+    );
+    let b = simulated_maker(
+        &data,
+        synthetic.origin_ns,
+        QueueModelConfig::RiskAdverse,
+        10_000_000,
+    );
+    let c = compare(&data, &a, &b);
+    assert!(c.alignment.is_none());
+    assert_eq!(
+        c.eligibility
+            .reasons
+            .iter()
+            .map(|r| (r.field.as_str(), r.effect))
+            .collect::<Vec<_>>(),
+        [("strategy.interval_ns", EligibilityEffect::NoAlignment)]
+    );
+    assert!(!c.metrics.is_empty());
 }

@@ -19,7 +19,7 @@ use bb_app::{
     store::{FsRunStore, RunStore},
 };
 use bb_core::{
-    compare::{Comparison, DecisionOutcome, GridResult, GridSpec, OrderPair},
+    compare::{Comparison, DecisionOutcome, DeltaStats, GridResult, GridSpec, OrderPair},
     config::RunConfig,
     dataset::{DatasetManifest, Quantiles},
     result::{RunResult, RunSummary},
@@ -610,8 +610,18 @@ fn cmd_demos(paths: &Paths, dataset: Option<&str>, execute: bool) -> Result<()> 
                 println!("  Stored simulated run: {}", summary.manifest.run_id);
                 let result = load_run(store, &summary.manifest.run_id)?;
                 if let Some((first, label)) = &baseline {
-                    let comparison =
-                        bb_forensics::compare_runs(first, label, &result, &scenario.label);
+                    let comparison = bb_forensics::compare_runs(
+                        bb_forensics::CompareInput {
+                            run: first,
+                            label,
+                            instrument: Some(&manifest.instrument),
+                        },
+                        bb_forensics::CompareInput {
+                            run: &result,
+                            label: &scenario.label,
+                            instrument: Some(&manifest.instrument),
+                        },
+                    );
                     print_comparison(&comparison);
                 } else {
                     baseline = Some((result, scenario.label.clone()));
@@ -889,10 +899,15 @@ fn metric_value(value: Option<f64>, unit: &str) -> String {
 fn decision_text(outcome: Option<&DecisionOutcome>) -> String {
     match outcome {
         Some(d) => format!(
-            "{} {} @ tick {} -> {} (filled {})",
+            "{} {} @ tick {} decided at {:.6} s, arrival {}, first fill {} -> {} (filled {})",
             tag(&d.side),
             d.qty,
             d.price_tick,
+            seconds(d.decision_ts),
+            d.exch_arrival_ts
+                .map_or_else(|| "-".to_string(), |t| format!("{:.6} s", seconds(t))),
+            d.first_fill_ts
+                .map_or_else(|| "-".to_string(), |t| format!("{:.6} s", seconds(t))),
             tag(&d.outcome),
             d.filled_qty
         ),
@@ -908,17 +923,48 @@ fn print_pair(pair: &OrderPair) {
         seconds(pair.decision_ts),
         tag(&pair.class)
     );
+    if !pair.differences.is_empty() {
+        println!("    differs in: {}", pair.differences.join(", "));
+    }
     println!("    A: {}", decision_text(pair.a.as_ref()));
     println!("    B: {}", decision_text(pair.b.as_ref()));
+}
+
+fn print_delta_stats(name: &str, s: &DeltaStats) {
+    let ns = |v: Option<i64>| v.map_or_else(|| "-".to_string(), |v| v.to_string());
+    println!(
+        "  {name:<15} pairs {:>7}, nonzero {:>7}, min {:>12} ns, median {:>14} ns, max {:>12} ns",
+        s.count,
+        s.nonzero,
+        ns(s.min),
+        s.median
+            .map_or_else(|| "-".to_string(), |v| format!("{v:.1}")),
+        ns(s.max)
+    );
 }
 
 fn print_comparison(c: &Comparison) {
     println!("A: run {} ({})", c.run_a, c.label_a);
     println!("B: run {} ({})", c.run_b, c.label_b);
     println!(
-        "same dataset: {}, same strategy configuration: {}",
-        c.same_dataset, c.same_strategy
+        "per-order alignment: {}, like-for-like: {}",
+        if c.eligibility.aligned { "yes" } else { "no" },
+        if c.eligibility.like_for_like {
+            "yes"
+        } else {
+            "no"
+        }
     );
+    for r in &c.eligibility.reasons {
+        println!(
+            "  {} [{}]: A = {}, B = {}. {}",
+            r.field,
+            tag(&r.effect),
+            r.a,
+            r.b,
+            r.explanation
+        );
+    }
     println!();
     if c.config_diffs.is_empty() {
         println!("Configuration: identical.");
@@ -936,6 +982,9 @@ fn print_comparison(c: &Comparison) {
         .max()
         .unwrap_or(0)
         .max("METRIC".len());
+    if !c.eligibility.like_for_like {
+        println!("Metric deltas are not like-for-like (see the reasons above).");
+    }
     println!(
         "{:<width$}  {:>18}  {:>18}  {:>18}",
         "METRIC", "A", "B", "B - A"
@@ -951,18 +1000,45 @@ fn print_comparison(c: &Comparison) {
         );
     }
     println!();
-    let a = &c.alignment;
-    println!(
-        "Decisions: {} identical, {} same decision with a different outcome, {} different \
-         decisions, {} only in A, {} only in B",
-        a.identical, a.same_decision_different_outcome, a.different_decision, a.only_a, a.only_b
-    );
-    match &a.first_divergence {
-        Some(pair) => {
-            println!("First divergence (everything before it is the same in both runs):");
-            print_pair(pair);
+    match &c.alignment {
+        None => println!("Decisions: not aligned; order ids do not name the same decisions."),
+        Some(a) => {
+            println!(
+                "Decisions: {} identical, {} same fills with a different recorded history, {} same \
+                 fills with different fees, {} same outcome with different timing, {} same \
+                 decision with a different outcome, {} different decisions, {} only in A, {} only \
+                 in B",
+                a.identical,
+                a.same_fills_different_history,
+                a.same_fills_different_fees,
+                a.same_outcome_different_timing,
+                a.same_decision_different_outcome,
+                a.different_decision,
+                a.only_a,
+                a.only_b
+            );
+            println!("Timing deltas (B - A) over pairs with the same decision:");
+            print_delta_stats("decision", &a.timing.decision);
+            print_delta_stats("exch arrival", &a.timing.exch_arrival);
+            print_delta_stats("first response", &a.timing.first_response);
+            print_delta_stats("first fill", &a.timing.first_fill);
+            print_delta_stats("completion", &a.timing.completion);
+            match &a.first_divergence {
+                Some(pair) => {
+                    println!(
+                        "First divergence (every pair before it is identical, timing included):"
+                    );
+                    print_pair(pair);
+                }
+                None => println!("The two runs never diverge."),
+            }
+            if let Some(pair) = &a.first_outcome_divergence
+                && a.first_divergence.as_ref() != Some(pair)
+            {
+                println!("First difference in a decision or its fills:");
+                print_pair(pair);
+            }
         }
-        None => println!("The two runs never diverge."),
     }
     println!();
     println!("Interpretation (each statement tagged with its basis):");
@@ -977,7 +1053,24 @@ fn cmd_compare(paths: &Paths, run_a: &str, run_b: &str) -> Result<()> {
     let label_b = load_summary(&store, run_b)?.label;
     let a = load_run(&store, run_a)?;
     let b = load_run(&store, run_b)?;
-    let comparison = bb_forensics::compare_runs(&a, &label_a, &b, &label_b);
+    let instrument = |run: &RunResult| {
+        datasets::manifest_for_run(&paths.datasets, &run.manifest)
+            .ok()
+            .map(|m| m.instrument)
+    };
+    let (inst_a, inst_b) = (instrument(&a), instrument(&b));
+    let comparison = bb_forensics::compare_runs(
+        bb_forensics::CompareInput {
+            run: &a,
+            label: &label_a,
+            instrument: inst_a.as_ref(),
+        },
+        bb_forensics::CompareInput {
+            run: &b,
+            label: &label_b,
+            instrument: inst_b.as_ref(),
+        },
+    );
     print_comparison(&comparison);
     println!();
     println!("{SIMULATED_NOTE}");

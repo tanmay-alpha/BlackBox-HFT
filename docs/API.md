@@ -124,6 +124,120 @@ struct CompareRequest {
 }
 ```
 
+## Comparison semantics
+
+`POST /api/compare` returns `Comparison` (`crates/bb-core/src/compare.rs`, computed by
+`bb_forensics::compare_runs`). A comparison is a pure function of the two stored runs and the
+instruments of their datasets; nothing is re-simulated.
+
+```rust
+struct Comparison {
+    run_a: String, run_b: String, label_a: String, label_b: String,
+    eligibility: Eligibility,
+    config_diffs: Vec<ConfigDiff>,   // every dotted RunConfig path that differs
+    metrics: Vec<MetricRow>,         // always returned; not like-for-like unless eligibility says so
+    alignment: Option<Alignment>,    // null when eligibility.aligned is false
+    interpretation: Vec<InterpretationNote>,
+}
+
+struct Eligibility {
+    aligned: bool,                   // no reason has effect "no_alignment"
+    like_for_like: bool,             // reasons is empty
+    reasons: Vec<EligibilityReason>,
+}
+
+struct EligibilityReason {
+    field: String,                   // see the table below
+    a: Value, b: Value,              // null when unknown
+    effect: EligibilityEffect,       // "no_alignment" | "not_like_for_like"
+    explanation: String,
+}
+
+struct Alignment {
+    identical: u64,
+    same_fills_different_history: u64,
+    same_fills_different_fees: u64,
+    same_outcome_different_timing: u64,
+    same_decision_different_outcome: u64,
+    different_decision: u64,
+    only_a: u64,
+    only_b: u64,
+    first_divergence: Option<OrderPair>,          // first pair in decision order that is not identical
+    first_outcome_divergence: Option<OrderPair>,  // first pair whose decision or fills differ
+    timing: TimingSummary,
+    pairs: Vec<OrderPair>,           // non-identical pairs in decision order, at most pairs_cap
+    pairs_cap: u64,                  // 500
+    pairs_truncated: bool,
+}
+
+struct OrderPair {
+    order_id: u64, tick_no: u64,
+    decision_ts: i64,                // A's decision time (B's for only_b)
+    class: PairClass,
+    differences: Vec<String>,        // every differing field, most significant group first
+    timing: Option<PairTiming>,      // null unless the order exists in both runs
+    a: Option<DecisionOutcome>, b: Option<DecisionOutcome>,
+}
+
+struct PairTiming {                  // B minus A in ns; null unless both have the timestamp
+    decision_ns, exch_arrival_ns, first_response_ns, first_fill_ns, completion_ns: Option<i64>,
+}
+
+struct TimingSummary { decision, exch_arrival, first_response, first_fill, completion: DeltaStats }
+struct DeltaStats { count: u64, nonzero: u64, min: Option<i64>, median: Option<f64>, max: Option<i64> }
+
+struct DecisionOutcome {             // one run's order record, as compared
+    side, price_tick, qty, tif, ord_type, decision_ts, outcome, final_status, filled_qty,
+    avg_fill_tick, maker_qty, taker_qty, fees, fill_count, queue_ahead_at_entry,
+    exch_arrival_ts, first_response_ts, first_fill_ts, last_fill_ts, cancel_sent_ts, terminal_ts,
+}
+```
+
+**Eligibility** is checked before any per-order alignment. Order ids are `(tick_no << 8) | slot`,
+so the same id names the same decision only on the same market and decision grid.
+
+| `field` | Effect | Why |
+|---|---|---|
+| `dataset.sha256` (events hash) | `no_alignment` | Different market data |
+| `instrument.tick_size`, `instrument.lot_size` | `no_alignment` | Equal ticks or lots are different prices or sizes |
+| `instrument.contract_size` | `not_like_for_like` | Quote values scale differently |
+| `instrument` (unverifiable) | `not_like_for_like` | A run's dataset manifest is unavailable or its events changed; sizes were not compared |
+| `strategy.kind` (the `type` tag) | `no_alignment` | Unrelated decisions share ids |
+| `strategy.interval_ns` | `no_alignment` | Tick n falls at a different time in each run |
+| `simulation_revision` | `no_alignment` | The simulator itself may decide or record differently |
+| `engine` (`"<name> <version>"`) | `not_like_for_like` | The matching engine may fill differently |
+| `record.sample_every_ticks` | `not_like_for_like` | Sampled metrics (drawdown, mean absolute position) are marked at different times |
+| `record.max_queue_updates_per_order` | `not_like_for_like` | Recorded lifecycles can differ by retention alone |
+
+Strategy parameters, risk limits, seed and execution assumptions are what scenarios vary; they are
+listed in `config_diffs` and never block alignment.
+
+**Pair classes.** Orders are merged by id in decision order (tick, then slot). For an order present
+in both runs the groups below are checked in order; the first group with a difference decides the
+class, and `differences` lists every differing field of every group:
+
+| Class | Group that differs (fields named in `differences`) |
+|---|---|
+| `different_decision` | `side`, `price_tick`, `qty`, `tif`, `ord_type` |
+| `same_decision_different_outcome` | `outcome`, `final_status`, `filled_qty`, `avg_fill_tick`, `fill_count`, `fills` (a fill's price, quantity or maker/taker side) |
+| `same_outcome_different_timing` | `decision_ts`, `exch_arrival_ts`, `first_response_ts`, `fill_ts` (any fill's time), `cancel_sent_ts`, `terminal_ts` (a value present in one run only also differs) |
+| `same_fills_different_fees` | `fees` (any fill's fee) |
+| `same_fills_different_history` | `queue_ahead_at_entry`, `cancel_rejected`, `lifecycle_events` (the order's tape events, compared by time, clock, source and content, ignoring `seq`): identical fills under distinct causal histories |
+| `identical` | nothing |
+
+`only_a`/`only_b` mark an id decided in one run only. Timestamps compare exactly; quantities, prices
+averaged over fills and fees compare within 1e-9 relative. `first_divergence` is therefore exact:
+every pair before it is identical including timing, fees and lifecycle. `first_outcome_divergence`
+is the first `different_decision`, `same_decision_different_outcome`, `only_a` or `only_b` pair;
+pairs before it may differ only in timing, fees or history, and an interpretation note counts them.
+`timing` summarises every pair present in both runs except `different_decision`, identical pairs
+included.
+
+Example (synthetic demo, `risk_adverse` against `power_prob3`, BASELINE_AUDIT §5.1): order 9472
+fills at the same price at t = 3.831084401 s in one run and 3.859654055 s in the other; it is
+`same_outcome_different_timing` with `first_fill_ns = 28569654`, and is one of the 5 timing-only
+pairs the note reports before the first outcome divergence at strategy tick 671.
+
 ## Replay terminal, demos and exports
 
 ```rust
