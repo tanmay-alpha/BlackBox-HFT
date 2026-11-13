@@ -14,7 +14,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use bb_app::{
     DISCLAIMER,
     datasets::{self, DatasetCache, DatasetCtx},
-    pipeline, presets,
+    demos, pipeline, presets,
     server::{self, AppState},
     store::{FsRunStore, RunStore},
 };
@@ -75,18 +75,21 @@ enum Command {
         #[arg(long)]
         dataset: Option<String>,
     },
+    /// List controlled experiments, optionally executing every run idempotently.
+    Demos {
+        /// Dataset id. Default: the first dataset by id.
+        #[arg(long)]
+        dataset: Option<String>,
+        /// Execute all configurations and compare each alternative against its baseline.
+        #[arg(long)]
+        run: bool,
+    },
     /// Simulate one configuration and store the run.
     Run(RunArgs),
     /// Explain why one order of a stored run did or did not fill.
-    Explain {
-        run_id: String,
-        order_id: u64,
-    },
+    Explain { run_id: String, order_id: u64 },
     /// Compare two stored runs.
-    Compare {
-        run_a: String,
-        run_b: String,
-    },
+    Compare { run_a: String, run_b: String },
     /// Run a bounded two-parameter sensitivity grid.
     Grid {
         /// JSON file holding a `GridSpec`.
@@ -159,6 +162,14 @@ struct ServeArgs {
     /// Directory of the built web UI. Served when it contains an `index.html`.
     #[arg(long, default_value = "web/dist")]
     web_dir: PathBuf,
+    /// Extra `host:port` the server answers to (repeatable). Its own loopback names on the
+    /// listening port are always allowed; any other Host header is refused (DNS rebinding).
+    #[arg(long = "allow-host")]
+    allow_host: Vec<String>,
+    /// Extra origin allowed to call the API (repeatable), e.g. `http://localhost:5173` for the
+    /// Vite development server. Requests from any other origin are refused.
+    #[arg(long = "allow-origin")]
+    allow_origin: Vec<String>,
 }
 
 /// Where things live under `--data-dir`.
@@ -193,6 +204,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Datasets => cmd_datasets(&paths),
         Command::Quality { id } => cmd_quality(&paths, &id),
         Command::Presets { dataset } => cmd_presets(&paths, dataset.as_deref()),
+        Command::Demos { dataset, run } => cmd_demos(&paths, dataset.as_deref(), run),
         Command::Run(args) => cmd_run(&paths, args),
         Command::Explain { run_id, order_id } => cmd_explain(&paths, &run_id, order_id),
         Command::Compare { run_a, run_b } => cmd_compare(&paths, &run_a, &run_b),
@@ -226,7 +238,11 @@ fn opt(value: Option<f64>, decimals: usize) -> String {
 fn qty(value: f64) -> String {
     let s = format!("{value:.9}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s == "-0" { "0".to_string() } else { s.to_string() }
+    if s == "-0" {
+        "0".to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 fn opt_ms(ns: Option<i64>) -> String {
@@ -355,7 +371,11 @@ fn print_quality_summary(manifest: &DatasetManifest) {
             check.detail
         );
     }
-    print_quantiles("feed latency", "ms", scaled(quality.feed_latency_ns, 1e-6).as_ref());
+    print_quantiles(
+        "feed latency",
+        "ms",
+        scaled(quality.feed_latency_ns, 1e-6).as_ref(),
+    );
     print_quantiles("spread", "ticks", quality.spread_ticks.as_ref());
     println!(
         "  {:<22} {:.4}",
@@ -385,7 +405,12 @@ fn write_synthetic(paths: &Paths, config: &SyntheticConfig) -> Result<DatasetMan
     Ok(bb_data::store::save(&paths.datasets, &built)?)
 }
 
-fn cmd_synth(paths: &Paths, id: Option<String>, seed: Option<u64>, duration_s: Option<u64>) -> Result<()> {
+fn cmd_synth(
+    paths: &Paths,
+    id: Option<String>,
+    seed: Option<u64>,
+    duration_s: Option<u64>,
+) -> Result<()> {
     let mut config = SyntheticConfig::default();
     if let Some(id) = id {
         config.id = id;
@@ -500,7 +525,11 @@ fn cmd_quality(paths: &Paths, id: &str) -> Result<()> {
             println!("         e.g. {example}");
         }
     }
-    print_quantiles("feed latency", "ms", scaled(quality.feed_latency_ns, 1e-6).as_ref());
+    print_quantiles(
+        "feed latency",
+        "ms",
+        scaled(quality.feed_latency_ns, 1e-6).as_ref(),
+    );
     print_quantiles("spread", "ticks", quality.spread_ticks.as_ref());
     print_quantiles(
         "inter-event gap",
@@ -511,7 +540,10 @@ fn cmd_quality(paths: &Paths, id: &str) -> Result<()> {
         "  {:<22} {:.4}",
         "book valid fraction", quality.book_valid_fraction
     );
-    println!("worst severity among findings: {}", worst_quality(&manifest));
+    println!(
+        "worst severity among findings: {}",
+        worst_quality(&manifest)
+    );
     Ok(())
 }
 
@@ -526,6 +558,49 @@ fn cmd_presets(paths: &Paths, dataset: Option<&str>) -> Result<()> {
         println!("  demonstrates: {}", preset.demonstrates);
         println!("  {}", preset.description);
     }
+    Ok(())
+}
+
+fn cmd_demos(paths: &Paths, dataset: Option<&str>, execute: bool) -> Result<()> {
+    let manifest = resolve_dataset(paths, dataset)?;
+    let ctx = if execute {
+        Some(DatasetCtx::load(&paths.datasets, &manifest.id)?)
+    } else {
+        None
+    };
+    let store = if execute {
+        Some(FsRunStore::open(&paths.runs)?)
+    } else {
+        None
+    };
+    for demo in demos::demos(&manifest) {
+        println!("\n{} - {}", demo.id, demo.title);
+        println!("  {}", demo.question);
+        println!("  Varied: {}", demo.varied.join(", "));
+        for controlled in &demo.controlled {
+            println!("  Controlled: {controlled}");
+        }
+        println!("  Read: {}", demo.how_to_read);
+        let mut baseline: Option<(Arc<RunResult>, String)> = None;
+        for (scenario, recipe) in demo.runs.iter().zip(&demo.reproduce) {
+            println!("\n  {}", scenario.label);
+            println!("{recipe}");
+            if let (Some(ctx), Some(store)) = (&ctx, &store) {
+                let summary =
+                    pipeline::find_or_execute(ctx, &scenario.config, store, &scenario.label)?;
+                println!("  Stored simulated run: {}", summary.manifest.run_id);
+                let result = load_run(store, &summary.manifest.run_id)?;
+                if let Some((first, label)) = &baseline {
+                    let comparison =
+                        bb_forensics::compare_runs(first, label, &result, &scenario.label);
+                    print_comparison(&comparison);
+                } else {
+                    baseline = Some((result, scenario.label.clone()));
+                }
+            }
+        }
+    }
+    println!("\n{SIMULATED_NOTE}");
     Ok(())
 }
 
@@ -588,7 +663,11 @@ fn print_run(summary: &RunSummary, run: &RunResult) {
     }
     println!(
         "size          : {} ticks, {} orders, {} fills, {} tape events, {} ms wall time",
-        summary.ticks, summary.order_count, summary.fill_count, summary.tape_len, manifest.wall_time_ms
+        summary.ticks,
+        summary.order_count,
+        summary.fill_count,
+        summary.tape_len,
+        manifest.wall_time_ms
     );
     println!(
         "orders        : intended {}, risk-blocked {}, refused {}, submitted {}",
@@ -676,7 +755,9 @@ fn cmd_run(paths: &Paths, args: RunArgs) -> Result<()> {
     let run = load_run(&store, &summary.manifest.run_id)?;
 
     if already_stored {
-        println!("This configuration was already simulated on this dataset; showing the stored run.");
+        println!(
+            "This configuration was already simulated on this dataset; showing the stored run."
+        );
     }
     print_run(&summary, &run);
     println!("{SIMULATED_NOTE}");
@@ -738,13 +819,34 @@ fn cmd_explain(paths: &Paths, run_id: &str, order_id: u64) -> Result<()> {
     let latency = &explanation.latency;
     println!();
     println!("Timing:");
-    println!("  feed staleness at decision : {}", opt_ms(latency.feed_staleness_ns));
-    println!("  feed latency of that event : {}", opt_ms(latency.feed_latency_ns));
-    println!("  order entry latency        : {}", opt_ms(latency.entry_latency_ns));
-    println!("  response latency           : {}", opt_ms(latency.response_latency_ns));
-    println!("  arrival to first fill      : {}", opt_ms(latency.time_to_first_fill_ns));
-    println!("  resting time               : {}", opt_ms(latency.resting_time_ns));
-    println!("  cancel entry latency       : {}", opt_ms(latency.cancel_entry_latency_ns));
+    println!(
+        "  feed staleness at decision : {}",
+        opt_ms(latency.feed_staleness_ns)
+    );
+    println!(
+        "  feed latency of that event : {}",
+        opt_ms(latency.feed_latency_ns)
+    );
+    println!(
+        "  order entry latency        : {}",
+        opt_ms(latency.entry_latency_ns)
+    );
+    println!(
+        "  response latency           : {}",
+        opt_ms(latency.response_latency_ns)
+    );
+    println!(
+        "  arrival to first fill      : {}",
+        opt_ms(latency.time_to_first_fill_ns)
+    );
+    println!(
+        "  resting time               : {}",
+        opt_ms(latency.resting_time_ns)
+    );
+    println!(
+        "  cancel entry latency       : {}",
+        opt_ms(latency.cancel_entry_latency_ns)
+    );
     println!();
     println!("Caveats:");
     for caveat in &explanation.caveats {
@@ -874,7 +976,9 @@ fn print_grid(grid: &GridResult) {
         grid.wall_time_ms
     );
     println!();
-    println!("Net P&L per cell (rows: y, columns: x; `failed` marks a cell that did not complete):");
+    println!(
+        "Net P&L per cell (rows: y, columns: x; `failed` marks a cell that did not complete):"
+    );
     let y_width = grid
         .y_labels
         .iter()
@@ -897,7 +1001,11 @@ fn print_grid(grid: &GridResult) {
     for (yi, y_label) in grid.y_labels.iter().enumerate() {
         let mut line = format!("{y_label:<y_width$}");
         for xi in 0..x_len {
-            let text = match grid.cells.get(yi * x_len + xi).and_then(|c| c.metrics.as_ref()) {
+            let text = match grid
+                .cells
+                .get(yi * x_len + xi)
+                .and_then(|c| c.metrics.as_ref())
+            {
                 Some(metrics) => format!("{:.6}", metrics.net_pnl),
                 None => "failed".to_string(),
             };
@@ -908,8 +1016,14 @@ fn print_grid(grid: &GridResult) {
     println!();
     println!("Cells:");
     for cell in &grid.cells {
-        let x_label = grid.x_labels.get(cell.xi as usize).map_or("?", String::as_str);
-        let y_label = grid.y_labels.get(cell.yi as usize).map_or("?", String::as_str);
+        let x_label = grid
+            .x_labels
+            .get(cell.xi as usize)
+            .map_or("?", String::as_str);
+        let y_label = grid
+            .y_labels
+            .get(cell.yi as usize)
+            .map_or("?", String::as_str);
         match (&cell.run_id, &cell.metrics, &cell.error) {
             (Some(run_id), Some(metrics), _) => println!(
                 "  x={x_label} y={y_label}: run {run_id}, {} fills, net p&l {:.6}, fees {:.6}",
@@ -953,7 +1067,13 @@ fn cmd_serve(paths: &Paths, args: ServeArgs) -> Result<()> {
         None
     };
     let serves_ui = web_dir.is_some();
-    let app = server::router(state, web_dir);
+    let policy =
+        bb_app::access::AccessPolicy::for_listener(args.addr, &args.allow_host, &args.allow_origin);
+    println!(
+        "Accepting requests addressed to: {}",
+        policy.hosts().join(", ")
+    );
+    let app = bb_app::access::guard(server::router(state, web_dir), policy);
     let addr = args.addr;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -977,9 +1097,7 @@ fn cmd_serve(paths: &Paths, args: ServeArgs) -> Result<()> {
         }
         println!("{DISCLAIMER}");
         println!("Press Ctrl-C to stop.");
-        server::serve(listener, app)
-            .await
-            .context("serving HTTP")?;
+        server::serve(listener, app).await.context("serving HTTP")?;
         Ok::<(), anyhow::Error>(())
     })
 }

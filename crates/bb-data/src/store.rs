@@ -14,10 +14,10 @@ use std::{
 
 use bb_core::{dataset::DatasetManifest, hash::sha256_reader};
 use hftbacktest::backtest::data::{read_npz_file, write_npy};
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    is_valid_id, normalize::validate_event_order, BuiltDataset, DataError, Event, LoadedDataset,
+    BuiltDataset, DataError, Event, LoadedDataset, is_valid_id, normalize::validate_event_order,
 };
 
 pub const MANIFEST_FILE: &str = "dataset.json";
@@ -115,7 +115,10 @@ pub fn load(root: &Path, id: &str) -> Result<LoadedDataset, DataError> {
     if manifest.events_file.contains(['/', '\\']) || manifest.events_file.is_empty() {
         return Err(DataError::Integrity {
             path: dir.join(MANIFEST_FILE).display().to_string(),
-            message: format!("events_file `{}` is not a plain file name", manifest.events_file),
+            message: format!(
+                "events_file `{}` is not a plain file name",
+                manifest.events_file
+            ),
         });
     }
     let actual = hash_file(&events_path)?;
@@ -131,7 +134,8 @@ pub fn load(root: &Path, id: &str) -> Result<LoadedDataset, DataError> {
     let path_str = events_path.to_str().ok_or_else(|| {
         DataError::Invalid(format!("path {} is not valid UTF-8", events_path.display()))
     })?;
-    let data = read_npz_file::<Event>(path_str, NPZ_ENTRY).map_err(|e| DataError::io(&events_path, e))?;
+    let data =
+        read_npz_file::<Event>(path_str, NPZ_ENTRY).map_err(|e| DataError::io(&events_path, e))?;
     // `Data<Event>` is `Rc`-based; copy into a shareable vector.
     let mut events = Vec::with_capacity(data.len());
     for i in 0..data.len() {
@@ -228,8 +232,14 @@ mod tests {
     #[test]
     fn unknown_and_malformed_ids() {
         let tmp = TempDir::new("store-ids");
-        assert!(matches!(load(tmp.path(), "nope"), Err(DataError::NotFound(_))));
-        assert!(matches!(load(tmp.path(), "../x"), Err(DataError::Invalid(_))));
+        assert!(matches!(
+            load(tmp.path(), "nope"),
+            Err(DataError::NotFound(_))
+        ));
+        assert!(matches!(
+            load(tmp.path(), "../x"),
+            Err(DataError::Invalid(_))
+        ));
         assert!(list(&tmp.path().join("missing")).unwrap().is_empty());
     }
 }

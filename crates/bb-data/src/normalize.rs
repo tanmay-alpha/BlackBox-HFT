@@ -1,7 +1,7 @@
 //! Timestamp and event-order normalization shared by every data pipeline.
 //!
 //! This module is a Rust port of `correct_local_timestamp`, `correct_event_order` and
-//! `validate_event_order` from py-hftbacktest (`hftbacktest/data/utils/validation.py`,
+//! `validate_event_order` from py-hftbacktest (`py-hftbacktest/hftbacktest/data/validation.py`,
 //! Copyright (c) nkaz001, MIT License). The control flow of the event-order merge, including how
 //! ties are broken, follows the reference exactly; the differences are that it never reads past
 //! the end of an index array (the reference does before checking bounds) and that the local
@@ -106,7 +106,10 @@ pub fn correct_event_order(rows: &[Event]) -> Vec<Event> {
     let mut exch_rn = 0usize;
     let mut local_rn = 0usize;
     loop {
-        match (by_exch.get(exch_rn).copied(), by_local.get(local_rn).copied()) {
+        match (
+            by_exch.get(exch_rn).copied(),
+            by_local.get(local_rn).copied(),
+        ) {
             (Some(ei), Some(li)) => {
                 let sorted_exch = &rows[ei];
                 let sorted_local = &rows[li];
@@ -263,10 +266,7 @@ mod tests {
             .filter(|e| e.exch_ts == 100)
             .map(|e| e.ev)
             .collect();
-        assert_eq!(
-            a_halves,
-            vec![a.ev | EXCH_EVENT, a.ev | LOCAL_EVENT]
-        );
+        assert_eq!(a_halves, vec![a.ev | EXCH_EVENT, a.ev | LOCAL_EVENT]);
         validate_event_order(&out).unwrap();
     }
 

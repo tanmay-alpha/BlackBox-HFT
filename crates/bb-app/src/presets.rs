@@ -201,7 +201,11 @@ fn probe_orders(order_qty: f64, cross: i64) -> Vec<ScriptedOrder> {
     ]
 }
 
-fn build(dataset_id: &str, instrument: &InstrumentMeta, spread_ticks: Option<&Quantiles>) -> Vec<Preset> {
+fn build(
+    dataset_id: &str,
+    instrument: &InstrumentMeta,
+    spread_ticks: Option<&Quantiles>,
+) -> Vec<Preset> {
     let lot = instrument.lot_size;
     let tick = instrument.tick_size;
     let sizing = Sizing {
@@ -259,15 +263,14 @@ fn build(dataset_id: &str, instrument: &InstrumentMeta, spread_ticks: Option<&Qu
         }),
     );
 
-    let preset = |id: &str, title: &str, description: &str, demonstrates: &str, config: RunConfig| {
-        Preset {
+    let preset =
+        |id: &str, title: &str, description: &str, demonstrates: &str, config: RunConfig| Preset {
             id: id.to_string(),
             title: title.to_string(),
             description: description.to_string(),
             demonstrates: demonstrates.to_string(),
             config,
-        }
-    };
+        };
 
     vec![
         preset(
@@ -466,7 +469,8 @@ mod tests {
             mean: 1.2,
         };
         let presets = build("ds", &instrument(0.1, 0.001), Some(&spread));
-        let StrategyKind::Scripted(script) = &by_id(&presets, "forensics_probe").config.strategy.kind
+        let StrategyKind::Scripted(script) =
+            &by_id(&presets, "forensics_probe").config.strategy.kind
         else {
             panic!("wrong strategy kind");
         };
@@ -474,18 +478,30 @@ mod tests {
         let ticks: Vec<u64> = script.orders.iter().map(|o| o.at_tick).collect();
         assert_eq!(ticks, [20, 25, 30, 35, 40]);
         assert_eq!(script.orders[0].cancel_after_ticks, Some(50));
-        assert_eq!(script.orders[0].price, ScriptedPrice::FromTouch { offset: -1 });
+        assert_eq!(
+            script.orders[0].price,
+            ScriptedPrice::FromTouch { offset: -1 }
+        );
         assert_eq!(script.orders[0].tif, Tif::Gtx);
         assert_eq!(script.orders[2].side, Side::Sell);
         // p99 spread of 2.5 ticks rounds up to a 3-tick crossing offset.
-        assert_eq!(script.orders[3].price, ScriptedPrice::FromTouch { offset: 3 });
+        assert_eq!(
+            script.orders[3].price,
+            ScriptedPrice::FromTouch { offset: 3 }
+        );
         assert_eq!(script.orders[3].tif, Tif::Ioc);
-        assert_eq!(script.orders[4].price, ScriptedPrice::FromTouch { offset: 3 });
+        assert_eq!(
+            script.orders[4].price,
+            ScriptedPrice::FromTouch { offset: 3 }
+        );
         assert_eq!(script.orders[4].tif, Tif::Gtx);
         assert!(script.orders.iter().all(|o| !o.label.is_empty()));
 
         assert_eq!(crossing_offset(None), 1);
-        let degenerate = Quantiles { p99: f64::NAN, ..spread };
+        let degenerate = Quantiles {
+            p99: f64::NAN,
+            ..spread
+        };
         assert_eq!(crossing_offset(Some(&degenerate)), 1);
     }
 }

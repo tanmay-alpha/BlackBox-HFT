@@ -3,12 +3,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::RunConfig, dataset::Quantiles, flight::FlightEvent, OrdType, OrderStatus, RelNs, Side,
-    Tif,
+    OrdType, OrderStatus, RelNs, Side, Tif, config::RunConfig, dataset::Quantiles,
+    flight::FlightEvent,
 };
 
 /// Horizons at which post-fill mid-price markouts are measured.
-pub const MARKOUT_HORIZONS_NS: [i64; 4] = [100_000_000, 1_000_000_000, 5_000_000_000, 30_000_000_000];
+pub const MARKOUT_HORIZONS_NS: [i64; 4] =
+    [100_000_000, 1_000_000_000, 5_000_000_000, 30_000_000_000];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EngineInfo {
@@ -33,6 +34,10 @@ pub struct RunManifest {
     /// First 16 hex characters of `config_sha256`. Identical inputs give an identical id.
     pub run_id: String,
     pub blackbox_version: String,
+    /// [`crate::SIMULATION_REVISION`] of the code that produced the run. Part of the run
+    /// identity. Runs stored before the field existed read back as 0.
+    #[serde(default)]
+    pub simulation_revision: u32,
     pub engine: EngineInfo,
     /// `"<os>-<arch>"` of the binary that ran the simulation.
     pub platform: String,
@@ -262,7 +267,7 @@ pub struct EngineStateCheck {
     pub engine_fee: f64,
     pub ledger_fills: u64,
     pub engine_num_trades: i64,
-    /// Explains an expected disagreement (see docs/ENGINE_NOTES.md), or is empty.
+    /// Explains an expected disagreement (see docs/EXECUTION_MODEL.md), or is empty.
     pub note: String,
 }
 

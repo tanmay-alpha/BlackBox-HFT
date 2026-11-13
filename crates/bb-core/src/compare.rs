@@ -6,9 +6,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Basis, RelNs, Side,
     config::{QueueModelConfig, RunConfig},
     result::{Metrics, OrderOutcome},
-    Basis, RelNs, Side,
 };
 
 /// Hard upper bound on the number of simulations in one sensitivity grid.
@@ -126,13 +126,25 @@ pub struct Comparison {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GridAxis {
     /// Sets both entry and response order latency to each value.
-    OrderLatencyNs { values: Vec<i64> },
+    OrderLatencyNs {
+        values: Vec<i64>,
+    },
     /// Sets only the entry latency.
-    EntryLatencyNs { values: Vec<i64> },
-    FeedLatencyOffsetNs { values: Vec<i64> },
-    QueueModel { values: Vec<QueueModelConfig> },
-    MakerFee { values: Vec<f64> },
-    TakerFee { values: Vec<f64> },
+    EntryLatencyNs {
+        values: Vec<i64>,
+    },
+    FeedLatencyOffsetNs {
+        values: Vec<i64>,
+    },
+    QueueModel {
+        values: Vec<QueueModelConfig>,
+    },
+    MakerFee {
+        values: Vec<f64>,
+    },
+    TakerFee {
+        values: Vec<f64>,
+    },
 }
 
 impl GridAxis {
@@ -166,10 +178,27 @@ impl GridAxis {
         match self {
             GridAxis::OrderLatencyNs { values }
             | GridAxis::EntryLatencyNs { values }
-            | GridAxis::FeedLatencyOffsetNs { values } => values[i].to_string(),
+            | GridAxis::FeedLatencyOffsetNs { values } => Self::duration_label(values[i]),
             GridAxis::QueueModel { values } => values[i].label(),
-            GridAxis::MakerFee { values } | GridAxis::TakerFee { values } => values[i].to_string(),
+            GridAxis::MakerFee { values } | GridAxis::TakerFee { values } => {
+                // Fee fractions in basis points, rounded to hide binary noise (0.3 bp, not
+                // 0.000029999999999999997).
+                format!("{} bp", (values[i] * 1e4 * 1e6).round() / 1e6)
+            }
         }
+    }
+
+    /// `1500000` -> `"1.5 ms"`: the largest unit that keeps the value exact to three decimals.
+    fn duration_label(ns: i64) -> String {
+        let (scale, unit) = match ns.unsigned_abs() {
+            n if n >= 1_000_000_000 && n % 1_000_000 == 0 => (1e9, "s"),
+            n if n >= 1_000_000 && n % 1_000 == 0 => (1e6, "ms"),
+            n if n >= 1_000 => (1e3, "us"),
+            _ => (1.0, "ns"),
+        };
+        let v = ns as f64 / scale;
+        let s = format!("{v:.3}");
+        format!("{} {unit}", s.trim_end_matches('0').trim_end_matches('.'))
     }
 
     /// Returns `config` with this axis' `i`-th value applied.
@@ -230,33 +259,45 @@ pub struct GridSpec {
 
 impl GridSpec {
     pub fn cells(&self) -> usize {
-        self.x.len() * self.y.len()
+        self.x.len().saturating_mul(self.y.len())
     }
 
     /// Human-readable problems; empty means the grid may run.
+    ///
+    /// The structural checks run first and return early when they fail, so an oversized grid is
+    /// rejected without visiting a single cell.
     pub fn validate(&self) -> Vec<String> {
-        let mut e = self.base.validate();
+        let mut e = Vec::new();
         if self.x.is_empty() || self.y.is_empty() {
             e.push("both grid axes need at least one value".into());
-        }
-        if self.x.name() == self.y.name() {
-            e.push("grid axes must sweep different parameters".into());
-        }
-        let overlapping = |a: &GridAxis, b: &GridAxis| {
-            matches!(
-                (a, b),
-                (GridAxis::OrderLatencyNs { .. }, GridAxis::EntryLatencyNs { .. })
-                    | (GridAxis::EntryLatencyNs { .. }, GridAxis::OrderLatencyNs { .. })
-            )
-        };
-        if overlapping(&self.x, &self.y) {
-            e.push("order_latency_ns and entry_latency_ns both set the entry latency".into());
         }
         if self.cells() > MAX_GRID_CELLS {
             e.push(format!(
                 "grid has {} cells; the limit is {MAX_GRID_CELLS}",
                 self.cells()
             ));
+        }
+        if !e.is_empty() {
+            return e;
+        }
+        e.extend(self.base.validate());
+        if self.x.name() == self.y.name() {
+            e.push("grid axes must sweep different parameters".into());
+        }
+        let overlapping = |a: &GridAxis, b: &GridAxis| {
+            matches!(
+                (a, b),
+                (
+                    GridAxis::OrderLatencyNs { .. },
+                    GridAxis::EntryLatencyNs { .. }
+                ) | (
+                    GridAxis::EntryLatencyNs { .. },
+                    GridAxis::OrderLatencyNs { .. }
+                )
+            )
+        };
+        if overlapping(&self.x, &self.y) {
+            e.push("order_latency_ns and entry_latency_ns both set the entry latency".into());
         }
         for xi in 0..self.x.len() {
             for yi in 0..self.y.len() {
@@ -294,4 +335,23 @@ pub struct GridResult {
     /// Row-major: `cells[yi * x_len + xi]`.
     pub cells: Vec<GridCell>,
     pub wall_time_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn axis_labels_are_human_readable() {
+        let lat = GridAxis::OrderLatencyNs {
+            values: vec![0, 1_500, 1_000_000, 20_000_000, 1_500_000_000],
+        };
+        let labels: Vec<String> = (0..5).map(|i| lat.value_label(i)).collect();
+        assert_eq!(labels, ["0 ns", "1.5 us", "1 ms", "20 ms", "1.5 s"]);
+        let fee = GridAxis::MakerFee {
+            values: vec![0.00003, -0.0001, 0.0002],
+        };
+        let labels: Vec<String> = (0..3).map(|i| fee.value_label(i)).collect();
+        assert_eq!(labels, ["0.3 bp", "-1 bp", "2 bp"]);
+    }
 }

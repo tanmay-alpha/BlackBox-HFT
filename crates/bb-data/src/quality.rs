@@ -333,8 +333,7 @@ pub fn analyze(input: &ReportInput<'_>) -> Result<Analysis, DataError> {
                 // Rows of one timestamp keep source order, trades first, so the book here is the
                 // one the trade executed against.
                 let bbo = book.bbo();
-                if let (true, Some((bid, _)), Some((ask, _))) = (bbo.is_valid(), bbo.bid, bbo.ask)
-                {
+                if let (true, Some((bid, _)), Some((ask, _))) = (bbo.is_valid(), bbo.bid, bbo.ask) {
                     trades_checked += 1;
                     let tick = instrument.tick(ev.px);
                     if tick > ask + 1 || tick < bid - 1 {
@@ -745,7 +744,12 @@ mod tests {
         let a = run(&events, &SourceScan::default(), 1_000);
         assert!(a.report.checks.iter().all(|c| c.passed), "{:?}", a.report);
         assert_eq!(a.report.worst(), None);
-        assert!(a.report.checks.iter().all(|c| !c.id.starts_with("trades.duplicate")));
+        assert!(
+            a.report
+                .checks
+                .iter()
+                .all(|c| !c.id.starts_with("trades.duplicate"))
+        );
         assert_eq!(
             a.counts,
             EventCounts {
@@ -829,9 +833,15 @@ mod tests {
         let raw = |flags: u64, exch: i64, local: i64, px: f64, qty: f64| {
             make_event(flags, exch, local, px, qty)
         };
-        scan.trade(&raw(TRADE_EVENT | BUY_EVENT, 100, 110, 5.0, 1.0), on_grid, || "t:2".into());
+        scan.trade(
+            &raw(TRADE_EVENT | BUY_EVENT, 100, 110, 5.0, 1.0),
+            on_grid,
+            || "t:2".into(),
+        );
         // Goes backwards, has no side, and was received before it happened.
-        scan.trade(&raw(TRADE_EVENT, 90, 80, 5.0, 1.0), on_grid, || "t:3".into());
+        scan.trade(&raw(TRADE_EVENT, 90, 80, 5.0, 1.0), on_grid, || {
+            "t:3".into()
+        });
         let depth = raw(DEPTH_EVENT | SELL_EVENT, 100, 120, 6.0, 2.0);
         scan.book(&depth, on_grid, || "b:2".into());
         scan.book(&depth, on_grid, || "b:3".into());
@@ -845,7 +855,10 @@ mod tests {
         );
 
         assert_eq!(scan.exch_out_of_order_trades.count, 1);
-        assert_eq!(scan.exch_out_of_order_trades.examples[0], "t:3: exch_ts 90 after 100");
+        assert_eq!(
+            scan.exch_out_of_order_trades.examples[0],
+            "t:3: exch_ts 90 after 100"
+        );
         assert_eq!(scan.trades_missing_side.count, 1);
         assert_eq!(scan.local_before_exch.count, 1);
         assert_eq!(scan.worst_negative_latency_ns, -10);
@@ -858,7 +871,10 @@ mod tests {
         // The findings surface in the report with their severities.
         let events = vec![ev(DEPTH_EVENT | BUY_EVENT, 0, 100.0, 5.0)];
         let a = run(&events, &scan, NS_PER_S);
-        assert_eq!(find(&a.report, "precision.price_off_tick").severity, Severity::Error);
+        assert_eq!(
+            find(&a.report, "precision.price_off_tick").severity,
+            Severity::Error
+        );
         assert!(!find(&a.report, "precision.price_off_tick").passed);
         assert!(!find(&a.report, "time.local_before_exch").passed);
         assert!(!find(&a.report, "depth.duplicate_row").passed);
@@ -898,7 +914,10 @@ mod tests {
         let events = vec![ev(DEPTH_EVENT | BUY_EVENT, 0, 100.0, 5.0)];
         let a = report(&events, &ids).unwrap();
         let dup = find(&a.report, "trades.duplicate_id");
-        assert_eq!((dup.count, dup.severity, dup.passed), (1, Severity::Warn, false));
+        assert_eq!(
+            (dup.count, dup.severity, dup.passed),
+            (1, Severity::Warn, false)
+        );
         assert!(find(&a.report, "trades.id_gap").passed);
 
         ids.conflicting.hit(|| "conflict".into());

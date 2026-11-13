@@ -176,6 +176,24 @@ struct DemoRun {
 }
 ```
 
+`TimelineQuery` bounds are inclusive; `t0 == t1` is valid and `t1 < t0` returns
+`invalid_request` (400). Explicit bounds are not clamped to the run span. The empty-equity
+span is `[0, 0]`. The tape is selected by each event's own clock timestamp, not sorted by
+timestamp; sequence order is retained. `max_events=0` returns only counts and other overlays.
+
+Demo variants use the preset touch maker unchanged: latency is 1 ms versus 50 ms each way;
+queue models are `risk_adverse`, `log_prob` and `power_prob3` (`n=3`); fee schedules are
+maker/taker fractions `0.0002/0.0004`, `0/0`, and `-0.0001/0.0004` (the rebate variant
+retains the baseline taker fee). `varied` is the sorted union of dotted JSON differences from
+the first config, including missing object fields; arrays are compared as whole values.
+`controlled` lists only identical settings, plus dataset id and events SHA-256.
+With no datasets, `/api/demos` returns `[]`; an unknown explicit dataset id returns 404.
+Each `reproduce` entry is a POSIX-shell recipe that writes a complete config JSON file, then
+invokes `blackbox run --config <file> --dataset <id>`. Save the JSON manually when using a
+different shell; add `--data-dir <directory>` for nondefault local storage.
+`blackbox demos [--dataset <id>]` lists the experiments and recipes; `--run` executes every
+scenario idempotently and prints comparisons of alternatives against the first scenario.
+
 Demo runs are created through the ordinary idempotent `POST /api/runs`, so a demo that was run
 before returns the stored runs instantly and the same run ids every time.
 
@@ -183,3 +201,12 @@ The research report (`/report`) contains: dataset provenance (id, kind, source, 
 timestamp provenance, worst quality severity), engine name and version, run and config hashes,
 the full configuration as JSON, every assumption in plain language, all metrics, the engine
 cross-check, the CLI command that reproduces the run, and the standard limitations.
+
+Reports have `Content-Type: text/markdown; charset=utf-8` and
+`Content-Disposition: attachment; filename="blackbox-run-<run_id>.md"`. They include a
+config-file creation recipe and the same CLI invocation described above. Provenance comes
+from the local dataset manifest: a missing dataset returns 404; a manifest whose events hash
+no longer matches the run returns `invalid_request` (400), rather than attaching provenance
+for replacement data. Full JSON exports have `Content-Type: application/json` and
+`Content-Disposition: attachment; filename="blackbox-run-<run_id>.json"` and need only the
+stored run, not the dataset files.

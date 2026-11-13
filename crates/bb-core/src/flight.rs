@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{strategy::MarketView, Clock, OrdType, OrderStatus, RelNs, ReqKind, Side, Source, Tif};
+use crate::{Clock, OrdType, OrderStatus, RelNs, ReqKind, Side, Source, Tif, strategy::MarketView};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlightEvent {

@@ -131,7 +131,12 @@ impl L2Book {
 
     /// Up to `n` bid levels, best (highest) first.
     pub fn top_bids(&self, n: usize) -> Vec<(i64, f64)> {
-        self.bids.iter().rev().take(n).map(|(t, q)| (*t, *q)).collect()
+        self.bids
+            .iter()
+            .rev()
+            .take(n)
+            .map(|(t, q)| (*t, *q))
+            .collect()
     }
 
     /// Up to `n` ask levels, best (lowest) first.

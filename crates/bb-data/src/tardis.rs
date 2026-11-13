@@ -43,8 +43,7 @@ use crate::{
 };
 
 const TRADES_HEADER: &str = "exchange,symbol,timestamp,local_timestamp,id,side,price,amount";
-const BOOK_HEADER: &str =
-    "exchange,symbol,timestamp,local_timestamp,is_snapshot,side,price,amount";
+const BOOK_HEADER: &str = "exchange,symbol,timestamp,local_timestamp,is_snapshot,side,price,amount";
 const FIELDS: usize = 8;
 const READ_BUFFER_BYTES: usize = 1 << 16;
 
@@ -126,8 +125,12 @@ impl<R: Read> Read for HashingReader<R> {
 
 enum Lines {
     Plain(BufReader<HashingReader<File>>),
-    Gz(BufReader<MultiGzDecoder<HashingReader<File>>>),
+    // Boxed: the gzip decoder's state is several times larger than the plain reader.
+    Gz(Box<BufReader<MultiGzDecoder<HashingReader<File>>>>),
 }
+
+/// Longest accepted CSV line, in bytes, excluding the line ending.
+pub const MAX_LINE_BYTES: usize = 4096;
 
 /// A Tardis CSV file open for streaming, positioned after its verified header.
 struct CsvFile {
@@ -149,10 +152,10 @@ impl CsvFile {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"));
         let lines = if gzip {
-            Lines::Gz(BufReader::with_capacity(
+            Lines::Gz(Box::new(BufReader::with_capacity(
                 READ_BUFFER_BYTES,
                 MultiGzDecoder::new(raw),
-            ))
+            )))
         } else {
             Lines::Plain(BufReader::with_capacity(READ_BUFFER_BYTES, raw))
         };
@@ -182,16 +185,28 @@ impl CsvFile {
     }
 
     /// Reads the next line into `buf` without its line ending. `false` at end of file.
+    ///
+    /// A line longer than [`MAX_LINE_BYTES`] is an error: Tardis rows are about a hundred bytes,
+    /// and an unbounded read would let one hostile line (for example a gzip stream that
+    /// decompresses to gigabytes without a newline) exhaust memory.
     fn read_line(&mut self, buf: &mut Vec<u8>) -> Result<bool, DataError> {
         buf.clear();
+        let limit = MAX_LINE_BYTES as u64 + 2;
         let read = match &mut self.lines {
-            Lines::Plain(reader) => reader.read_until(b'\n', buf),
-            Lines::Gz(reader) => reader.read_until(b'\n', buf),
+            Lines::Plain(reader) => reader.by_ref().take(limit).read_until(b'\n', buf),
+            Lines::Gz(reader) => reader.by_ref().take(limit).read_until(b'\n', buf),
         };
         let n = read.map_err(|source| DataError::Io {
             path: self.name.clone(),
             source,
         })?;
+        if buf.len() > MAX_LINE_BYTES && buf.last() != Some(&b'\n') {
+            return Err(DataError::Parse {
+                file: self.name.clone(),
+                line: self.line_no + 1,
+                message: format!("line is longer than {MAX_LINE_BYTES} bytes"),
+            });
+        }
         if n == 0 {
             return Ok(false);
         }
@@ -268,11 +283,7 @@ struct Ingest<'a> {
 
 impl Ingest<'_> {
     /// Checks the `exchange` and `symbol` columns and converts both timestamps to nanoseconds.
-    fn timestamps(
-        &self,
-        file: &CsvFile,
-        fields: &[&str; FIELDS],
-    ) -> Result<(i64, i64), DataError> {
+    fn timestamps(&self, file: &CsvFile, fields: &[&str; FIELDS]) -> Result<(i64, i64), DataError> {
         if fields[0] != self.cfg.exchange {
             return Err(file.error(format!(
                 "exchange is `{}`, expected `{}`",
@@ -394,7 +405,10 @@ impl TradeIds {
             }
             Some(_) => {
                 self.findings.conflicting.hit(|| {
-                    format!("{}: id {id} repeated with different content (row kept)", at())
+                    format!(
+                        "{}: id {id} repeated with different content (row kept)",
+                        at()
+                    )
                 });
             }
             None => {
@@ -813,9 +827,11 @@ pub fn ingest(cfg: &TardisIngestConfig) -> Result<BuiltDataset, DataError> {
                            its terms. This dataset directory must not be committed or \
                            published."
                 .to_string(),
-            exch_ts_semantics: "Tardis `timestamp` column (exchange-provided event time; for \
-                                Binance Futures this is the message event time 'E', not the \
-                                matching-engine transaction time 'T')"
+            exch_ts_semantics: "Tardis `timestamp` column (exchange-provided time). For \
+                                Binance Futures, Tardis's open-source normalizer stamps trades \
+                                with the transaction time 'T' and depth updates with the later \
+                                message event time 'E'; that the CSV export does the same is \
+                                inferred, not documented by Tardis"
                 .to_string(),
         },
         instrument,
@@ -978,28 +994,106 @@ mod tests {
         };
         // Microseconds became nanoseconds.
         assert_eq!(ds.events[0].exch_ts, 1_580_515_200_000_000_000);
-        assert_eq!(row(0), (DEPTH_CLEAR_EVENT | BUY_EVENT | both, 0, 5_000_000, 9349.0, 0.0));
-        assert_eq!(row(1), (DEPTH_SNAPSHOT_EVENT | BUY_EVENT | both, 0, 5_000_000, 9349.5, 2.5));
-        assert_eq!(row(2), (DEPTH_SNAPSHOT_EVENT | BUY_EVENT | both, 0, 5_000_000, 9349.0, 1.0));
-        assert_eq!(row(3), (DEPTH_CLEAR_EVENT | SELL_EVENT | both, 0, 5_000_000, 9350.5, 0.0));
-        assert_eq!(row(4), (DEPTH_SNAPSHOT_EVENT | SELL_EVENT | both, 0, 5_000_000, 9350.0, 3.0));
-        assert_eq!(row(5), (DEPTH_SNAPSHOT_EVENT | SELL_EVENT | both, 0, 5_000_000, 9350.5, 4.25));
+        assert_eq!(
+            row(0),
+            (
+                DEPTH_CLEAR_EVENT | BUY_EVENT | both,
+                0,
+                5_000_000,
+                9349.0,
+                0.0
+            )
+        );
+        assert_eq!(
+            row(1),
+            (
+                DEPTH_SNAPSHOT_EVENT | BUY_EVENT | both,
+                0,
+                5_000_000,
+                9349.5,
+                2.5
+            )
+        );
+        assert_eq!(
+            row(2),
+            (
+                DEPTH_SNAPSHOT_EVENT | BUY_EVENT | both,
+                0,
+                5_000_000,
+                9349.0,
+                1.0
+            )
+        );
+        assert_eq!(
+            row(3),
+            (
+                DEPTH_CLEAR_EVENT | SELL_EVENT | both,
+                0,
+                5_000_000,
+                9350.5,
+                0.0
+            )
+        );
+        assert_eq!(
+            row(4),
+            (
+                DEPTH_SNAPSHOT_EVENT | SELL_EVENT | both,
+                0,
+                5_000_000,
+                9350.0,
+                3.0
+            )
+        );
+        assert_eq!(
+            row(5),
+            (
+                DEPTH_SNAPSHOT_EVENT | SELL_EVENT | both,
+                0,
+                5_000_000,
+                9350.5,
+                4.25
+            )
+        );
         // Same exchange timestamp: the trade comes before the depth update it caused.
         assert_eq!(
             row(6),
-            (TRADE_EVENT | BUY_EVENT | both, 100_000_000, 103_000_000, 9350.0, 0.5)
+            (
+                TRADE_EVENT | BUY_EVENT | both,
+                100_000_000,
+                103_000_000,
+                9350.0,
+                0.5
+            )
         );
         assert_eq!(
             row(7),
-            (DEPTH_EVENT | SELL_EVENT | both, 100_000_000, 105_000_000, 9350.0, 2.5)
+            (
+                DEPTH_EVENT | SELL_EVENT | both,
+                100_000_000,
+                105_000_000,
+                9350.0,
+                2.5
+            )
         );
         assert_eq!(
             row(8),
-            (TRADE_EVENT | SELL_EVENT | both, 150_000_000, 153_000_000, 9349.5, 0.25)
+            (
+                TRADE_EVENT | SELL_EVENT | both,
+                150_000_000,
+                153_000_000,
+                9349.5,
+                0.25
+            )
         );
         assert_eq!(
             row(9),
-            (DEPTH_EVENT | BUY_EVENT | both, 200_000_000, 205_000_000, 9349.5, 0.0)
+            (
+                DEPTH_EVENT | BUY_EVENT | both,
+                200_000_000,
+                205_000_000,
+                9349.5,
+                0.0
+            )
         );
 
         let m = &ds.manifest;
@@ -1012,13 +1106,18 @@ mod tests {
         assert!(m.timestamps.note.contains("vendor's capture location"));
         assert!(m.source.license_note.contains("Not redistributable"));
         assert!(m.source.exch_ts_semantics.contains("'E'"));
+        assert!(m.source.exch_ts_semantics.contains("inferred"));
         assert_eq!(m.generator, None);
         assert_eq!(
             (m.counts.rows, m.counts.trades, m.counts.depth_updates),
             (10, 2, 2)
         );
         assert_eq!(
-            (m.counts.snapshot_levels, m.counts.snapshots, m.counts.depth_clears),
+            (
+                m.counts.snapshot_levels,
+                m.counts.snapshots,
+                m.counts.depth_clears
+            ),
             (4, 1, 2)
         );
 
@@ -1034,7 +1133,11 @@ mod tests {
         assert_eq!(m.source.inputs[1].rows, 6);
         assert_eq!(m.source.inputs[1].sha256, sha256_hex(&book_bytes));
 
-        assert!(m.quality.checks.iter().all(|c| c.passed), "{:#?}", m.quality.checks);
+        assert!(
+            m.quality.checks.iter().all(|c| c.passed),
+            "{:#?}",
+            m.quality.checks
+        );
         assert_eq!(m.quality.book_valid_fraction, 1.0);
         let latency = m.quality.feed_latency_ns.unwrap();
         assert_eq!((latency.min, latency.max), (3_000_000.0, 5_000_000.0));
@@ -1057,7 +1160,13 @@ mod tests {
 
         assert_eq!(gz_ds.events, plain_ds.events);
         assert_eq!(gz_ds.manifest.counts, plain_ds.manifest.counts);
-        for (input, path) in gz_ds.manifest.source.inputs.iter().zip([&trades_path, &book_path]) {
+        for (input, path) in gz_ds
+            .manifest
+            .source
+            .inputs
+            .iter()
+            .zip([&trades_path, &book_path])
+        {
             let stored = std::fs::read(path).unwrap();
             assert_eq!(input.bytes, stored.len() as u64);
             assert_eq!(input.sha256, sha256_hex(&stored));
@@ -1124,7 +1233,12 @@ mod tests {
                     .to_string(),
             ],
         );
-        assert_parse_error(ingest_error(&trades, &base_book()), "trades.csv", 3, "found 7");
+        assert_parse_error(
+            ingest_error(&trades, &base_book()),
+            "trades.csv",
+            3,
+            "found 7",
+        );
 
         // Unparseable numbers.
         for bad in ["12a", "nan", "", "1,5"] {
@@ -1133,13 +1247,21 @@ mod tests {
                 &[trade_row(100_000, "1001", "buy", bad, "0.5")],
             );
             let err = ingest_error(&trades, &base_book());
-            assert!(matches!(err, DataError::Parse { line: 2, .. }), "{bad}: {err:?}");
+            assert!(
+                matches!(err, DataError::Parse { line: 2, .. }),
+                "{bad}: {err:?}"
+            );
         }
         let trades = with_header(
             TRADES_HEADER,
             &[trade_row(100_000, "1001", "buy", "9350", "lots")],
         );
-        assert_parse_error(ingest_error(&trades, &base_book()), "trades.csv", 2, "amount");
+        assert_parse_error(
+            ingest_error(&trades, &base_book()),
+            "trades.csv",
+            2,
+            "amount",
+        );
 
         // Unknown book side on line 4, unknown is_snapshot value on line 6.
         let mut rows = initial_snapshot();
@@ -1150,7 +1272,12 @@ mod tests {
         let mut rows = initial_snapshot();
         rows.push(book_row(100_000, false, "ask", "9350", "2.5").replace(",false,", ",no,"));
         let book = with_header(BOOK_HEADER, &rows);
-        assert_parse_error(ingest_error(&base_trades(), &book), "book.csv", 6, "is_snapshot");
+        assert_parse_error(
+            ingest_error(&base_trades(), &book),
+            "book.csv",
+            6,
+            "is_snapshot",
+        );
 
         // A row of another instrument.
         let mut rows = initial_snapshot();
@@ -1160,7 +1287,12 @@ mod tests {
 
         // A non-integer timestamp.
         let trades = base_trades().replace("1580515200150000,", "15805152001500.5,");
-        assert_parse_error(ingest_error(&trades, &base_book()), "trades.csv", 3, "timestamp");
+        assert_parse_error(
+            ingest_error(&trades, &base_book()),
+            "trades.csv",
+            3,
+            "timestamp",
+        );
     }
 
     #[test]
@@ -1211,14 +1343,27 @@ mod tests {
         assert_eq!(kept_1001, 1);
 
         let off_tick = find(&ds, "precision.price_off_tick");
-        assert_eq!((off_tick.count, off_tick.severity, off_tick.passed), (1, Severity::Error, false));
-        assert!(off_tick.examples[0].contains("trades.csv:4"), "{:?}", off_tick.examples);
+        assert_eq!(
+            (off_tick.count, off_tick.severity, off_tick.passed),
+            (1, Severity::Error, false)
+        );
+        assert!(
+            off_tick.examples[0].contains("trades.csv:4"),
+            "{:?}",
+            off_tick.examples
+        );
         let off_lot = find(&ds, "precision.qty_off_lot");
         assert_eq!((off_lot.count, off_lot.passed), (1, false));
 
         let dup = find(&ds, "trades.duplicate_id");
-        assert_eq!((dup.count, dup.severity, dup.passed), (2, Severity::Error, false));
-        assert!(dup.detail.contains("1 rows repeat an earlier trade id with the same"));
+        assert_eq!(
+            (dup.count, dup.severity, dup.passed),
+            (2, Severity::Error, false)
+        );
+        assert!(
+            dup.detail
+                .contains("1 rows repeat an earlier trade id with the same")
+        );
         assert!(dup.examples.iter().any(|e| e.contains("trades.csv:3")));
         assert!(dup.examples.iter().any(|e| e.contains("trades.csv:5")));
 
@@ -1227,7 +1372,10 @@ mod tests {
         assert!(gap.examples[0].contains("id 1003 follows id 1001"));
 
         let missing_side = find(&ds, "trades.missing_side");
-        assert_eq!((missing_side.count, missing_side.severity), (1, Severity::Info));
+        assert_eq!(
+            (missing_side.count, missing_side.severity),
+            (1, Severity::Info)
+        );
         let sideless = ds
             .events
             .iter()
@@ -1284,8 +1432,15 @@ mod tests {
         assert_eq!(book.top_asks(10), vec![(18_702, 2.0), (18_703, 1.0)]);
 
         let check = find(&ds, "depth.mid_file_snapshot");
-        assert_eq!((check.count, check.severity, check.passed), (1, Severity::Warn, false));
-        assert!(check.examples[0].contains("book.csv:7"), "{:?}", check.examples);
+        assert_eq!(
+            (check.count, check.severity, check.passed),
+            (1, Severity::Warn, false)
+        );
+        assert!(
+            check.examples[0].contains("book.csv:7"),
+            "{:?}",
+            check.examples
+        );
         assert!(find(&ds, "depth.initial_snapshot").passed);
         assert!(find(&ds, "trades.id_gap").detail.contains("Not evaluated"));
     }
@@ -1304,7 +1459,10 @@ mod tests {
         assert_eq!(ds.manifest.end, 300_000_000);
         let last = ds.events.last().unwrap();
         assert_eq!(kind(last), DEPTH_SNAPSHOT_EVENT);
-        assert_eq!((last.exch_ts - T0_NS, last.px, last.qty), (300_000_000, 9351.0, 2.0));
+        assert_eq!(
+            (last.exch_ts - T0_NS, last.px, last.qty),
+            (300_000_000, 9351.0, 2.0)
+        );
         let book = replay(&ds);
         assert_eq!(book.top_bids(10), vec![(18_697, 2.0), (18_696, 1.0)]);
         assert_eq!(book.top_asks(10), vec![(18_702, 2.0), (18_703, 1.0)]);
@@ -1345,7 +1503,10 @@ mod tests {
         let ds = ingest(&plain(&dir, &with_header(TRADES_HEADER, &[]), &book)).unwrap();
 
         let snapshot = find(&ds, "depth.initial_snapshot");
-        assert_eq!((snapshot.passed, snapshot.severity), (false, Severity::Warn));
+        assert_eq!(
+            (snapshot.passed, snapshot.severity),
+            (false, Severity::Warn)
+        );
         let skew = find(&ds, "time.local_before_exch");
         assert_eq!((skew.count, skew.passed), (1, false));
         // Worst latency was -2 ms; the shift lifts it to +1 ns.
@@ -1367,5 +1528,43 @@ mod tests {
         assert_eq!(cfg.max_duration_ns, None);
         assert_eq!(cfg.base_latency_ns, 0);
         assert_eq!(cfg.gap_warn_ns, 5_000_000_000);
+    }
+}
+
+#[cfg(test)]
+mod line_limit_tests {
+    use std::io::Write;
+
+    use super::*;
+    use crate::testutil::TempDir;
+
+    const TRADES_HEADER: &str = "exchange,symbol,timestamp,local_timestamp,id,side,price,amount";
+
+    /// A gzip stream that decompresses to one enormous line must fail with a clear error after
+    /// reading at most MAX_LINE_BYTES + 2 bytes, instead of buffering the whole line.
+    #[test]
+    fn hostile_long_line_is_refused() {
+        let tmp = TempDir::new("long-line");
+        let path = tmp.path().join("trades.csv.gz");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+        writeln!(gz, "{TRADES_HEADER}").unwrap();
+        // 8 MiB of 'A' without a newline compresses to a few KiB.
+        let chunk = vec![b'A'; 1 << 20];
+        for _ in 0..8 {
+            gz.write_all(&chunk).unwrap();
+        }
+        gz.finish().unwrap();
+
+        let mut csv = CsvFile::open(&path, TRADES_HEADER, "trades").unwrap();
+        let mut buf = Vec::new();
+        match csv.read_line(&mut buf) {
+            Err(DataError::Parse { line, message, .. }) => {
+                assert_eq!(line, 2);
+                assert!(message.contains("longer than"), "{message}");
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+        assert!(buf.len() <= MAX_LINE_BYTES + 2);
     }
 }

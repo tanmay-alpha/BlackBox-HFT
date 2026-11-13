@@ -155,10 +155,8 @@ mod tests {
 
     #[test]
     fn missing_root_lists_nothing_and_unknown_dataset_is_not_found() {
-        let root = std::env::temp_dir().join(format!(
-            "bb-app-datasets-missing-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("bb-app-datasets-missing-{}", std::process::id()));
         assert!(list_manifests(&root).unwrap().is_empty());
         assert!(matches!(
             find_manifest(&root, "nope"),

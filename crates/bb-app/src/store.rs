@@ -151,7 +151,12 @@ impl FsRunStore {
 
     /// Serializes `value` to `dir/name` through a temporary file in the same directory (a rename
     /// within one directory is atomic; across directories it might not be).
-    fn write_atomic<T: Serialize>(&self, dir: &Path, name: &str, value: &T) -> Result<(), AppError> {
+    fn write_atomic<T: Serialize>(
+        &self,
+        dir: &Path,
+        name: &str,
+        value: &T,
+    ) -> Result<(), AppError> {
         let target = dir.join(name);
         let tmp = dir.join(format!(
             ".{name}.{}.{}.tmp",

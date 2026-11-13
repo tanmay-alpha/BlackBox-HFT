@@ -54,12 +54,21 @@ impl AppError {
         }
     }
 
-    /// The documented error body for this error.
+    /// The documented error body for this error. Internal failures carry server-side details
+    /// (file paths, panic messages); those are written to the server log and replaced with a
+    /// generic message in the response.
     pub fn body(&self) -> ErrorBody {
+        let message = match self {
+            AppError::Internal(detail) => {
+                eprintln!("internal error: {detail}");
+                "internal server error; the details are in the server log".to_string()
+            }
+            other => other.to_string(),
+        };
         ErrorBody {
             error: ErrorDetail {
                 code: self.code().to_string(),
-                message: self.to_string(),
+                message,
             },
         }
     }

@@ -244,6 +244,16 @@ pub enum ScriptedPrice {
     FromTouch { offset: i64 },
 }
 
+/// Shortest allowed strategy evaluation interval (1 ms).
+pub const MIN_INTERVAL_NS: i64 = 1_000_000;
+/// Longest allowed strategy evaluation interval (1 h).
+pub const MAX_INTERVAL_NS: i64 = 3_600_000_000_000;
+/// Upper bound on any single modeled latency, jitter or feed offset (60 s).
+pub const MAX_LATENCY_NS: i64 = 60_000_000_000;
+/// Upper bound on strategy evaluations in one run, checked against the dataset's span by the
+/// application before simulating. At the minimum interval it allows a ~33-minute dataset.
+pub const MAX_TICKS_PER_RUN: i64 = 2_000_000;
+
 impl RunConfig {
     /// Checks every numeric parameter. Returns human-readable problems; empty means valid.
     pub fn validate(&self) -> Vec<String> {
@@ -252,16 +262,25 @@ impl RunConfig {
         if self.dataset_id.is_empty() {
             e.push("dataset_id is empty".into());
         }
-        if self.strategy.interval_ns <= 0 {
-            e.push("strategy.interval_ns must be positive".into());
+        // Bounds keep every run's work finite and every timestamp sum far from i64 overflow:
+        // a 1 ns interval would ask for a billion strategy evaluations per simulated second, and
+        // an i64::MAX interval wraps the engine clock.
+        if !(MIN_INTERVAL_NS..=MAX_INTERVAL_NS).contains(&self.strategy.interval_ns) {
+            e.push(format!(
+                "strategy.interval_ns must be between {MIN_INTERVAL_NS} (1 ms) and \
+                 {MAX_INTERVAL_NS} (1 h)"
+            ));
         }
+        let latency_ok = |v: i64| (0..=MAX_LATENCY_NS).contains(&v);
         match self.execution.order_latency {
             OrderLatencyConfig::Constant {
                 entry_ns,
                 response_ns,
             } => {
-                if entry_ns < 0 || response_ns < 0 {
-                    e.push("order latency must be non-negative".into());
+                if !latency_ok(entry_ns) || !latency_ok(response_ns) {
+                    e.push(format!(
+                        "order latency must be between 0 and {MAX_LATENCY_NS} ns (60 s)"
+                    ));
                 }
             }
             OrderLatencyConfig::Jitter {
@@ -269,8 +288,11 @@ impl RunConfig {
                 response_ns,
                 jitter_ns,
             } => {
-                if entry_ns < 0 || response_ns < 0 || jitter_ns < 0 {
-                    e.push("order latency and jitter must be non-negative".into());
+                if !latency_ok(entry_ns) || !latency_ok(response_ns) || !latency_ok(jitter_ns) {
+                    e.push(format!(
+                        "order latency and jitter must each be between 0 and {MAX_LATENCY_NS} \
+                         ns (60 s)"
+                    ));
                 }
             }
         }
@@ -280,14 +302,18 @@ impl RunConfig {
                  strategy see events before the dataset says they were received"
                     .into(),
             );
+        } else if self.execution.feed_latency_offset_ns > MAX_LATENCY_NS {
+            e.push(format!(
+                "feed_latency_offset_ns must be at most {MAX_LATENCY_NS} ns (60 s)"
+            ));
         }
         match self.execution.queue_model {
             QueueModelConfig::PowerProb { n }
             | QueueModelConfig::PowerProb2 { n }
-            | QueueModelConfig::PowerProb3 { n } => {
-                if !finite_pos(n) {
-                    e.push("queue model exponent n must be finite and positive".into());
-                }
+            | QueueModelConfig::PowerProb3 { n }
+                if !finite_pos(n) =>
+            {
+                e.push("queue model exponent n must be finite and positive".into());
             }
             _ => {}
         }
@@ -357,7 +383,18 @@ impl RunConfig {
                         ));
                     }
                     if !finite_pos(o.qty) {
-                        e.push(format!("scripted: order '{}' qty must be positive", o.label));
+                        e.push(format!(
+                            "scripted: order '{}' qty must be positive",
+                            o.label
+                        ));
+                    }
+                    if o.ord_type == OrdType::Market {
+                        e.push(format!(
+                            "scripted: order '{}' is a market order; market orders are not \
+                             supported on hftbacktest 0.9.4 (see docs/EXECUTION_MODEL.md, \
+                             defect 5); use an immediate-or-cancel limit order",
+                            o.label
+                        ));
                     }
                 }
             }

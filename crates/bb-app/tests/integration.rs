@@ -18,7 +18,8 @@ use axum::{
 use bb_app::{
     AppError,
     api::{
-        CompareRequest, ErrorBody, Health, OrderDetail, OrdersPage, Preset, RunRequest, TapePage,
+        CompareRequest, Demo, ErrorBody, Health, OrderDetail, OrdersPage, Preset, RunRequest,
+        RunTimeline, TapePage,
     },
     datasets::{DatasetCache, DatasetCtx},
     pipeline, presets,
@@ -31,7 +32,7 @@ use bb_core::{
     config::{ExchangeModel, OrderLatencyConfig, QueueModelConfig, RunConfig},
     dataset::DatasetManifest,
     market::ReplayWindow,
-    result::{EquitySample, FillRecord, RunSummary},
+    result::{EquitySample, FillRecord, RunResult, RunSummary},
     time::NS_PER_S,
 };
 use bb_data::synthetic::SyntheticConfig;
@@ -304,7 +305,12 @@ fn fs_run_store_round_trips_and_rejects_malformed_ids() {
     assert_eq!(store.list().unwrap().len(), 2);
 
     // Malformed ids are rejected before any path is built from them.
-    for bad in ["../outside", "ABCDEF0123456789", "0123", "0123456789abcdef/.."] {
+    for bad in [
+        "../outside",
+        "ABCDEF0123456789",
+        "0123",
+        "0123456789abcdef/..",
+    ] {
         assert!(
             matches!(store.get(bad), Err(AppError::InvalidRequest(_))),
             "get({bad:?})"
@@ -360,8 +366,8 @@ fn grid_runs_every_cell_as_a_stored_run() {
 
     let grid = pipeline::run_grid(&ctx, &spec, &store, 2).expect("grid");
     assert_eq!(grid.spec, spec);
-    assert_eq!(grid.x_labels, ["1000000", "20000000"]);
-    assert_eq!(grid.y_labels, ["0.0002", "-0.0001"]);
+    assert_eq!(grid.x_labels, ["1 ms", "20 ms"]);
+    assert_eq!(grid.y_labels, ["2 bp", "-1 bp"]);
     assert_eq!(grid.cells.len(), 4);
 
     let mut run_ids = BTreeSet::new();
@@ -380,7 +386,10 @@ fn grid_runs_every_cell_as_a_stored_run() {
             cell.result_sha256.as_deref(),
             Some(stored.manifest.result_sha256.as_str())
         );
-        assert_eq!(stored.manifest.config, spec.y.apply(&spec.x.apply(&spec.base, xi), yi));
+        assert_eq!(
+            stored.manifest.config,
+            spec.y.apply(&spec.x.apply(&spec.base, xi), yi)
+        );
         let summary = store.summary(run_id).unwrap().expect("summary");
         assert_eq!(
             summary.label,
@@ -548,7 +557,12 @@ async fn ok<T: DeserializeOwned>(app: &Router, request: Request<Body>) -> T {
 }
 
 /// Sends a request that must fail with the documented error body.
-async fn expect_error(app: &Router, request: Request<Body>, status: StatusCode, code: &str) -> String {
+async fn expect_error(
+    app: &Router,
+    request: Request<Body>,
+    status: StatusCode,
+    code: &str,
+) -> String {
     let what = format!("{} {}", request.method(), request.uri());
     let (got, bytes) = send(app, request).await;
     assert_eq!(got, status, "{what}: {}", String::from_utf8_lossy(&bytes));
@@ -564,7 +578,7 @@ async fn http_api_end_to_end() {
     write_dataset(&dir);
     let app = test_app(&dir, None);
 
-    // Health, with CORS for the web UI's development origin.
+    // No CORS headers are emitted: the UI is same-origin.
     let request = Request::builder()
         .uri("/api/health")
         .header(header::ORIGIN, "http://localhost:5173")
@@ -574,14 +588,60 @@ async fn http_api_end_to_end() {
         Ok(response) => response,
         Err(never) => match never {},
     };
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
+    assert!(
         response
             .headers()
             .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-            .and_then(|v| v.to_str().ok()),
-        Some("*")
+            .is_none()
     );
+
+    // The access guard the binary installs: foreign origins and rebound hosts are refused before
+    // any handler runs, including mutations; the server's own names and origins are admitted.
+    let guarded = bb_app::access::guard(
+        app.clone(),
+        bb_app::access::AccessPolicy::for_listener("127.0.0.1:8787".parse().unwrap(), &[], &[]),
+    );
+    let req = |method: &str, uri: &str, host: &str, origin: Option<&str>| {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::HOST, host);
+        if let Some(o) = origin {
+            b = b.header(header::ORIGIN, o);
+        }
+        b.body(Body::empty()).expect("valid request")
+    };
+    let (status, _) = send(&guarded, req("GET", "/api/health", "127.0.0.1:8787", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(
+        &guarded,
+        req(
+            "GET",
+            "/api/runs",
+            "localhost:8787",
+            Some("http://localhost:8787"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = send(
+        &guarded,
+        req("GET", "/api/runs", "attacker.example:8787", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(decode::<ErrorBody>(&body).error.code, "forbidden");
+    let (status, _) = send(
+        &guarded,
+        req(
+            "DELETE",
+            "/api/runs/0123456789abcdef",
+            "127.0.0.1:8787",
+            Some("https://evil.example"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     let health: Health = ok(&app, get("/api/health")).await;
     assert_eq!(health.status, "ok");
     assert_eq!(health.contract_version, CONTRACT_VERSION);
@@ -616,12 +676,28 @@ async fn http_api_end_to_end() {
     assert!(!window.bbo.is_empty());
     let narrow: ReplayWindow = ok(
         &app,
-        get(&format!("{replay_uri}?t0=1000000000&t1=2000000000&step_ns=100000000&levels=3")),
+        get(&format!(
+            "{replay_uri}?t0=1000000000&t1=2000000000&step_ns=100000000&levels=3"
+        )),
     )
     .await;
-    assert_eq!((narrow.t0, narrow.t1, narrow.step_ns, narrow.levels), (1_000_000_000, 2_000_000_000, 100_000_000, 3));
-    assert!(narrow.depth.iter().all(|f| f.bids.len() <= 3 && f.asks.len() <= 3));
-    for query in ["?t0=10&t1=5", "?t0=7&t1=7", "?step_ns=0", "?step_ns=-5", "?t0=abc"] {
+    assert_eq!(
+        (narrow.t0, narrow.t1, narrow.step_ns, narrow.levels),
+        (1_000_000_000, 2_000_000_000, 100_000_000, 3)
+    );
+    assert!(
+        narrow
+            .depth
+            .iter()
+            .all(|f| f.bids.len() <= 3 && f.asks.len() <= 3)
+    );
+    for query in [
+        "?t0=10&t1=5",
+        "?t0=7&t1=7",
+        "?step_ns=0",
+        "?step_ns=-5",
+        "?t0=abc",
+    ] {
         expect_error(
             &app,
             get(&format!("{replay_uri}{query}")),
@@ -641,7 +717,8 @@ async fn http_api_end_to_end() {
     // Presets, defaulting to the first dataset.
     let catalogue: Vec<Preset> = ok(&app, get("/api/presets")).await;
     assert_eq!(catalogue, presets::presets(&manifest));
-    let explicit: Vec<Preset> = ok(&app, get(&format!("/api/presets?dataset_id={DATASET_ID}"))).await;
+    let explicit: Vec<Preset> =
+        ok(&app, get(&format!("/api/presets?dataset_id={DATASET_ID}"))).await;
     assert_eq!(explicit, catalogue);
     expect_error(
         &app,
@@ -702,12 +779,19 @@ async fn http_api_end_to_end() {
         &app,
         get(&format!(
             "{run_uri}/orders?outcome={}",
-            first_outcome.as_str().expect("outcome serializes as a string")
+            first_outcome
+                .as_str()
+                .expect("outcome serializes as a string")
         )),
     )
     .await;
     assert!(by_outcome.total >= 1);
-    assert!(by_outcome.orders.iter().all(|o| o.outcome == all.orders[0].outcome));
+    assert!(
+        by_outcome
+            .orders
+            .iter()
+            .all(|o| o.outcome == all.orders[0].outcome)
+    );
     expect_error(
         &app,
         get(&format!("{run_uri}/orders?outcome=bogus")),
@@ -723,7 +807,12 @@ async fn http_api_end_to_end() {
         assert_eq!(&detail.order, order);
         assert_eq!(detail.instrument, manifest.instrument);
         assert!(!detail.events.is_empty());
-        assert!(detail.events.iter().all(|e| e.order_id == Some(order.order_id)));
+        assert!(
+            detail
+                .events
+                .iter()
+                .all(|e| e.order_id == Some(order.order_id))
+        );
         assert!(detail.events.windows(2).all(|w| w[0].seq < w[1].seq));
         assert!(detail.fills.iter().all(|f| f.order_id == order.order_id));
         assert_eq!(detail.fills.len() as u32, order.fill_count);
@@ -734,7 +823,10 @@ async fn http_api_end_to_end() {
 
         let tape: TapePage = ok(
             &app,
-            get(&format!("{run_uri}/tape?order_id={}&limit=5000", order.order_id)),
+            get(&format!(
+                "{run_uri}/tape?order_id={}&limit=5000",
+                order.order_id
+            )),
         )
         .await;
         assert_eq!(tape.total, detail.events.len() as u64);
@@ -760,7 +852,10 @@ async fn http_api_end_to_end() {
     // Tape paging.
     let head: TapePage = ok(&app, get(&format!("{run_uri}/tape?limit=5"))).await;
     assert_eq!(head.total, probe.tape_len);
-    assert!(probe.tape_len > 5, "five probes leave more than five events");
+    assert!(
+        probe.tape_len > 5,
+        "five probes leave more than five events"
+    );
     let seqs: Vec<u64> = head.events.iter().map(|e| e.seq).collect();
     assert_eq!(seqs, [0, 1, 2, 3, 4]);
     let middle: TapePage = ok(&app, get(&format!("{run_uri}/tape?from_seq=3&limit=2"))).await;
@@ -805,7 +900,10 @@ async fn http_api_end_to_end() {
         ),
     )
     .await;
-    assert_eq!(slow.label, "touch_maker", "an absent label defaults to the strategy kind");
+    assert_eq!(
+        slow.label, "touch_maker",
+        "an absent label defaults to the strategy kind"
+    );
     let comparison: Comparison = ok(
         &app,
         post(
@@ -952,8 +1050,15 @@ async fn http_api_end_to_end() {
     expect_error(&app, get(&run_uri), StatusCode::NOT_FOUND, "not_found").await;
     expect_error(&app, delete(&run_uri), StatusCode::NOT_FOUND, "not_found").await;
     let runs: Vec<RunSummary> = ok(&app, get("/api/runs")).await;
-    assert!(runs.iter().all(|r| r.manifest.run_id != probe.manifest.run_id));
-    assert_eq!(runs.len(), 3, "baseline, slow and the second grid cell remain");
+    assert!(
+        runs.iter()
+            .all(|r| r.manifest.run_id != probe.manifest.run_id)
+    );
+    assert_eq!(
+        runs.len(),
+        3,
+        "baseline, slow and the second grid cell remain"
+    );
 }
 
 #[tokio::test]
@@ -961,7 +1066,11 @@ async fn web_ui_is_served_with_single_page_app_fallback() {
     let dir = TempDir::new("web");
     let web = dir.0.join("web");
     std::fs::create_dir_all(web.join("assets")).unwrap();
-    std::fs::write(web.join("index.html"), "<!doctype html><title>BlackBox</title>").unwrap();
+    std::fs::write(
+        web.join("index.html"),
+        "<!doctype html><title>BlackBox</title>",
+    )
+    .unwrap();
     std::fs::write(web.join("assets").join("app.js"), "console.log('ui');").unwrap();
     let app = test_app(&dir, Some(web));
 
@@ -993,4 +1102,458 @@ async fn web_ui_is_served_with_single_page_app_fallback() {
     assert!(catalogue.is_empty());
     let datasets: Vec<DatasetManifest> = ok(&app, get("/api/datasets")).await;
     assert!(datasets.is_empty());
+}
+
+// ----- replay terminal, canonical demos and research exports -----
+
+#[tokio::test]
+async fn timeline_filters_both_clocks_and_preserves_state_at_window_start() {
+    let dir = TempDir::new("timeline");
+    let ctx = make_dataset(&dir);
+    let run = pipeline::execute(&ctx, &preset_config(ctx.manifest(), "maker_baseline")).unwrap();
+    FsRunStore::open(dir.runs())
+        .unwrap()
+        .put(&run, "timeline")
+        .unwrap();
+    let app = test_app(&dir, None);
+    let uri = format!("/api/runs/{}/timeline", run.manifest.run_id);
+    let t0 = run.equity[run.equity.len() / 3].ts + 1;
+    let t1 = run.equity[run.equity.len() / 2].ts;
+    let window: RunTimeline = ok(&app, get(&format!("{uri}?t0={t0}&t1={t1}&max_events=3"))).await;
+    let expected_events: Vec<_> = run
+        .tape
+        .iter()
+        .filter(|e| (t0..=t1).contains(&e.ts))
+        .cloned()
+        .collect();
+    assert!(expected_events.len() > 3);
+    assert!(
+        expected_events
+            .iter()
+            .any(|e| e.clock == bb_core::Clock::Local)
+    );
+    assert!(
+        expected_events
+            .iter()
+            .any(|e| e.clock == bb_core::Clock::Exchange)
+    );
+    assert_eq!(window.events, expected_events[..3]);
+    assert_eq!(window.events_total, expected_events.len() as u64);
+    assert!(window.events_truncated);
+    assert_eq!(window.run_id, run.manifest.run_id);
+    assert_eq!(window.dataset_id, DATASET_ID);
+    assert_eq!((window.t0, window.t1), (t0, t1));
+    assert_eq!(window.run_start, run.equity.first().unwrap().ts);
+    assert_eq!(window.run_end, run.equity.last().unwrap().ts);
+    let mut expected_equity = vec![*run.equity.iter().rev().find(|s| s.ts < t0).unwrap()];
+    expected_equity.extend(run.equity.iter().filter(|s| (t0..=t1).contains(&s.ts)));
+    assert_eq!(window.equity, expected_equity);
+    assert_eq!(
+        window.fills,
+        run.fills
+            .iter()
+            .filter(|f| (t0..=t1).contains(&f.ts))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    let mut expected_orders: Vec<_> = run
+        .orders
+        .iter()
+        .filter(|o| {
+            let end = o.terminal_ts.unwrap_or_else(|| {
+                run.tape
+                    .iter()
+                    .rev()
+                    .find(|e| e.order_id == Some(o.order_id))
+                    .map_or(window.run_end, |e| e.ts)
+            });
+            o.decision_ts <= t1 && end >= t0
+        })
+        .cloned()
+        .collect();
+    expected_orders.sort_by_key(|o| o.order_id);
+    assert_eq!(window.orders, expected_orders);
+
+    let all: RunTimeline = ok(
+        &app,
+        get(&format!(
+            "{uri}?t0={}&t1={}&max_events=50001",
+            window.run_start, window.run_end
+        )),
+    )
+    .await;
+    assert_eq!(all.events, run.tape);
+    assert!(!all.events_truncated);
+    assert_eq!(all.equity, run.equity);
+    let none: RunTimeline = ok(&app, get(&format!("{uri}?t0={t0}&t1={t1}&max_events=0"))).await;
+    assert!(none.events.is_empty());
+    assert_eq!(none.events_total, window.events_total);
+    assert!(none.events_truncated);
+    let default: RunTimeline = ok(&app, get(&uri)).await;
+    assert_eq!(default.t0, window.run_start);
+    assert_eq!(
+        default.t1,
+        window.run_end.min(window.run_start + 60 * NS_PER_S)
+    );
+    let ts = run.equity[2].ts;
+    let instant: RunTimeline = ok(&app, get(&format!("{uri}?t0={ts}&t1={ts}"))).await;
+    assert_eq!(instant.equity, run.equity[1..=2]);
+    expect_error(
+        &app,
+        get(&format!("{uri}?t0=2&t1=1")),
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+    )
+    .await;
+    expect_error(
+        &app,
+        get(&format!("{uri}?max_events=-1")),
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn timeline_order_overlap_uses_terminal_then_last_event_then_run_end() {
+    let dir = TempDir::new("timeline-overlap");
+    let ctx = make_dataset(&dir);
+    let mut run =
+        pipeline::execute(&ctx, &preset_config(ctx.manifest(), "maker_baseline")).unwrap();
+    // A boundary fixture derived from real run records, exercising all three documented
+    // lifetime sources independently of which outcomes the generated market produces.
+    let original = run.orders[0].clone();
+    run.orders.clear();
+    run.tape.truncate(3);
+    for (i, event) in run.tape.iter_mut().enumerate() {
+        event.seq = i as u64;
+        event.order_id = Some(i as u64 + 3);
+        event.ts = [9, 10, 11][i];
+    }
+    for (id, decision, terminal, last_seq) in [
+        (1, 0, Some(9), 2),
+        (2, 0, Some(10), 0),
+        (3, 0, None, 0),
+        (4, 0, None, 1),
+        (5, 0, None, 2),
+        (6, 0, None, 999),
+        (7, 11, None, 999),
+        (8, 10, Some(12), 999),
+    ] {
+        let mut order = original.clone();
+        order.order_id = id;
+        order.decision_ts = decision;
+        order.terminal_ts = terminal;
+        order.last_seq = last_seq;
+        run.orders.push(order);
+    }
+    run.orders.reverse();
+    FsRunStore::open(dir.runs())
+        .unwrap()
+        .put(&run, "boundary fixture")
+        .unwrap();
+    let app = test_app(&dir, None);
+    let window: RunTimeline = ok(
+        &app,
+        get(&format!(
+            "/api/runs/{}/timeline?t0=10&t1=10",
+            run.manifest.run_id
+        )),
+    )
+    .await;
+    assert_eq!(
+        window.orders.iter().map(|o| o.order_id).collect::<Vec<_>>(),
+        [2, 4, 5, 6, 8]
+    );
+    assert_eq!(window.events.len(), 1);
+    assert_eq!(window.events[0].ts, 10);
+    let after: RunTimeline = ok(
+        &app,
+        get(&format!(
+            "/api/runs/{}/timeline?t0={}&t1={}",
+            run.manifest.run_id,
+            window.run_end + 1,
+            window.run_end + 2
+        )),
+    )
+    .await;
+    assert_eq!(after.equity, [*run.equity.last().unwrap()]);
+    assert!(after.events.is_empty() && after.fills.is_empty() && after.orders.is_empty());
+}
+
+async fn attachment(app: &Router, uri: &str, content_type: &str, filename: &str) -> Vec<u8> {
+    let response = app.clone().oneshot(get(uri)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+    assert_eq!(
+        response.headers()[header::CONTENT_DISPOSITION],
+        format!("attachment; filename=\"{filename}\"")
+    );
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec()
+}
+
+#[tokio::test]
+async fn report_and_export_preserve_provenance_and_reproduce_the_stored_run() {
+    let dir = TempDir::new("exports");
+    let ctx = make_dataset(&dir);
+    let run = pipeline::execute(&ctx, &preset_config(ctx.manifest(), "maker_baseline")).unwrap();
+    FsRunStore::open(dir.runs())
+        .unwrap()
+        .put(&run, "export")
+        .unwrap();
+    let app = test_app(&dir, None);
+    let id = &run.manifest.run_id;
+    let report = String::from_utf8(
+        attachment(
+            &app,
+            &format!("/api/runs/{id}/report"),
+            "text/markdown; charset=utf-8",
+            &format!("blackbox-run-{id}.md"),
+        )
+        .await,
+    )
+    .unwrap();
+    for required in [
+        id.as_str(),
+        run.manifest.config_sha256.as_str(),
+        run.manifest.result_sha256.as_str(),
+        run.manifest.dataset.sha256.as_str(),
+        ctx.manifest().source.vendor.as_str(),
+        "## Assumptions",
+        "## All simulated metrics",
+        "## Engine cross-check",
+        "## Standard limitations",
+        "Nothing here is a real exchange execution.",
+        "Receipt timestamps were generated synthetically",
+        "Worst quality severity:",
+    ] {
+        assert!(report.contains(required), "missing {required}");
+    }
+    assert!(report.contains(&format!(
+        "blackbox run --config blackbox-run-{id}-config.json --dataset {DATASET_ID}"
+    )));
+    assert!(report.contains(&serde_json::to_string_pretty(&run.manifest.config).unwrap()));
+    assert!(report.contains(&serde_json::to_string_pretty(&run.metrics).unwrap()));
+    assert!(report.contains(&serde_json::to_string_pretty(&run.engine_check).unwrap()));
+    let exported: RunResult = decode(
+        &attachment(
+            &app,
+            &format!("/api/runs/{id}/export"),
+            "application/json",
+            &format!("blackbox-run-{id}.json"),
+        )
+        .await,
+    );
+    assert_eq!(exported, run);
+    std::fs::remove_dir_all(dir.datasets()).unwrap();
+    let exported: RunResult = ok(&app, get(&format!("/api/runs/{id}/export"))).await;
+    assert_eq!(exported, run);
+    expect_error(
+        &app,
+        get(&format!("/api/runs/{id}/report")),
+        StatusCode::NOT_FOUND,
+        "not_found",
+    )
+    .await;
+    for endpoint in ["timeline", "report", "export"] {
+        expect_error(
+            &app,
+            get(&format!("/api/runs/0123456789abcdef/{endpoint}")),
+            StatusCode::NOT_FOUND,
+            "not_found",
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn demos_validate_execute_and_vary_exactly_the_declared_paths() {
+    let dir = TempDir::new("demos");
+    let ctx = make_dataset(&dir);
+    let app = test_app(&dir, None);
+    let demos: Vec<Demo> = ok(&app, get(&format!("/api/demos?dataset_id={DATASET_ID}"))).await;
+    let default: Vec<Demo> = ok(&app, get("/api/demos")).await;
+    assert_eq!(default, demos);
+    assert_eq!(
+        demos.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+        ["cost_of_latency", "queue_position", "gross_vs_net"]
+    );
+    for demo in demos {
+        assert_eq!(demo.reproduce.len(), demo.runs.len());
+        assert!(
+            demo.controlled
+                .iter()
+                .any(|s| s.contains(DATASET_ID) && s.contains(&ctx.manifest().events_sha256))
+        );
+        assert!(demo.controlled.iter().any(|s| s.contains("Strategy")));
+        assert!(demo.controlled.iter().any(|s| s.contains("Seed")));
+        assert!(demo.controlled.iter().any(|s| s.contains("Risk limits")));
+        let mut results = Vec::new();
+        for (scenario, recipe) in demo.runs.iter().zip(&demo.reproduce) {
+            assert!(scenario.config.validate().is_empty());
+            let config_text = recipe
+                .split("<<'BLACKBOX_CONFIG'\n")
+                .nth(1)
+                .unwrap()
+                .split("\nBLACKBOX_CONFIG\n")
+                .next()
+                .unwrap();
+            assert_eq!(decode::<RunConfig>(config_text.as_bytes()), scenario.config);
+            assert!(recipe.contains("blackbox run --config blackbox-demo-"));
+            assert!(recipe.ends_with(&format!("--dataset {DATASET_ID}")));
+            let request = RunRequest {
+                config: scenario.config.clone(),
+                label: Some(scenario.label.clone()),
+            };
+            let summary: RunSummary = ok(&app, post("/api/runs", &request)).await;
+            let again: RunSummary = ok(&app, post("/api/runs", &request)).await;
+            assert_eq!(summary, again);
+            let result: RunResult = ok(
+                &app,
+                get(&format!("/api/runs/{}/export", summary.manifest.run_id)),
+            )
+            .await;
+            assert!(result.ticks > 0);
+            results.push(result);
+        }
+        let mut differences = BTreeSet::new();
+        for result in &results[1..] {
+            let comparison = bb_forensics::compare_runs(&results[0], "first", result, "other");
+            differences.extend(comparison.config_diffs.into_iter().map(|d| d.path));
+        }
+        assert_eq!(demo.varied, differences.into_iter().collect::<Vec<_>>());
+        let expected: &[&str] = match demo.id.as_str() {
+            "cost_of_latency" => &[
+                "execution.order_latency.entry_ns",
+                "execution.order_latency.response_ns",
+            ],
+            "queue_position" => &["execution.queue_model.n", "execution.queue_model.type"],
+            "gross_vs_net" => &["execution.fees.maker", "execution.fees.taker"],
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            demo.varied.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+        if demo.id == "gross_vs_net" {
+            assert!(
+                !results[0].fills.is_empty(),
+                "fee identity must not be vacuous"
+            );
+            let fills_without_fees = |r: &RunResult| {
+                r.fills
+                    .iter()
+                    .cloned()
+                    .map(|mut f| {
+                        f.fee = 0.0;
+                        f
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for result in &results[1..] {
+                // FillRecord includes accounting: fee is the only allowed difference.
+                assert_eq!(fills_without_fees(&results[0]), fills_without_fees(result));
+                assert!(
+                    (result.metrics.net_pnl - results[0].metrics.net_pnl + result.metrics.fees
+                        - results[0].metrics.fees)
+                        .abs()
+                        < 1e-8
+                );
+            }
+        }
+    }
+    expect_error(
+        &app,
+        get("/api/demos?dataset_id=missing"),
+        StatusCode::NOT_FOUND,
+        "not_found",
+    )
+    .await;
+    let empty = TempDir::new("empty-demos");
+    let catalogue: Vec<Demo> = ok(&test_app(&empty, None), get("/api/demos")).await;
+    assert!(catalogue.is_empty());
+}
+
+#[test]
+fn demos_cli_lists_and_executes_every_scenario_idempotently() {
+    let dir = TempDir::new("demos-cli");
+    write_dataset(&dir);
+    let invoke = |execute: bool| {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_blackbox"));
+        cmd.arg("--data-dir")
+            .arg(&dir.0)
+            .arg("demos")
+            .args(["--dataset", DATASET_ID]);
+        if execute {
+            cmd.arg("--run");
+        }
+        let output = cmd.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let listed = invoke(false);
+    for id in ["cost_of_latency", "queue_position", "gross_vs_net"] {
+        assert!(listed.contains(id));
+    }
+    assert!(!dir.runs().exists(), "listing must not simulate");
+    let first = invoke(true);
+    assert_eq!(first.matches("Stored simulated run:").count(), 8);
+    assert_eq!(first.matches("same dataset: true").count(), 5);
+    let store = FsRunStore::open(dir.runs()).unwrap();
+    let before = store.list().unwrap();
+    assert_eq!(before.len(), 6);
+    let second = invoke(true);
+    assert_eq!(first, second);
+    assert_eq!(store.list().unwrap(), before);
+}
+
+// ----- (5) work budgets from the security review -----
+
+#[test]
+fn oversized_grid_is_rejected_without_visiting_cells() {
+    let dir = TempDir::new("grid-budget");
+    let manifest = write_dataset(&dir);
+    let base = presets::presets(&manifest)[0].config.clone();
+    // 100,000 x 100,000 = 10^10 cells: rejected by the structural check alone, instantly.
+    let spec = GridSpec {
+        base,
+        x: GridAxis::MakerFee {
+            values: vec![0.0; 100_000],
+        },
+        y: GridAxis::TakerFee {
+            values: vec![0.0; 100_000],
+        },
+    };
+    let started = std::time::Instant::now();
+    let problems = spec.validate();
+    assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("limit is 100"));
+}
+
+#[test]
+fn degenerate_intervals_are_refused_before_simulation() {
+    let dir = TempDir::new("interval-budget");
+    let manifest = write_dataset(&dir);
+    let mut config = presets::presets(&manifest)[0].config.clone();
+    for interval in [1, 999_999, i64::MAX] {
+        config.strategy.interval_ns = interval;
+        assert!(
+            !config.validate().is_empty(),
+            "interval {interval} must be rejected"
+        );
+    }
+    config.strategy.interval_ns = 100_000_000;
+    config.execution.order_latency = OrderLatencyConfig::Constant {
+        entry_ns: i64::MAX,
+        response_ns: 0,
+    };
+    assert!(!config.validate().is_empty());
 }

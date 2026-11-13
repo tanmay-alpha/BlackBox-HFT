@@ -36,6 +36,16 @@ pub use time::{Ns, RelNs};
 /// Version of the BlackBox result/contract format. Bump on any breaking change to these types.
 pub const CONTRACT_VERSION: u32 = 1;
 
+/// Revision of BlackBox's simulation semantics: everything in the adapter, harness, ledger and
+/// strategies that can change a run's result for the same configuration. It is part of every
+/// run's identity, so a stored run is never returned for code that would now produce a
+/// different result. `crates/bb-app/tests/golden.rs` pins a result hash; when it fails because of
+/// an intended change, bump this and update the pinned hash in the same commit.
+///
+/// History: 1 = first release. 2 = review fixes (late cancel rejections recorded, fill_reset
+/// queue events, hard risk limits, market orders rejected, drawdown halt on locally known fills).
+pub const SIMULATION_REVISION: u32 = 2;
+
 /// Name and exact version of the pinned simulation engine.
 pub const ENGINE_NAME: &str = "hftbacktest";
 pub const ENGINE_VERSION: &str = "0.9.4";

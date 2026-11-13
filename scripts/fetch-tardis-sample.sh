@@ -3,7 +3,7 @@
 #
 # Tardis.dev publishes these files; BlackBox does not redistribute them. Read the vendor's terms
 # before using the data, and never commit or publish anything under data/raw or data/datasets
-# (both are git-ignored). See docs/RESEARCH_AND_SOURCES.md.
+# (both are git-ignored). See docs/OPEN_SOURCE_RESEARCH.md.
 #
 # Usage: scripts/fetch-tardis-sample.sh [exchange] [symbol] [YYYY-MM-DD]
 # Defaults: binance-futures BTCUSDT 2020-02-01 (the book file is about 250 MB).
@@ -15,6 +15,15 @@ day="${3:-2020-02-01}"
 
 if [[ ! "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
   echo "date must be YYYY-MM-DD, got: $day" >&2
+  exit 2
+fi
+# Both become path components and URL segments: no separators, dots-only names or URL syntax.
+if [[ ! "$exchange" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  echo "exchange must match [a-z0-9][a-z0-9-]*, got: $exchange" >&2
+  exit 2
+fi
+if [[ ! "$symbol" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+  echo "symbol must match [A-Za-z0-9][A-Za-z0-9_-]*, got: $symbol" >&2
   exit 2
 fi
 ymd="${day//-//}"
@@ -33,6 +42,8 @@ for kind in trades incremental_book_L2; do
     # --fail: a 401/404 (day not available without an API key) must not leave an error page
     # behind that would later be mistaken for data.
     curl --fail --location --retry 3 --silent --show-error -o "$dest.part" "$url"
+    # Only a complete, valid gzip stream is promoted to the final name.
+    gzip -t "$dest.part"
     mv "$dest.part" "$dest"
   fi
   # A truncated download fails this integrity test instead of failing later during ingestion.

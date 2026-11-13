@@ -11,7 +11,7 @@ use axum::{
         OriginalUri, Path, Query, State,
         rejection::{JsonRejection, PathRejection, QueryRejection},
     },
-    http::{Method, StatusCode, header},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -24,20 +24,18 @@ use bb_core::{
     time::{NS_PER_MS, NS_PER_S},
 };
 use bb_data::book::ReplayRequest;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    services::{ServeDir, ServeFile},
-};
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{
     DISCLAIMER,
     api::{
-        CompareRequest, Health, OrderDetail, OrdersPage, OrdersQuery, Preset, PresetsQuery,
-        ReplayQuery, RunRequest, TapePage, TapeQuery,
+        CompareRequest, Demo, Health, OrderDetail, OrdersPage, OrdersQuery, Preset, PresetsQuery,
+        ReplayQuery, RunRequest, RunTimeline, TapePage, TapeQuery, TimelineQuery,
     },
     datasets::{self, DatasetCache},
+    demos,
     error::AppError,
-    pipeline, presets,
+    pipeline, presets, report,
     store::RunStore,
 };
 
@@ -80,6 +78,7 @@ pub fn router(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router {
         .route("/datasets/{id}", get(get_dataset))
         .route("/datasets/{id}/replay", get(get_replay))
         .route("/presets", get(list_presets))
+        .route("/demos", get(list_demos))
         .route("/runs", get(list_runs).post(create_run))
         .route("/runs/{run_id}", get(get_run).delete(delete_run))
         .route("/runs/{run_id}/engine-check", get(get_engine_check))
@@ -88,6 +87,9 @@ pub fn router(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router {
         .route("/runs/{run_id}/fills", get(list_fills))
         .route("/runs/{run_id}/equity", get(list_equity))
         .route("/runs/{run_id}/tape", get(get_tape))
+        .route("/runs/{run_id}/timeline", get(get_timeline))
+        .route("/runs/{run_id}/report", get(get_report))
+        .route("/runs/{run_id}/export", get(export_run))
         .route("/compare", post(compare_runs))
         .route("/grids", post(run_grid))
         // Unknown API paths answer with the JSON error body, never with the web UI's HTML.
@@ -95,22 +97,15 @@ pub fn router(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router {
         .with_state(state);
 
     let app = Router::new().nest("/api", api);
-    let app = match web_dir {
+    // No CORS layer: the UI is same-origin. Cross-origin and DNS-rebinding access is refused by
+    // `access::guard`, which the binary wraps around this router.
+    match web_dir {
         Some(dir) => {
             let index = ServeFile::new(dir.join("index.html"));
             app.fallback_service(ServeDir::new(dir).fallback(index))
         }
         None => app.fallback(no_such_endpoint),
-    };
-
-    // Any origin may call the API: there is no authentication and no cookie to protect, and the
-    // server binds to loopback unless the operator explicitly chooses another address. This
-    // lets the web UI's development server (a different origin) talk to it.
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE]);
-    app.layer(cors)
+    }
 }
 
 /// Serves `app` on `listener` until Ctrl-C.
@@ -140,7 +135,11 @@ pub fn health() -> Health {
 
 /// Resolves the replay query against the dataset's exchange-clock span `[start, end]`, applying
 /// the documented defaults and caps.
-pub fn replay_request(start: RelNs, end: RelNs, query: &ReplayQuery) -> Result<ReplayRequest, AppError> {
+pub fn replay_request(
+    start: RelNs,
+    end: RelNs,
+    query: &ReplayQuery,
+) -> Result<ReplayRequest, AppError> {
     let t0 = query.t0.unwrap_or(start);
     let t1 = query
         .t1
@@ -151,7 +150,9 @@ pub fn replay_request(start: RelNs, end: RelNs, query: &ReplayQuery) -> Result<R
         )));
     }
     let span = t1.checked_sub(t0).ok_or_else(|| {
-        AppError::InvalidRequest(format!("the window from t0 ({t0}) to t1 ({t1}) is too long"))
+        AppError::InvalidRequest(format!(
+            "the window from t0 ({t0}) to t1 ({t1}) is too long"
+        ))
     })?;
     let step_ns = query
         .step_ns
@@ -161,8 +162,10 @@ pub fn replay_request(start: RelNs, end: RelNs, query: &ReplayQuery) -> Result<R
             "step_ns ({step_ns}) must be positive"
         )));
     }
-    let frames = span / step_ns + 1;
-    if frames > MAX_REPLAY_FRAMES {
+    // Compare before adding the first frame, so `span / step_ns + 1` cannot overflow.
+    let frames = span / step_ns;
+    if frames >= MAX_REPLAY_FRAMES {
+        let frames = frames.saturating_add(1);
         return Err(AppError::InvalidRequest(format!(
             "the window would hold {frames} depth frames; the limit is {MAX_REPLAY_FRAMES}. \
              Increase step_ns or shorten the window"
@@ -196,6 +199,27 @@ where
                 "a worker task failed: {join_error}"
             )))
         })
+}
+
+/// At most this many single-run simulations execute at once; further requests wait their turn.
+/// A run is single-threaded and bounded by the configuration limits, so this caps the server's
+/// CPU and memory under concurrent requests.
+const MAX_CONCURRENT_RUNS: usize = 4;
+static RUN_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_CONCURRENT_RUNS);
+/// One sensitivity grid at a time; a grid already uses `grid_threads` workers internally.
+static GRID_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+/// Like [`blocking`], after taking a slot from `slots`.
+async fn admitted<T, F>(slots: &'static tokio::sync::Semaphore, work: F) -> Result<T, AppError>
+where
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+    T: Send + 'static,
+{
+    let _slot = slots
+        .acquire()
+        .await
+        .map_err(|_| AppError::Internal("the simulation admission queue is closed".into()))?;
+    blocking(work).await
 }
 
 fn load_run(state: &AppState, run_id: &str) -> Result<Arc<RunResult>, AppError> {
@@ -265,7 +289,10 @@ async fn list_presets(
             Some(id) => datasets::find_manifest(&state.data_root, &id)?,
             // Presets are sized for an instrument; with no dataset there is nothing to size
             // them for, so the catalogue is empty rather than made up.
-            None => match datasets::list_manifests(&state.data_root)?.into_iter().next() {
+            None => match datasets::list_manifests(&state.data_root)?
+                .into_iter()
+                .next()
+            {
                 Some(first) => first,
                 None => return Ok(Vec::new()),
             },
@@ -276,12 +303,34 @@ async fn list_presets(
     .map(Json)
 }
 
+async fn list_demos(
+    State(state): Shared,
+    query: Result<Query<PresetsQuery>, QueryRejection>,
+) -> Result<Json<Vec<Demo>>, AppError> {
+    let Query(query) = query?;
+    blocking(move || {
+        let manifest = match query.dataset_id {
+            Some(id) => datasets::find_manifest(&state.data_root, &id)?,
+            None => match datasets::list_manifests(&state.data_root)?
+                .into_iter()
+                .next()
+            {
+                Some(first) => first,
+                None => return Ok(Vec::new()),
+            },
+        };
+        Ok(demos::demos(&manifest))
+    })
+    .await
+    .map(Json)
+}
+
 async fn create_run(
     State(state): Shared,
     payload: Result<Json<RunRequest>, JsonRejection>,
 ) -> Result<Json<RunSummary>, AppError> {
     let Json(request) = payload?;
-    blocking(move || {
+    admitted(&RUN_SLOTS, move || {
         // Validate before looking for the dataset so a broken config is reported as such.
         pipeline::check_config(&request.config)?;
         let ctx = state
@@ -384,9 +433,8 @@ async fn get_order(
             )));
         }
         let dataset = datasets::manifest_for_run(&state.data_root, &run.manifest)?;
-        pipeline::order_detail(&run, &dataset, order_id).ok_or_else(|| {
-            AppError::NotFound(format!("run '{run_id}' has no order {order_id}"))
-        })
+        pipeline::order_detail(&run, &dataset, order_id)
+            .ok_or_else(|| AppError::NotFound(format!("run '{run_id}' has no order {order_id}")))
     })
     .await
     .map(Json)
@@ -440,7 +488,10 @@ async fn get_tape(
     blocking(move || {
         let run = load_run(&state, &run_id)?;
         let from_seq = query.from_seq.unwrap_or(0);
-        let limit = query.limit.unwrap_or(DEFAULT_TAPE_LIMIT).min(MAX_TAPE_LIMIT) as usize;
+        let limit = query
+            .limit
+            .unwrap_or(DEFAULT_TAPE_LIMIT)
+            .min(MAX_TAPE_LIMIT) as usize;
         let page = match query.order_id {
             None => {
                 // The tape is ordered by `seq`, so the page start is found by bisection.
@@ -466,6 +517,130 @@ async fn get_tape(
     })
     .await
     .map(Json)
+}
+
+/// Selects inclusive windows without assuming the tape's two clocks are time-sorted.
+fn timeline(run: &RunResult, query: &TimelineQuery) -> Result<RunTimeline, AppError> {
+    let run_start = run.equity.first().map_or(0, |s| s.ts);
+    let run_end = run.equity.last().map_or(0, |s| s.ts);
+    let t0 = query.t0.unwrap_or(run_start);
+    let t1 = query
+        .t1
+        .unwrap_or_else(|| run_end.min(t0.saturating_add(DEFAULT_REPLAY_SPAN_NS)));
+    if t1 < t0 {
+        return Err(AppError::InvalidRequest("timeline t1 must be >= t0".into()));
+    }
+    let limit = query.max_events.unwrap_or(5_000).min(50_000) as usize;
+    let mut events = Vec::new();
+    let mut events_total = 0;
+    for event in &run.tape {
+        if (t0..=t1).contains(&event.ts) {
+            events_total += 1;
+            if events.len() < limit {
+                events.push(event.clone());
+            }
+        }
+    }
+    let start = run.equity.partition_point(|s| s.ts < t0);
+    let end = run.equity.partition_point(|s| s.ts <= t1);
+    let equity = run.equity[start.saturating_sub(1)..end].to_vec();
+    let mut orders: Vec<_> = run
+        .orders
+        .iter()
+        .filter(|order| {
+            let last_ts = order.terminal_ts.unwrap_or_else(|| {
+                run.tape
+                    .get(order.last_seq as usize)
+                    .filter(|event| {
+                        event.seq == order.last_seq && event.order_id == Some(order.order_id)
+                    })
+                    .map_or(run_end, |event| event.ts)
+            });
+            order.decision_ts <= t1 && last_ts >= t0
+        })
+        .cloned()
+        .collect();
+    orders.sort_unstable_by_key(|order| order.order_id);
+    Ok(RunTimeline {
+        run_id: run.manifest.run_id.clone(),
+        dataset_id: run.manifest.dataset.id.clone(),
+        t0,
+        t1,
+        events_truncated: events_total > events.len() as u64,
+        events,
+        events_total,
+        fills: run
+            .fills
+            .iter()
+            .filter(|fill| (t0..=t1).contains(&fill.ts))
+            .cloned()
+            .collect(),
+        equity,
+        orders,
+        run_start,
+        run_end,
+    })
+}
+
+async fn get_timeline(
+    State(state): Shared,
+    path: Result<Path<String>, PathRejection>,
+    query: Result<Query<TimelineQuery>, QueryRejection>,
+) -> Result<Json<RunTimeline>, AppError> {
+    let Path(run_id) = path?;
+    let Query(query) = query?;
+    blocking(move || {
+        let run = load_run(&state, &run_id)?;
+        timeline(&run, &query)
+    })
+    .await
+    .map(Json)
+}
+
+async fn get_report(
+    State(state): Shared,
+    path: Result<Path<String>, PathRejection>,
+) -> Result<Response, AppError> {
+    let Path(run_id) = path?;
+    blocking(move || {
+        let run = load_run(&state, &run_id)?;
+        let dataset = datasets::find_manifest(&state.data_root, &run.manifest.dataset.id)?;
+        let markdown = report::markdown(&run, &dataset)?;
+        Ok((
+            [
+                (
+                    header::CONTENT_TYPE,
+                    "text/markdown; charset=utf-8".to_string(),
+                ),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"blackbox-run-{run_id}.md\""),
+                ),
+            ],
+            markdown,
+        )
+            .into_response())
+    })
+    .await
+}
+
+async fn export_run(
+    State(state): Shared,
+    path: Result<Path<String>, PathRejection>,
+) -> Result<Response, AppError> {
+    let Path(run_id) = path?;
+    blocking(move || {
+        let run = load_run(&state, &run_id)?;
+        Ok((
+            [(
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"blackbox-run-{run_id}.json\""),
+            )],
+            Json(run.as_ref()),
+        )
+            .into_response())
+    })
+    .await
 }
 
 async fn compare_runs(
@@ -496,7 +671,7 @@ async fn run_grid(
     payload: Result<Json<GridSpec>, JsonRejection>,
 ) -> Result<Json<GridResult>, AppError> {
     let Json(spec) = payload?;
-    blocking(move || {
+    admitted(&GRID_SLOTS, move || {
         // Validate before looking for the dataset so a broken grid is reported as such.
         pipeline::check_grid(&spec)?;
         let ctx = state

@@ -85,7 +85,10 @@ mod tests {
         assert_eq!(TimeUnit::infer(SAMPLE_US), Some(TimeUnit::Micros));
         assert_eq!(TimeUnit::infer(SAMPLE_US / 1000), Some(TimeUnit::Millis));
         assert_eq!(TimeUnit::infer(SAMPLE_US * 1000), Some(TimeUnit::Nanos));
-        assert_eq!(TimeUnit::infer(SAMPLE_US / 1_000_000), Some(TimeUnit::Seconds));
+        assert_eq!(
+            TimeUnit::infer(SAMPLE_US / 1_000_000),
+            Some(TimeUnit::Seconds)
+        );
         assert_eq!(TimeUnit::infer(0), None);
         assert_eq!(TimeUnit::infer(-5), None);
     }

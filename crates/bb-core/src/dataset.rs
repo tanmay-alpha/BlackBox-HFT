@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{time::TimeUnit, RelNs};
+use crate::{RelNs, time::TimeUnit};
 
 /// Static description of the traded instrument.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]

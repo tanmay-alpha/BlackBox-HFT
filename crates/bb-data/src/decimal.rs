@@ -154,14 +154,56 @@ mod tests {
 
     #[test]
     fn parses_plain_and_scientific_notation() {
-        assert_eq!(d("9350.5"), Decimal { mantissa: 93505, scale: 1 });
-        assert_eq!(d("100"), Decimal { mantissa: 100, scale: 0 });
+        assert_eq!(
+            d("9350.5"),
+            Decimal {
+                mantissa: 93505,
+                scale: 1
+            }
+        );
+        assert_eq!(
+            d("100"),
+            Decimal {
+                mantissa: 100,
+                scale: 0
+            }
+        );
         assert_eq!(d("1.50"), d("1.5"));
-        assert_eq!(d("0.0010"), Decimal { mantissa: 1, scale: 3 });
-        assert_eq!(d("1e-7"), Decimal { mantissa: 1, scale: 7 });
-        assert_eq!(d("2.5E+2"), Decimal { mantissa: 250, scale: 0 });
-        assert_eq!(d("-3.25"), Decimal { mantissa: -325, scale: 2 });
-        assert_eq!(d("0.000"), Decimal { mantissa: 0, scale: 0 });
+        assert_eq!(
+            d("0.0010"),
+            Decimal {
+                mantissa: 1,
+                scale: 3
+            }
+        );
+        assert_eq!(
+            d("1e-7"),
+            Decimal {
+                mantissa: 1,
+                scale: 7
+            }
+        );
+        assert_eq!(
+            d("2.5E+2"),
+            Decimal {
+                mantissa: 250,
+                scale: 0
+            }
+        );
+        assert_eq!(
+            d("-3.25"),
+            Decimal {
+                mantissa: -325,
+                scale: 2
+            }
+        );
+        assert_eq!(
+            d("0.000"),
+            Decimal {
+                mantissa: 0,
+                scale: 0
+            }
+        );
         assert_eq!(d("5."), d("5"));
         assert_eq!(d(".5"), d("0.5"));
     }
@@ -169,8 +211,22 @@ mod tests {
     #[test]
     fn rejects_everything_that_is_not_a_decimal_number() {
         for bad in [
-            "", ".", "-", "abc", "1.2.3", "1,5", " 1", "1 ", "inf", "NaN", "1e", "1e+", "1e5.0",
-            "0x10", "1_000", "1e99999",
+            "",
+            ".",
+            "-",
+            "abc",
+            "1.2.3",
+            "1,5",
+            " 1",
+            "1 ",
+            "inf",
+            "NaN",
+            "1e",
+            "1e+",
+            "1e5.0",
+            "0x10",
+            "1_000",
+            "1e99999",
             "1234567890123456789012345678901234567890",
         ] {
             assert_eq!(Decimal::parse(bad), None, "`{bad}` must be rejected");
@@ -208,7 +264,14 @@ mod tests {
 
     #[test]
     fn sizes_given_as_f64_mean_their_shortest_decimal() {
-        for (value, text) in [(0.1, "0.1"), (0.01, "0.01"), (0.5, "0.5"), (1.0, "1"), (0.001, "0.001"), (1e-7, "0.0000001")] {
+        for (value, text) in [
+            (0.1, "0.1"),
+            (0.01, "0.01"),
+            (0.5, "0.5"),
+            (1.0, "1"),
+            (0.001, "0.001"),
+            (1e-7, "0.0000001"),
+        ] {
             assert_eq!(Decimal::from_positive_f64(value), Some(d(text)));
         }
         assert_eq!(Decimal::from_positive_f64(0.0), None);

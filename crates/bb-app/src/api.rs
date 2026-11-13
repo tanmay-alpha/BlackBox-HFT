@@ -9,7 +9,7 @@ use bb_core::{
     dataset::InstrumentMeta,
     explain::Explanation,
     flight::FlightEvent,
-    result::{EngineInfo, FillRecord, OrderOutcome, OrderRecord},
+    result::{EngineInfo, EquitySample, FillRecord, OrderOutcome, OrderRecord},
 };
 
 /// `GET /api/health`.
@@ -119,6 +119,50 @@ pub struct CompareRequest {
     pub a: String,
     /// Run id of scenario B.
     pub b: String,
+}
+
+/// Query of `GET /api/runs/{run_id}/timeline`. Bounds are inclusive.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimelineQuery {
+    pub t0: Option<i64>,
+    pub t1: Option<i64>,
+    /// Default 5000, capped at 50000.
+    pub max_events: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunTimeline {
+    pub run_id: String,
+    pub dataset_id: String,
+    pub t0: i64,
+    pub t1: i64,
+    pub events: Vec<FlightEvent>,
+    pub events_total: u64,
+    pub events_truncated: bool,
+    pub fills: Vec<FillRecord>,
+    pub equity: Vec<EquitySample>,
+    pub orders: Vec<OrderRecord>,
+    pub run_start: i64,
+    pub run_end: i64,
+}
+
+/// A reproducible experiment; `varied` is the union of JSON config differences.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Demo {
+    pub id: String,
+    pub title: String,
+    pub question: String,
+    pub varied: Vec<String>,
+    pub controlled: Vec<String>,
+    pub how_to_read: String,
+    pub runs: Vec<DemoRun>,
+    pub reproduce: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DemoRun {
+    pub label: String,
+    pub config: RunConfig,
 }
 
 /// Body of every non-2xx response.

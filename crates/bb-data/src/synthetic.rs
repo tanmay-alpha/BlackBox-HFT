@@ -145,9 +145,7 @@ fn validate(cfg: &SyntheticConfig) -> Result<(), DataError> {
         ));
     }
     if !(REPLENISH_BELOW as u32..=1_000).contains(&cfg.levels) {
-        problems.push(format!(
-            "levels must be between {REPLENISH_BELOW} and 1000"
-        ));
+        problems.push(format!("levels must be between {REPLENISH_BELOW} and 1000"));
     }
     if !(1..=1_000_000_000).contains(&cfg.base_level_lots) {
         problems.push("base_level_lots must be between 1 and 1e9".to_string());
@@ -432,10 +430,22 @@ impl<'a> Generator<'a> {
         let bids: Vec<(i64, i64)> = self.bids.iter().rev().map(|(t, l)| (*t, *l)).collect();
         let asks: Vec<(i64, i64)> = self.asks.iter().map(|(t, l)| (*t, *l)).collect();
         for (tick, lots) in bids {
-            self.emit(DEPTH_SNAPSHOT_EVENT | BUY_EVENT, exch_ts, local_ts, tick, lots);
+            self.emit(
+                DEPTH_SNAPSHOT_EVENT | BUY_EVENT,
+                exch_ts,
+                local_ts,
+                tick,
+                lots,
+            );
         }
         for (tick, lots) in asks {
-            self.emit(DEPTH_SNAPSHOT_EVENT | SELL_EVENT, exch_ts, local_ts, tick, lots);
+            self.emit(
+                DEPTH_SNAPSHOT_EVENT | SELL_EVENT,
+                exch_ts,
+                local_ts,
+                tick,
+                lots,
+            );
         }
     }
 
@@ -602,7 +612,9 @@ pub fn generate(cfg: &SyntheticConfig) -> Result<BuiltDataset, DataError> {
     })?;
 
     let generator_json = serde_json::to_value(cfg).map_err(|err| {
-        DataError::Invalid(format!("synthetic configuration cannot be serialized: {err}"))
+        DataError::Invalid(format!(
+            "synthetic configuration cannot be serialized: {err}"
+        ))
     })?;
     let config_bytes = generator_json.to_string().into_bytes();
     let origin_ns = analysis.first_exch_ts;
@@ -686,7 +698,11 @@ mod tests {
             assert_eq!(x.qty.to_bits(), y.qty.to_bits(), "qty differs at row {i}");
             assert_eq!(x.order_id, y.order_id, "order_id differs at row {i}");
             assert_eq!(x.ival, y.ival, "ival differs at row {i}");
-            assert_eq!(x.fval.to_bits(), y.fval.to_bits(), "fval differs at row {i}");
+            assert_eq!(
+                x.fval.to_bits(),
+                y.fval.to_bits(),
+                "fval differs at row {i}"
+            );
         }
     }
 
@@ -725,7 +741,11 @@ mod tests {
             if kind(ev) != DEPTH_CLEAR_EVENT {
                 let tick = inst.tick(ev.px);
                 assert!(ev.px > 0.0 && tick >= 1, "price must be positive");
-                assert_eq!(inst.price(tick).to_bits(), ev.px.to_bits(), "price off tick");
+                assert_eq!(
+                    inst.price(tick).to_bits(),
+                    ev.px.to_bits(),
+                    "price off tick"
+                );
                 let lots = inst.lots(ev.qty);
                 assert!(lots >= 0);
                 assert_eq!(
@@ -760,7 +780,10 @@ mod tests {
                 trades += 1;
                 let tick = inst.tick(ev.px);
                 let buyer = has(ev, BUY_EVENT);
-                assert!(buyer != has(ev, SELL_EVENT), "trade must name one aggressor");
+                assert!(
+                    buyer != has(ev, SELL_EVENT),
+                    "trade must name one aggressor"
+                );
                 // A buyer lifts the best ask, a seller hits the best bid.
                 let (best, before) = if buyer {
                     book.best_ask().unwrap()
@@ -832,8 +855,12 @@ mod tests {
             m.quality.worst(),
             Some(Severity::Warn | Severity::Error)
         ));
-        assert!(m.quality.checks.iter().all(|c| !c.id.starts_with("trades.duplicate")
-            && c.id != "trades.id_gap"));
+        assert!(
+            m.quality
+                .checks
+                .iter()
+                .all(|c| !c.id.starts_with("trades.duplicate") && c.id != "trades.id_gap")
+        );
         assert_eq!(m.quality.book_valid_fraction, 1.0);
         let latency = m.quality.feed_latency_ns.unwrap();
         assert!(latency.min >= cfg.feed_latency_ns as f64);

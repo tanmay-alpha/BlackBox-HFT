@@ -7,11 +7,14 @@
 //! Nothing in this crate talks to an exchange or makes an outbound network request. Every number
 //! it returns comes from a simulation over historical or synthetic data.
 
+pub mod access;
 pub mod api;
 pub mod datasets;
+pub mod demos;
 pub mod error;
 pub mod pipeline;
 pub mod presets;
+mod report;
 pub mod server;
 pub mod store;
 

@@ -56,6 +56,7 @@ pub struct RunIdentity {
 pub fn run_identity(manifest: &DatasetManifest, config: &RunConfig) -> RunIdentity {
     let config_sha256 = bb_core::hash::sha256_json(&(
         CONTRACT_VERSION,
+        bb_core::SIMULATION_REVISION,
         ENGINE_NAME,
         ENGINE_VERSION,
         &manifest.events_sha256,
@@ -90,14 +91,26 @@ pub fn check_grid(spec: &GridSpec) -> Result<(), AppError> {
 }
 
 fn check_dataset(manifest: &DatasetManifest, config: &RunConfig) -> Result<(), AppError> {
-    if config.dataset_id == manifest.id {
-        Ok(())
-    } else {
-        Err(AppError::InvalidConfig(vec![format!(
+    if config.dataset_id != manifest.id {
+        return Err(AppError::InvalidConfig(vec![format!(
             "config.dataset_id is '{}' but the dataset supplied is '{}'",
             config.dataset_id, manifest.id
-        )]))
+        )]));
     }
+    // Work budget: the number of strategy evaluations is fixed by the dataset span and the
+    // interval, so it can be bounded before anything runs.
+    let span = manifest.end.saturating_sub(manifest.start).max(0);
+    let ticks = span / config.strategy.interval_ns.max(1);
+    if ticks > bb_core::config::MAX_TICKS_PER_RUN {
+        return Err(AppError::InvalidConfig(vec![format!(
+            "this dataset spans {:.3} s, so an interval of {} ns means {ticks} strategy \
+             evaluations; the limit per run is {}. Use a longer interval",
+            span as f64 / 1e9,
+            config.strategy.interval_ns,
+            bb_core::config::MAX_TICKS_PER_RUN
+        )]));
+    }
+    Ok(())
 }
 
 /// Simulates `config` on the dataset and assembles the complete result.
@@ -136,6 +149,7 @@ pub fn execute(ctx: &DatasetCtx, config: &RunConfig) -> Result<RunResult, AppErr
         contract_version: CONTRACT_VERSION,
         run_id: identity.run_id,
         blackbox_version: env!("CARGO_PKG_VERSION").to_string(),
+        simulation_revision: bb_core::SIMULATION_REVISION,
         engine: engine_info(),
         platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
         profile: PROFILE.to_string(),
@@ -208,7 +222,13 @@ pub fn find_or_execute(
     store.put(&result, label)
 }
 
-fn run_cell(ctx: &DatasetCtx, spec: &GridSpec, store: &dyn RunStore, xi: usize, yi: usize) -> GridCell {
+fn run_cell(
+    ctx: &DatasetCtx,
+    spec: &GridSpec,
+    store: &dyn RunStore,
+    xi: usize,
+    yi: usize,
+) -> GridCell {
     let config = spec.y.apply(&spec.x.apply(&spec.base, xi), yi);
     let label = format!(
         "grid x={} y={}",
@@ -314,7 +334,11 @@ pub fn run_grid(
 /// `dataset` must be the manifest of the dataset the run was simulated on; it supplies the
 /// instrument and the provenance of the feed's local timestamps, which decides whether feed
 /// latency may be described as measured.
-pub fn order_detail(run: &RunResult, dataset: &DatasetManifest, order_id: u64) -> Option<OrderDetail> {
+pub fn order_detail(
+    run: &RunResult,
+    dataset: &DatasetManifest,
+    order_id: u64,
+) -> Option<OrderDetail> {
     let order = run.orders.iter().find(|o| o.order_id == order_id)?.clone();
     let events: Vec<_> = run
         .tape
