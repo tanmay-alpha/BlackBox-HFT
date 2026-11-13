@@ -7,6 +7,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use bb_core::{
+    Clock, OrderStatus, ReqKind, Side,
     config::{
         AvellanedaStoikovParams, ExchangeModel, ImbalanceTakerParams, OrderLatencyConfig,
         QueueModelConfig, RunConfig, StrategyConfig, StrategyKind, TouchMakerParams,
@@ -14,9 +15,8 @@ use bb_core::{
     flight::{FlightBody, FlightEvent, QueueCause},
     hash::sha256_json,
     rng::Rng,
-    Clock, OrderStatus, ReqKind, Side,
 };
-use bb_sim::{simulate, Event, SimInput, SimOutput};
+use bb_sim::{Event, SimInput, SimOutput, simulate};
 use common::{INST, MS, ORIGIN, US};
 use hftbacktest::types::{
     BUY_EVENT, DEPTH_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT,
@@ -204,8 +204,16 @@ fn check_invariants(out: &SimOutput, cfg: &RunConfig, what: &str) {
     let mut total_filled = 0.0;
     for (id, events) in by_order(&out.tape) {
         let ctx = format!("{what}: order {id}");
-        let FlightBody::OrderIntent { qty: order_qty, side, .. } = &events[0].body else {
-            panic!("{ctx}: first event is {}, not order_intent", events[0].body.type_name());
+        let FlightBody::OrderIntent {
+            qty: order_qty,
+            side,
+            ..
+        } = &events[0].body
+        else {
+            panic!(
+                "{ctx}: first event is {}, not order_intent",
+                events[0].body.type_name()
+            );
         };
         let order_side = *side;
 
@@ -215,15 +223,25 @@ fn check_invariants(out: &SimOutput, cfg: &RunConfig, what: &str) {
             matches!(
                 second,
                 Some(FlightBody::RiskBlocked { .. })
-                    | Some(FlightBody::RequestRefused { req: ReqKind::New, .. })
-                    | Some(FlightBody::RequestSent { req: ReqKind::New, .. })
+                    | Some(FlightBody::RequestRefused {
+                        req: ReqKind::New,
+                        ..
+                    })
+                    | Some(FlightBody::RequestSent {
+                        req: ReqKind::New,
+                        ..
+                    })
             ),
             "{ctx}: second event is {:?}",
             second.map(|b| b.type_name())
         );
         let sent = matches!(second, Some(FlightBody::RequestSent { .. }));
         if !sent {
-            assert_eq!(events.len(), 2, "{ctx}: events after a blocked or refused intent");
+            assert_eq!(
+                events.len(),
+                2,
+                "{ctx}: events after a blocked or refused intent"
+            );
             continue;
         }
 
@@ -235,7 +253,11 @@ fn check_invariants(out: &SimOutput, cfg: &RunConfig, what: &str) {
                 if matches!(e.body, FlightBody::QueueTruncated { .. }) {
                     continue;
                 }
-                assert!(e.ts >= last, "{ctx}: {clock:?} time went backwards at seq {}", e.seq);
+                assert!(
+                    e.ts >= last,
+                    "{ctx}: {clock:?} time went backwards at seq {}",
+                    e.seq
+                );
                 last = e.ts;
             }
         }
@@ -247,17 +269,38 @@ fn check_invariants(out: &SimOutput, cfg: &RunConfig, what: &str) {
         let mut local_responses = 0u32;
         for (i, e) in events.iter().enumerate() {
             match &e.body {
-                FlightBody::ExchQueued { queue_ahead, level_qty, .. } => {
+                FlightBody::ExchQueued {
+                    queue_ahead,
+                    level_qty,
+                    ..
+                } => {
                     assert!(!resting, "{ctx}: queued twice");
                     resting = true;
                     // A new order joins behind everything displayed, under every queue model.
                     assert_eq!(*queue_ahead, Some(*level_qty), "{ctx}: initial queue");
                 }
-                FlightBody::QueueUpdate { ahead_before, ahead_after, .. } => {
-                    assert!(resting && !terminal, "{ctx}: queue update while not resting");
-                    assert!(ahead_before.is_some() && ahead_after.is_some(), "{ctx}: unreadable");
+                FlightBody::QueueUpdate {
+                    ahead_before,
+                    ahead_after,
+                    ..
+                } => {
+                    assert!(
+                        resting && !terminal,
+                        "{ctx}: queue update while not resting"
+                    );
+                    assert!(
+                        ahead_before.is_some() && ahead_after.is_some(),
+                        "{ctx}: unreadable"
+                    );
                 }
-                FlightBody::ExchFill { qty, maker, leaves_qty, value, price_tick, .. } => {
+                FlightBody::ExchFill {
+                    qty,
+                    maker,
+                    leaves_qty,
+                    value,
+                    price_tick,
+                    ..
+                } => {
                     assert!(!terminal, "{ctx}: fill after terminal state");
                     assert!(*qty > half_lot, "{ctx}: empty fill");
                     assert_eq!(*maker, resting, "{ctx}: maker flag vs resting state");
@@ -299,7 +342,13 @@ fn check_invariants(out: &SimOutput, cfg: &RunConfig, what: &str) {
                         e.seq
                     );
                 }
-                FlightBody::ExchResponse { status, request_rejected, local_arrival_ts, response_latency_ns, .. } => {
+                FlightBody::ExchResponse {
+                    status,
+                    request_rejected,
+                    local_arrival_ts,
+                    response_latency_ns,
+                    ..
+                } => {
                     exch_responses += 1;
                     assert_eq!(*local_arrival_ts, e.ts + response_latency_ns, "{ctx}");
                     if !request_rejected && status.is_terminal() {
@@ -315,23 +364,35 @@ fn check_invariants(out: &SimOutput, cfg: &RunConfig, what: &str) {
             }
         }
         assert!(filled <= order_qty + half_lot, "{ctx}: overfilled");
-        assert!(local_responses <= exch_responses, "{ctx}: response from nowhere");
+        assert!(
+            local_responses <= exch_responses,
+            "{ctx}: response from nowhere"
+        );
         total_filled += order_side.sign() * filled;
     }
 
     // Ledger consistency.
     let signed_fills: f64 = out.fills.iter().map(|f| f.side.sign() * f.qty).sum();
-    assert!((signed_fills - total_filled).abs() < 1e-9, "{what}: fills vs tape");
+    assert!(
+        (signed_fills - total_filled).abs() < 1e-9,
+        "{what}: fills vs tape"
+    );
     let mut position = 0.0;
     for f in &out.fills {
         position += f.side.sign() * f.qty;
-        assert!((f.position_after - position).abs() < 1e-9, "{what}: running position");
+        assert!(
+            (f.position_after - position).abs() < 1e-9,
+            "{what}: running position"
+        );
     }
     for w in out.fills.windows(2) {
         assert!(w[0].seq < w[1].seq, "{what}: fills out of tape order");
     }
     let last = out.equity.last().expect("at least one sample");
-    assert!((last.position - position).abs() < 1e-9, "{what}: final position");
+    assert!(
+        (last.position - position).abs() < 1e-9,
+        "{what}: final position"
+    );
     assert!(
         last.position.abs() <= cfg.risk.max_position + half_lot,
         "{what}: position {} breaches the risk limit",
@@ -429,8 +490,14 @@ fn bundled_strategies_obey_the_tape_grammar_under_every_model() {
         }
     }
     // The sweep must actually have exercised the paths it claims to check.
-    assert!(any_maker_fill, "no maker fill occurred in any configuration");
-    assert!(any_taker_fill, "no taker fill occurred in any configuration");
+    assert!(
+        any_maker_fill,
+        "no maker fill occurred in any configuration"
+    );
+    assert!(
+        any_taker_fill,
+        "no taker fill occurred in any configuration"
+    );
     assert!(any_partial, "no partial fill occurred in any configuration");
 }
 

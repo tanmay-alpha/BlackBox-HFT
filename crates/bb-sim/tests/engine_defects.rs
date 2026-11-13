@@ -9,16 +9,16 @@ mod common;
 
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
-use bb_core::{config::ExchangeModel, strategy::order_id, Side, Tif};
+use bb_core::{Side, Tif, config::ExchangeModel, strategy::order_id};
 use common::*;
 use hftbacktest::{
     backtest::{
+        Backtest, BacktestError, ExchangeKind, L2AssetBuilder,
         assettype::LinearAsset,
         data::{Data, DataSource},
         models::{
             CommonFees, ConstantLatency, FeeModel, RiskAdverseQueueModel, TradingValueFeeModel,
         },
-        Backtest, BacktestError, ExchangeKind, L2AssetBuilder,
     },
     depth::HashMapMarketDepth,
     types::{Bot, ElapseResult, OrdType, Order, OrderRequest, Side as HSide, Status, TimeInForce},
@@ -224,4 +224,69 @@ fn upstream_simultaneous_fill_order_is_not_reproducible() {
         sequences.len() > 1,
         "expected run-to-run variation in execution order, saw only {sequences:?}"
     );
+}
+
+/// Defect 5a: `NoPartialFillExchange` fills a market buy at `best_ask_tick()` without checking
+/// that an ask exists. On an empty ask side that is the sentinel `i64::MAX`.
+#[test]
+fn upstream_market_buy_on_empty_ask_fills_at_the_sentinel_tick() {
+    let mut m = Mkt::default();
+    m.bid(0, 100.0, 5.0).bid(80 * MS, 99.5, 1.0);
+    let mut hbt = raw_engine(&m, ExchangeKind::NoPartialFillExchange);
+    hbt.elapse(INTERVAL).unwrap();
+    hbt.submit_buy_order(0, 1, 0.0, 1.0, TimeInForce::GTC, OrdType::Market, false)
+        .unwrap();
+    drain(&mut hbt).unwrap();
+    let order = &hbt.orders(0)[&1];
+    assert_eq!(order.status, Status::Filled);
+    assert_eq!(order.exec_price_tick, i64::MAX);
+}
+
+/// Defect 5b: `PartialFillExchange` sweeps only `[best_ask, best_ask + 100)` ticks for a market
+/// buy. When the order is larger than the best level and the next level is more than 100 ticks
+/// above it, the order expires with displayed liquidity left unreached.
+#[test]
+fn upstream_partial_fill_market_order_scans_only_100_ticks() {
+    let mut m = Mkt::default();
+    m.bid(0, 100.0, 5.0)
+        .ask(0, 101.0, 1.0)
+        .ask(0, 160.0, 5.0)
+        .keepalive(80 * MS);
+    let mut hbt = raw_engine(&m, ExchangeKind::PartialFillExchange);
+    hbt.elapse(INTERVAL).unwrap();
+    hbt.submit_buy_order(0, 2, 0.0, 3.0, TimeInForce::GTC, OrdType::Market, false)
+        .unwrap();
+    drain(&mut hbt).unwrap();
+    let order = &hbt.orders(0)[&2];
+    // Only the 1.0 at 101.0 executes; the 5.0 at 160.0 (118 ticks above) is never reached.
+    assert_eq!(order.status, Status::Expired);
+    assert_eq!(
+        hbt.position(0),
+        0.0,
+        "the engine's local account ignores the partial execution"
+    );
+}
+
+#[test]
+fn adapter_blocks_market_orders_before_the_engine() {
+    let mut m = Mkt::standard();
+    m.keepalive(80 * MS);
+    let out = run(
+        &m,
+        &config(),
+        vec![(
+            0,
+            Act::Market {
+                slot: 0,
+                side: Side::Buy,
+                qty: 1.0,
+            },
+        )],
+    );
+    let ev = of(&out, order_id(0, 0));
+    assert_eq!(
+        ev.iter().map(|e| e.body.type_name()).collect::<Vec<_>>(),
+        ["order_intent", "risk_blocked"]
+    );
+    assert!(out.fills.is_empty());
 }

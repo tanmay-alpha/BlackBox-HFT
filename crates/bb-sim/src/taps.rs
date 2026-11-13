@@ -6,13 +6,13 @@
 use std::marker::PhantomData;
 
 use bb_core::{
-    flight::QueueCause,
-    rng::{derive_seed, Rng},
     OrderStatus, ReqKind, Side,
+    flight::QueueCause,
+    rng::{Rng, derive_seed},
 };
 use hftbacktest::{
     backtest::models::{ConstantLatency, FeeModel, LatencyModel, QueueModel, QueuePos},
-    depth::{MarketDepth, INVALID_MAX, INVALID_MIN},
+    depth::{INVALID_MAX, INVALID_MIN, MarketDepth},
     types::{Order, Side as HSide, Status},
 };
 
@@ -54,6 +54,10 @@ fn req_of(req: Status) -> ReqKind {
 /// Reads the modeled quantity ahead from the queue model's private per-order state.
 pub(crate) trait QueueProbe {
     fn ahead(order: &Order) -> Option<f64>;
+
+    fn before(order: &Order, _tape: &Tape) -> Option<f64> {
+        Self::ahead(order)
+    }
 }
 
 /// `RiskAdverseQueueModel` stores the quantity ahead as a bare `f64`.
@@ -76,15 +80,18 @@ pub(crate) struct QueuePosProbe;
 impl QueueProbe for QueuePosProbe {
     fn ahead(order: &Order) -> Option<f64> {
         let pos = (*order.q).as_any().downcast_ref::<QueuePos>()?;
-        parse_front_qty(&format!("{pos:?}"))
+        crate::queue_probe::front_qty(pos)
+    }
+
+    fn before(order: &Order, tape: &Tape) -> Option<f64> {
+        // All mutations of a surviving order go through this tap. Cache every observed value,
+        // even dropped depth updates and partial-fill resets; terminal orders need no next read.
+        tape.queue_ahead(order.order_id)
     }
 }
 
-pub(crate) fn parse_front_qty(debug: &str) -> Option<f64> {
-    let rest = debug.split_once("front_q_qty: ")?.1;
-    let end = rest.find([',', ' ', '}']).unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
+#[cfg(test)]
+use crate::queue_probe::parse_front_qty;
 
 /// Wraps an engine queue model and records every estimate it produces.
 pub(crate) struct TapQueue<QM, PR> {
@@ -130,7 +137,7 @@ where
     }
 
     fn trade(&self, order: &mut Order, qty: f64, depth: &MD) {
-        let before = PR::ahead(order);
+        let before = PR::before(order, &self.tape);
         self.inner.trade(order, qty, depth);
         self.tape.queue_update(
             order.order_id,
@@ -141,7 +148,7 @@ where
     }
 
     fn depth(&self, order: &mut Order, prev_qty: f64, new_qty: f64, depth: &MD) {
-        let before = PR::ahead(order);
+        let before = PR::before(order, &self.tape);
         self.inner.depth(order, prev_qty, new_qty, depth);
         self.tape.queue_update(
             order.order_id,
@@ -161,7 +168,7 @@ where
     /// branch. The executed quantity is unaffected: the exchange caps it at the remainder.
     /// `NoPartialFillExchange` only tests the result for being positive, so it is unaffected.
     fn is_filled(&self, order: &mut Order, depth: &MD) -> f64 {
-        let before = PR::ahead(order);
+        let before = PR::before(order, &self.tape);
         let executable = self.inner.is_filled(order, depth);
         let lot = depth.lot_size();
         if executable > 0.0 && executable >= order.leaves_qty - lot * 0.5 {
@@ -340,7 +347,15 @@ mod tests {
     use super::*;
 
     fn resting_buy(tick: i64) -> Order {
-        Order::new(1, tick, 0.5, 1.0, HSide::Buy, OrdType::Limit, TimeInForce::GTC)
+        Order::new(
+            1,
+            tick,
+            0.5,
+            1.0,
+            HSide::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        )
     }
 
     #[test]

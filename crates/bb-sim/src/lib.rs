@@ -18,27 +18,28 @@
 mod engine;
 mod ledger;
 mod procs;
+mod queue_probe;
 mod tape;
 mod taps;
 
 use bb_core::{
+    OrdType, RelNs, ReqKind, Side, Tif,
+    config::ExchangeModel,
     config::RunConfig,
     dataset::InstrumentMeta,
     flight::{FlightBody, FlightEvent, RiskRule},
     result::{EngineStateCheck, EquitySample, FillRecord},
-    strategy::{order_id, Intent, LocalView, MarketView, OpenOrder, Strategy, TradePrint},
-    config::ExchangeModel,
-    OrdType, RelNs, ReqKind, Side, Tif,
-};
-use hftbacktest::{
-    backtest::Backtest,
-    depth::{MarketDepth, INVALID_MAX, INVALID_MIN},
-    types::{
-        Bot, ElapseResult, OrdType as HOrdType, Status, TimeInForce, BUY_EVENT, LOCAL_EVENT,
-        SELL_EVENT,
-    },
+    strategy::{Intent, LocalView, MarketView, OpenOrder, Strategy, TradePrint, order_id},
 };
 pub use hftbacktest::types::Event;
+use hftbacktest::{
+    backtest::Backtest,
+    depth::{INVALID_MAX, INVALID_MIN, MarketDepth},
+    types::{
+        BUY_EVENT, Bot, ElapseResult, LOCAL_EVENT, OrdType as HOrdType, SELL_EVENT, Status,
+        TimeInForce,
+    },
+};
 
 pub use crate::ledger::Book;
 use crate::{
@@ -143,16 +144,15 @@ pub fn simulate(
     // Local time of the most recent evaluated tick.
     let mut last_tick_abs: Option<i64> = None;
     loop {
-        match hbt.elapse(interval).map_err(engine_err)? {
-            ElapseResult::EndOfData => break,
-            _ => {}
+        if hbt.elapse(interval).map_err(engine_err)? == ElapseResult::EndOfData {
+            break;
         }
         let now_abs = hbt.current_timestamp();
         if now_abs > data_end {
             break;
         }
         run.tick(&mut hbt, strategy.as_mut(), tick_no)?;
-        if tick_no % sample_every == 0 {
+        if tick_no.is_multiple_of(sample_every) {
             run.sample(&hbt, tick_no, now_abs);
         }
         last_tick_abs = Some(now_abs);
@@ -219,18 +219,23 @@ impl Harness<'_> {
         }
     }
 
-    /// Net account value marked at `mid` (price units), and its components.
-    fn mark(&mut self, market: &MarketView) -> (f64, f64, f64) {
+    /// Net account value marked at `mid` (price units), and its components, for one ledger.
+    fn mark_book(&mut self, market: &MarketView, book: Book) -> (f64, f64, f64) {
         if let Some(mid_tick) = market.mid_tick() {
             self.last_mid = Some(mid_tick * self.inst.tick_size);
         }
-        let truth = self.tape.truth();
         let unrealized = match self.last_mid {
-            Some(mid) => truth.unrealized(mid, self.inst.contract_size, self.half_lot),
+            Some(mid) => book.unrealized(mid, self.inst.contract_size, self.half_lot),
             None => 0.0,
         };
-        let equity = truth.realized + unrealized - truth.fees;
-        (equity, truth.realized, unrealized)
+        let equity = book.realized + unrealized - book.fees;
+        (equity, book.realized, unrealized)
+    }
+
+    /// Equity from every simulated fill (exchange-side truth): what the run reports.
+    fn mark(&mut self, market: &MarketView) -> (f64, f64, f64) {
+        let truth = self.tape.truth();
+        self.mark_book(market, truth)
     }
 
     fn tick(
@@ -260,7 +265,9 @@ impl Harness<'_> {
         // HashMap).
         self.open.clear();
         for o in hbt.orders(ASSET).values() {
-            let Some(side) = side_of(o.side) else { continue };
+            let Some(side) = side_of(o.side) else {
+                continue;
+            };
             if status_of(o.status).is_terminal() {
                 continue;
             }
@@ -295,8 +302,11 @@ impl Harness<'_> {
 
         let known_position = self.tape.known().position;
 
-        // Run-level drawdown rule, evaluated on the same marking the equity series uses.
-        let (equity, _, _) = self.mark(&market);
+        // Run-level drawdown rule. It is a decision of the strategy host, so it may only use what
+        // that host knows: fills whose notification has arrived, marked at the local mid. Using
+        // the exchange-side ledger would react to fills up to one response latency early.
+        let known = self.tape.known();
+        let (equity, _, _) = self.mark_book(&market, known);
         self.peak_equity = self.peak_equity.max(equity);
         if !self.halted
             && let Some(limit) = self.cfg.risk.max_drawdown
@@ -501,6 +511,19 @@ impl Harness<'_> {
                 format!("quantity {qty} is not a positive multiple of the lot size {lot}"),
             ));
         }
+        if ord_type == OrdType::Market {
+            // hftbacktest 0.9.4 mishandles market orders when the opposite side is empty (a fill
+            // at tick i64::MAX, or integer overflow) and the partial-fill model scans only 100
+            // ticks. See docs/EXECUTION_MODEL.md, defect 5. A marketable IOC limit order is the
+            // supported equivalent.
+            return Some((
+                RiskRule::InvalidOrder,
+                "market orders are not supported by BlackBox on hftbacktest 0.9.4 (engine defect: \
+                 wrong price or overflow when the opposite side is empty, 100-tick sweep limit); \
+                 use an immediate-or-cancel limit order at the price you are willing to pay"
+                    .into(),
+            ));
+        }
         if ord_type == OrdType::Limit && price_tick <= 0 {
             return Some((
                 RiskRule::InvalidOrder,
@@ -512,7 +535,10 @@ impl Harness<'_> {
         if qty > risk.max_order_qty + tol {
             return Some((
                 RiskRule::MaxOrderQty,
-                format!("quantity {qty} exceeds max_order_qty {}", risk.max_order_qty),
+                format!(
+                    "quantity {qty} exceeds max_order_qty {}",
+                    risk.max_order_qty
+                ),
             ));
         }
         if open_count >= risk.max_open_orders {

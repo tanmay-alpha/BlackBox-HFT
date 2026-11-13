@@ -12,6 +12,7 @@ hftbacktest.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+proptest = "1"
 # The real bundled strategies, for end-to-end invariant tests of the adapter.
 bb-strategies.workspace = true
 # Dataset generation and loading for `examples/bench.rs`.

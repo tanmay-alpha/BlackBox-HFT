@@ -268,3 +268,113 @@ under both exchange models.
   session 2 vs 2.0 ms in session 1 (synthetic). Differences of 1–2 ms between runs of ~25 ms are
   noise at this run length on this machine, so per-row and per-tick costs above are given as
   ranges.
+
+## Optimization — 2026-11-14
+
+This session used the same machine, release profile, synthetic 600 s / seed 7 dataset and
+100 ms strategy interval described above. Before editing, `cargo test -p bb-sim` passed
+38 tests and `cargo run --release -p bb-sim --example bench -- --reps 5` recorded the baseline
+below. The final command was:
+
+```
+cargo test -p bb-sim
+cargo test -p bb-forensics
+cargo run --release -p bb-sim --example bench -- --reps 5
+```
+
+The final tests passed: **53 bb-sim tests and 48 bb-forensics tests**, with no failures. Existing
+tests were not weakened or changed for the optimization; additional correctness work landed
+concurrently, accounting for the higher totals. The new queue-reader tests compare the prefix
+reader against full Debug formatting, bit for bit, for float edge cases and 20,000 seeded bit
+patterns, and check unreadable/oversized representations.
+
+### Same-session before / after
+
+All times are milliseconds, five timed repetitions after one warm-up. Percentage reductions
+use the medians, not minima.
+
+| workload | before min / median / max | after min / median / max | median reduction |
+|---|---:|---:|---:|
+| raw engine, no orders | 24.4 / 24.5 / 24.8 | 22.0 / 22.3 / 22.5 | 9.0% |
+| adapter, idle | 28.3 / 28.6 / 29.7 | 26.2 / 26.2 / 26.5 | 8.4% |
+| TouchMaker, no-partial | 105.4 / 108.1 / 111.4 | 76.1 / 76.5 / 77.4 | 29.2% |
+| TouchMaker, partial | 104.9 / 107.4 / 109.4 | 76.5 / 77.6 / 78.8 | 27.7% |
+| AvellanedaStoikov, no-partial | 81.4 / 84.6 / 85.9 | 69.8 / 70.1 / 70.9 | 17.1% |
+| AvellanedaStoikov, partial | 83.8 / 101.8 / 112.8 | 70.2 / 71.3 / 72.2 | 30.0% |
+
+The idle improvement is **not evidence of a lower relative idle overhead**: raw replay improved
+too, and idle/raw overhead was +16.8% before and +17.6% after. The baseline AS partial row was
+particularly noisy (28.5% spread); its 30.0% reduction should not be treated as a precise speedup.
+Final loaded spreads were 1.6–2.9%.
+
+Against the raw engine issuing the identical requests, TouchMaker no-partial overhead fell from
+**+219.9% to +129.6%** (raw medians 33.8 / 33.3 ms); AS no-partial fell from
+**+161.6% to +127.6%** (raw medians 32.3 / 30.8 ms). Fill counts remained 6,273 and 299.
+These comparisons support a loaded-adapter improvement beyond the change in raw replay speed.
+
+### Changes evaluated
+
+* **Allocation-free Debug prefix reader, retained.** Instead of allocating a complete Debug
+  string and formatting both private fields, a bounded stack writer captures the first field
+  and stops formatting at its comma. It still reads the engine's own Debug output, with the
+  same round-tripping float parser; no queue arithmetic is reproduced. Overflow or a changed
+  representation is unreadable, never guessed. The probe micro-benchmark fell from
+  **285.1 ns to 120.6 ns/read (57.7%)**. In the first cumulative trial, adding this reader to
+  the buffer/sort trial lowered TouchMaker no-partial from 103.4 to 86.2 ms. Other rows in that
+  trial were noisy, so no separate all-workload percentage is attributed to this change.
+* **Cached probabilistic-model before values, retained.** The existing per-order queue-counter
+  entry now also stores the last actual engine estimate, including depth updates dropped by
+  the cap and surviving partial-fill resets. New-order reads initialize it. Terminal orders
+  need no subsequent before read. The cheap RiskAdverse f64 downcast remains uncached.
+  An ablation using fresh before probes with the other trial optimizations present measured
+  86.4 / 94.8 / 83.8 / 82.9 ms for the four loaded rows, versus
+  76.5 / 76.5 / 69.4 / 69.4 ms with caching in the adjacent clean trial. Raw replay was
+  23.5 versus 22.7 ms, so these differences are not pure isolated nanosecond estimates.
+  The final derived Debug-read counts are 50,784 / 50,971 / 24,867 / 24,705.
+  The older read-count formula above omitted the before probe inside `is_filled`; the example
+  now counts new-order reads, after-callback reads (including dropped updates), and surviving
+  fill-reset reads for the pinned probabilistic model.
+* **Reusable step allocation, retained; conditional-sort shortcut, reverted.** Draining the
+  pending vector and handing its capacity back avoids allocating it again on the next step.
+  The initial combined reuse/conditional-sort trial measured 103.4 / 103.3 / 79.8 / 79.6 ms,
+  versus the baseline 108.1 / 107.4 / 84.6 / 101.8 ms; raw replay also fell from 24.5 to
+  23.3 ms. A later ablation without either optimization measured
+  78.0 / 76.5 / 68.9 / 68.5 ms. This did not demonstrate a consistent additional sorting
+  benefit, so the final code retains the allocation reuse but always uses the original stable
+  order-id sort. No independent wall-clock percentage is claimed for allocation reuse.
+* **Empty-step Cell metadata fast path, reverted.** Moving step flags outside the recorder
+  RefCell allowed empty steps to skip ledger borrows and buffer handling. The clean fast-path
+  ablation measured idle 25.2 ms (raw 23.5); an eager-borrow variant measured idle 24.6 ms
+  (raw 22.4). That is not a repeatable improvement at this run length. The final implementation
+  keeps the original step-bracketing structure rather than retaining the extra metadata.
+* **Skipping after probes at the cap, rejected on correctness grounds.** Only insignificant
+  depth changes may be dropped, and significance depends on the actual before/after estimate.
+  The cache must also advance even when that update is dropped. Every depth callback therefore
+  still reads the engine's after state; trades and fill resets remain fully recorded.
+
+Two intermediate measurements were discarded for performance attribution: a concurrent Docker
+workspace build caused raw replay medians to rise to 36.7 and 290.6 ms, huge loaded spreads and
+even negative residual overheads. The build was stopped before the clean ablations and final
+measurement. Power/frequency were still not pinned. Every intermediate trial nevertheless
+passed its determinism assertions.
+
+### Hash equality and accounting scope
+
+These SHA-256 values were identical **before and after**, and across all six runs of each
+configuration in both measurements (`sha256_json(&(tape, fills, equity))`):
+
+| synthetic 600 s configuration | baseline = final SHA-256 |
+|---|---|
+| TouchMaker, no-partial | `ba3748f74f0d2a73a19ba96a3c75951460c3befd81fadaa1e933db398f76836d` |
+| TouchMaker, partial | `56d8a1bc6cede5037d316ee0436f2261117ea3528a1c76f5f482907487c1e5bf` |
+| AvellanedaStoikov, no-partial | `67c053ead89c7209a13f2f8037358217b2a497c84f76eab6527098803030a6e4` |
+| AvellanedaStoikov, partial | `5981b1f1bc8bd3cfafd07dae5f3009013923c0984f398aa3cdb287798cd7e3e9` |
+
+The identity contract covers tape, fills and equity, plus the engine-check agreement verdict and
+ledger-side values. The ledger arithmetic, canonical commit order and engine-check calculation
+were not changed; the existing accounting/agreement and invariant regressions passed before and
+after. The hashes above do not include a separate engine-check payload. As already documented in
+EXECUTION_MODEL.md, the engine's own floating-point totals can differ in their last bits with its
+randomized fill iteration order; cross-process bit identity of those engine-side totals is not
+claimed. All executions here remain simulated on historical replay, with modeled L2 queues.
+

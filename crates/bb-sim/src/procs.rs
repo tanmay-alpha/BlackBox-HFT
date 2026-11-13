@@ -8,16 +8,16 @@ use std::collections::HashMap;
 
 use hftbacktest::{
     backtest::{
+        BacktestError,
         assettype::AssetType,
         models::{FeeModel, LatencyModel},
         proc::{Local, LocalProcessor, Processor},
-        BacktestError,
     },
     depth::{L2MarketDepth, MarketDepth},
     types::{Event, OrdType, Order, OrderId, Side, StateValues, Status, TimeInForce},
 };
 
-use crate::{taps::status_of, tape::Tape};
+use crate::{tape::Tape, taps::status_of};
 
 /// Wraps an exchange processor (`NoPartialFillExchange` or `PartialFillExchange`).
 pub(crate) struct RecExch<P> {
@@ -111,30 +111,32 @@ where
         tape.begin_step(None);
         // `process_recv_order_` is the engine's own receive routine with its optional observer
         // enabled; the default trait method calls the same routine with the observer disabled.
-        let result =
-            self.inner
-                .process_recv_order_::<true, _>(timestamp, wait_resp_order_id, |order: &Order| {
-                    // A rejected request (a cancel that arrived after the order was gone) carries
-                    // the order's previous execution fields unchanged; it reports no execution.
-                    let is_fill_report = order.req != Status::Rejected
-                        && matches!(order.status, Status::Filled | Status::PartiallyFilled);
-                    tape.local_response(
-                        timestamp,
-                        order.order_id,
-                        status_of(order.status),
-                        order.req == Status::Rejected,
-                        // The engine leaves the previous execution's values on later responses;
-                        // only fill reports carry a meaningful execution.
-                        if is_fill_report { order.exec_qty } else { 0.0 },
-                        if is_fill_report {
-                            order.exec_price_tick
-                        } else {
-                            0
-                        },
-                        order.leaves_qty,
-                        order.exch_timestamp,
-                    );
-                });
+        let result = self.inner.process_recv_order_::<true, _>(
+            timestamp,
+            wait_resp_order_id,
+            |order: &Order| {
+                // A rejected request (a cancel that arrived after the order was gone) carries
+                // the order's previous execution fields unchanged; it reports no execution.
+                let is_fill_report = order.req != Status::Rejected
+                    && matches!(order.status, Status::Filled | Status::PartiallyFilled);
+                tape.local_response(
+                    timestamp,
+                    order.order_id,
+                    status_of(order.status),
+                    order.req == Status::Rejected,
+                    // The engine leaves the previous execution's values on later responses;
+                    // only fill reports carry a meaningful execution.
+                    if is_fill_report { order.exec_qty } else { 0.0 },
+                    if is_fill_report {
+                        order.exec_price_tick
+                    } else {
+                        0
+                    },
+                    order.leaves_qty,
+                    order.exch_timestamp,
+                );
+            },
+        );
         tape.end_step();
         result
     }

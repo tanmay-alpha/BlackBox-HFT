@@ -4,10 +4,10 @@
 mod common;
 
 use bb_core::{
+    Clock, OrderStatus, ReqKind, Side, Source, Tif,
     config::{ExchangeModel, OrderLatencyConfig, QueueModelConfig},
     flight::{FlightBody, QueueCause, RiskRule},
     strategy::order_id,
-    Clock, OrderStatus, ReqKind, Side, Source, Tif,
 };
 use common::*;
 
@@ -46,8 +46,18 @@ fn maker_fill_when_trades_exhaust_the_modeled_queue() {
     );
 
     // Decision at the first tick, on the local clock, from the strategy.
-    assert_eq!((ev[0].ts, ev[0].clock, ev[0].source), (tick_ts(0), Clock::Local, Source::Strategy));
-    let FlightBody::OrderIntent { market, known_position, .. } = &ev[0].body else { panic!() };
+    assert_eq!(
+        (ev[0].ts, ev[0].clock, ev[0].source),
+        (tick_ts(0), Clock::Local, Source::Strategy)
+    );
+    let FlightBody::OrderIntent {
+        market,
+        known_position,
+        ..
+    } = &ev[0].body
+    else {
+        panic!()
+    };
     assert_eq!(market.best_bid_tick, Some(tk(100.0)));
     assert_eq!(market.best_ask_tick, Some(tk(101.0)));
     assert_eq!(market.feed_exch_ts, Some(0));
@@ -66,7 +76,10 @@ fn maker_fill_when_trades_exhaust_the_modeled_queue() {
     assert_eq!(ev[1].source, Source::Engine);
 
     // Arrival: queued behind everything displayed at 100.0.
-    assert_eq!((ev[2].ts, ev[2].clock), (tick_ts(0) + ENTRY, Clock::Exchange));
+    assert_eq!(
+        (ev[2].ts, ev[2].clock),
+        (tick_ts(0) + ENTRY, Clock::Exchange)
+    );
     assert_eq!(
         ev[2].body,
         FlightBody::ExchQueued {
@@ -81,8 +94,22 @@ fn maker_fill_when_trades_exhaust_the_modeled_queue() {
     // Queue path: 5 -> 2 (trade 3) -> 2 (level shrinks to 2) -> 2 (level grows) -> -1 (trade 3).
     let expect = [
         (QueueCause::Trade { qty: 3.0 }, 5.0, 2.0),
-        (QueueCause::Depth { prev_qty: 5.0, new_qty: 2.0 }, 2.0, 2.0),
-        (QueueCause::Depth { prev_qty: 2.0, new_qty: 6.0 }, 2.0, 2.0),
+        (
+            QueueCause::Depth {
+                prev_qty: 5.0,
+                new_qty: 2.0,
+            },
+            2.0,
+            2.0,
+        ),
+        (
+            QueueCause::Depth {
+                prev_qty: 2.0,
+                new_qty: 6.0,
+            },
+            2.0,
+            2.0,
+        ),
         (QueueCause::Trade { qty: 3.0 }, 2.0, -1.0),
     ];
     for (e, (cause, before, after)) in ev[5..9].iter().zip(expect) {
@@ -128,7 +155,10 @@ fn maker_fill_when_trades_exhaust_the_modeled_queue() {
 
     assert_eq!(out.fills.len(), 1);
     let f = &out.fills[0];
-    assert_eq!((f.seq, f.order_id, f.ts, f.position_after), (ev[9].seq, id, 30 * MS, 1.0));
+    assert_eq!(
+        (f.seq, f.order_id, f.ts, f.position_after),
+        (ev[9].seq, id, 30 * MS, 1.0)
+    );
     assert!(out.engine_check.agrees, "{:?}", out.engine_check);
     assert_eq!(out.engine_check.engine_position, 1.0);
 
@@ -159,7 +189,12 @@ fn maker_fill_when_the_market_trades_through_the_price() {
             "local_response",
         ]
     );
-    let FlightBody::ExchFill { price_tick, maker, .. } = ev[5].body else { panic!() };
+    let FlightBody::ExchFill {
+        price_tick, maker, ..
+    } = ev[5].body
+    else {
+        panic!()
+    };
     // Filled at its own limit price, as a maker.
     assert_eq!((price_tick, maker), (tk(100.0), true));
     assert!(out.engine_check.agrees);
@@ -174,9 +209,21 @@ fn post_only_order_that_would_cross_is_expired() {
     let ev = of(&out, order_id(0, 0));
     assert_eq!(
         types(&ev),
-        ["order_intent", "request_sent", "exch_response", "local_response"]
+        [
+            "order_intent",
+            "request_sent",
+            "exch_response",
+            "local_response"
+        ]
     );
-    let FlightBody::ExchResponse { status, request_rejected, .. } = ev[2].body else { panic!() };
+    let FlightBody::ExchResponse {
+        status,
+        request_rejected,
+        ..
+    } = ev[2].body
+    else {
+        panic!()
+    };
     assert_eq!((status, request_rejected), (OrderStatus::Expired, false));
     assert!(out.fills.is_empty());
 }
@@ -230,7 +277,10 @@ fn cancel_of_a_resting_order() {
     let out = run(
         &m,
         &config(),
-        vec![(0, buy(0, 100.0, 1.0, Tif::Gtc)), (2, Act::Cancel { order_id: id })],
+        vec![
+            (0, buy(0, 100.0, 1.0, Tif::Gtc)),
+            (2, Act::Cancel { order_id: id }),
+        ],
     );
     let ev = of(&out, id);
     assert_eq!(
@@ -255,7 +305,14 @@ fn cancel_of_a_resting_order() {
             exch_arrival_ts: Some(tick_ts(2) + ENTRY),
         }
     );
-    let FlightBody::ExchResponse { status, request_rejected, .. } = ev[7].body else { panic!() };
+    let FlightBody::ExchResponse {
+        status,
+        request_rejected,
+        ..
+    } = ev[7].body
+    else {
+        panic!()
+    };
     assert_eq!((status, request_rejected), (OrderStatus::Canceled, false));
     assert_eq!(ev[7].ts, tick_ts(2) + ENTRY);
 }
@@ -266,22 +323,33 @@ fn cancel_of_a_resting_order() {
 fn cancel_that_loses_the_race_against_a_fill_is_rejected() {
     let mut m = Mkt::standard();
     // Cancel is sent at tick 2 (30 ms) and arrives at 31 ms; the trade-through is at 30.5 ms.
-    m.trade(30 * MS + 500 * US, Side::Sell, 99.5, 1.0).keepalive(80 * MS);
+    m.trade(30 * MS + 500 * US, Side::Sell, 99.5, 1.0)
+        .keepalive(80 * MS);
     let id = order_id(0, 0);
     let out = run(
         &m,
         &config(),
-        vec![(0, buy(0, 100.0, 1.0, Tif::Gtc)), (2, Act::Cancel { order_id: id })],
+        vec![
+            (0, buy(0, 100.0, 1.0, Tif::Gtc)),
+            (2, Act::Cancel { order_id: id }),
+        ],
     );
     let ev = of(&out, id);
     let fills = find(&ev, "exch_fill");
     assert_eq!(fills.len(), 1);
     assert_eq!(fills[0].ts, 30 * MS + 500 * US);
     let responses = find(&ev, "exch_response");
-    let FlightBody::ExchResponse { request_rejected, .. } = responses.last().unwrap().body else {
+    let FlightBody::ExchResponse {
+        request_rejected, ..
+    } = responses.last().unwrap().body
+    else {
         panic!()
     };
-    assert!(request_rejected, "the late cancel must be rejected: {:?}", types(&ev));
+    assert!(
+        request_rejected,
+        "the late cancel must be rejected: {:?}",
+        types(&ev)
+    );
     assert_eq!(responses.last().unwrap().ts, tick_ts(2) + ENTRY);
     assert_eq!(out.fills.len(), 1);
     assert!(out.engine_check.agrees);
@@ -303,12 +371,17 @@ fn cancel_while_the_new_order_is_in_flight_is_refused() {
     let out = run(
         &m,
         &cfg,
-        vec![(0, buy(0, 100.0, 1.0, Tif::Gtc)), (1, Act::Cancel { order_id: id })],
+        vec![
+            (0, buy(0, 100.0, 1.0, Tif::Gtc)),
+            (1, Act::Cancel { order_id: id }),
+        ],
     );
     let ev = of(&out, id);
     let refused = find(&ev, "request_refused");
     assert_eq!(refused.len(), 1);
-    let FlightBody::RequestRefused { req, error } = &refused[0].body else { panic!() };
+    let FlightBody::RequestRefused { req, error } = &refused[0].body else {
+        panic!()
+    };
     assert_eq!(*req, ReqKind::Cancel);
     assert!(!error.is_empty());
     assert_eq!(refused[0].ts, tick_ts(1));
@@ -338,7 +411,9 @@ fn partial_maker_fills_are_all_counted_and_the_engine_gap_is_reported() {
     let qtys: Vec<(f64, f64)> = fills
         .iter()
         .map(|e| match e.body {
-            FlightBody::ExchFill { qty, leaves_qty, .. } => (qty, leaves_qty),
+            FlightBody::ExchFill {
+                qty, leaves_qty, ..
+            } => (qty, leaves_qty),
             _ => unreachable!(),
         })
         .collect();
@@ -352,13 +427,23 @@ fn partial_maker_fills_are_all_counted_and_the_engine_gap_is_reported() {
         .collect();
     assert_eq!(
         statuses,
-        [OrderStatus::New, OrderStatus::PartiallyFilled, OrderStatus::Filled]
+        [
+            OrderStatus::New,
+            OrderStatus::PartiallyFilled,
+            OrderStatus::Filled
+        ]
     );
 
     let last = out.equity.last().unwrap();
     assert_eq!(last.position, 3.0);
     assert_eq!(last.known_position, 3.0);
-    assert_eq!(out.fills.iter().map(|f| f.position_after).collect::<Vec<_>>(), [1.0, 3.0]);
+    assert_eq!(
+        out.fills
+            .iter()
+            .map(|f| f.position_after)
+            .collect::<Vec<_>>(),
+        [1.0, 3.0]
+    );
 
     let c = &out.engine_check;
     assert!(!c.agrees);
@@ -380,7 +465,12 @@ fn taker_sweep_records_one_execution_per_level() {
     let fills: Vec<(i64, f64, bool)> = find(&ev, "exch_fill")
         .iter()
         .map(|e| match e.body {
-            FlightBody::ExchFill { price_tick, qty, maker, .. } => (price_tick, qty, maker),
+            FlightBody::ExchFill {
+                price_tick,
+                qty,
+                maker,
+                ..
+            } => (price_tick, qty, maker),
             _ => unreachable!(),
         })
         .collect();
@@ -401,7 +491,9 @@ fn taker_sweep_records_one_execution_per_level() {
 fn queue_models_differ_on_cancellations_ahead() {
     let mut m = Mkt::standard();
     // 5 -> 8: three more join behind our order. Then 8 -> 4 with no trade: four were cancelled.
-    m.bid(20 * MS, 100.0, 8.0).bid(30 * MS, 100.0, 4.0).keepalive(80 * MS);
+    m.bid(20 * MS, 100.0, 8.0)
+        .bid(30 * MS, 100.0, 4.0)
+        .keepalive(80 * MS);
     let ahead_after = |queue_model| {
         let mut cfg = config();
         cfg.execution.queue_model = queue_model;
@@ -410,7 +502,11 @@ fn queue_models_differ_on_cancellations_ahead() {
         let updates = find(&ev, "queue_update");
         assert_eq!(updates.len(), 2);
         match updates[1].body {
-            FlightBody::QueueUpdate { ahead_before, ahead_after, .. } => {
+            FlightBody::QueueUpdate {
+                ahead_before,
+                ahead_after,
+                ..
+            } => {
                 assert_eq!(ahead_before, Some(5.0));
                 ahead_after.unwrap()
             }
@@ -465,7 +561,10 @@ fn feed_latency_offset_delays_the_strategys_view_only() {
         (seen[0].1, seen[0].2.best_bid_tick, seen[0].2.feed_local_ts)
     };
     // No offset: by 10 ms the improvement (received at 5.1 ms) is known.
-    assert_eq!(view_at_tick0(0), (tick_ts(0), Some(tk(100.5)), Some(5 * MS + FEED)));
+    assert_eq!(
+        view_at_tick0(0),
+        (tick_ts(0), Some(tk(100.5)), Some(5 * MS + FEED))
+    );
     // 20 ms offset: at 10 ms nothing has arrived yet.
     let (now, bid, feed_ts) = view_at_tick0(20 * MS);
     assert_eq!((now, bid, feed_ts), (tick_ts(0), None, None));
@@ -494,10 +593,12 @@ fn pre_trade_risk_rules_block_before_the_engine() {
         ],
     );
     let rule = |slot: u8| -> Option<RiskRule> {
-        of(&out, order_id(0, slot)).iter().find_map(|e| match &e.body {
-            FlightBody::RiskBlocked { rule, .. } => Some(*rule),
-            _ => None,
-        })
+        of(&out, order_id(0, slot))
+            .iter()
+            .find_map(|e| match &e.body {
+                FlightBody::RiskBlocked { rule, .. } => Some(*rule),
+                _ => None,
+            })
     };
     assert_eq!(rule(0), Some(RiskRule::MaxOrderQty));
     assert_eq!(rule(1), Some(RiskRule::InvalidOrder));
@@ -558,7 +659,8 @@ fn drawdown_halt_cancels_working_orders_and_stops_the_strategy() {
 
     let resting = of(&out, order_id(1, 0));
     assert!(types(&resting).contains(&"cancel_intent"));
-    let FlightBody::ExchResponse { status, .. } = find(&resting, "exch_response").last().unwrap().body
+    let FlightBody::ExchResponse { status, .. } =
+        find(&resting, "exch_response").last().unwrap().body
     else {
         panic!()
     };
@@ -633,15 +735,21 @@ fn late_cancel_rejection_is_recorded_after_the_order_is_terminal() {
     let out = run(
         &m,
         &cfg,
-        vec![(0, buy(0, 100.0, 1.0, Tif::Gtc)), (3, Act::Cancel { order_id: id })],
+        vec![
+            (0, buy(0, 100.0, 1.0, Tif::Gtc)),
+            (3, Act::Cancel { order_id: id }),
+        ],
     );
     let ev = of(&out, id);
     let locals: Vec<(i64, OrderStatus, bool, f64)> = find(&ev, "local_response")
         .iter()
         .map(|e| match e.body {
-            FlightBody::LocalResponse { status, request_rejected, exec_qty, .. } => {
-                (e.ts, status, request_rejected, exec_qty)
-            }
+            FlightBody::LocalResponse {
+                status,
+                request_rejected,
+                exec_qty,
+                ..
+            } => (e.ts, status, request_rejected, exec_qty),
             _ => unreachable!(),
         })
         .collect();
@@ -706,7 +814,10 @@ fn partial_fill_records_the_queue_reset_and_rejected_cancel_has_no_execution() {
     let out = run(
         &m,
         &cfg,
-        vec![(0, buy(0, 100.0, 3.0, Tif::Gtc)), (2, Act::Cancel { order_id: id })],
+        vec![
+            (0, buy(0, 100.0, 3.0, Tif::Gtc)),
+            (2, Act::Cancel { order_id: id }),
+        ],
     );
     let ev = of(&out, id);
     let first_fill = ev
@@ -722,12 +833,50 @@ fn partial_fill_records_the_queue_reset_and_rejected_cancel_has_no_execution() {
             ahead_after: Some(0.0),
         }
     );
-    assert_eq!(out.fills.iter().map(|f| f.qty).collect::<Vec<_>>(), [1.0, 2.0]);
+    assert_eq!(
+        out.fills.iter().map(|f| f.qty).collect::<Vec<_>>(),
+        [1.0, 2.0]
+    );
     let last = find(&ev, "local_response").last().copied().unwrap();
-    let FlightBody::LocalResponse { request_rejected, exec_qty, exec_price_tick, .. } = last.body
+    let FlightBody::LocalResponse {
+        request_rejected,
+        exec_qty,
+        exec_price_tick,
+        ..
+    } = last.body
     else {
         panic!()
     };
     assert!(request_rejected);
     assert_eq!((exec_qty, exec_price_tick), (0.0, 0));
+}
+
+/// The drawdown halt is a decision of the strategy host, so it must only use fills whose
+/// notification has arrived. Here the fill happens at 11 ms but its response arrives at 36 ms;
+/// the market collapses at 20 ms (seen locally at 20.1 ms). Using the exchange-side ledger would
+/// halt at the 30 ms tick, before the host could know it is long; the halt must come at 40 ms.
+#[test]
+fn drawdown_halt_does_not_use_fills_the_host_has_not_been_told_about() {
+    let mut m = Mkt::standard();
+    m.bid(20 * MS, 100.0, 0.0)
+        .bid(20 * MS, 99.5, 0.0)
+        .bid(20 * MS, 99.0, 0.0)
+        .ask(20 * MS, 91.0, 5.0)
+        .bid(20 * MS, 90.0, 5.0)
+        .keepalive(120 * MS);
+    let mut cfg = config();
+    cfg.risk.max_drawdown = Some(5.0);
+    cfg.execution.order_latency = OrderLatencyConfig::Constant {
+        entry_ns: ENTRY,
+        response_ns: 25 * MS,
+    };
+    let out = run(&m, &cfg, vec![(0, buy(0, 101.0, 2.0, Tif::Ioc))]);
+    let fill = &out.fills[0];
+    assert_eq!(fill.ts, tick_ts(0) + ENTRY);
+    let halt = out
+        .tape
+        .iter()
+        .find(|e| matches!(e.body, FlightBody::RiskHalt { .. }))
+        .expect("the halt fires once the fill is known");
+    assert_eq!(halt.ts, tick_ts(3));
 }

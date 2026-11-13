@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use bb_core::{
+    OrdType, Side, Tif,
     config::{
         ExchangeModel, ExecutionConfig, FeeConfig, OrderLatencyConfig, QueueModelConfig,
         RecordConfig, RiskConfig, RunConfig, ScriptedParams, StrategyConfig, StrategyKind,
@@ -9,9 +10,8 @@ use bb_core::{
     dataset::InstrumentMeta,
     flight::{FlightBody, FlightEvent},
     strategy::{Intent, LocalView, MarketView, Strategy},
-    OrdType, Side, Tif,
 };
-use bb_sim::{simulate, Event, SimInput, SimOutput};
+use bb_sim::{Event, SimInput, SimOutput, simulate};
 use hftbacktest::types::{
     BUY_EVENT, DEPTH_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT,
 };
@@ -48,7 +48,10 @@ pub struct Mkt {
 impl Mkt {
     fn row(&mut self, kind: u64, side: u64, at: i64, px: f64, qty: f64) -> &mut Self {
         if let Some(last) = self.rows.last() {
-            assert!(ORIGIN + at >= last.exch_ts, "rows must be added in time order");
+            assert!(
+                ORIGIN + at >= last.exch_ts,
+                "rows must be added in time order"
+            );
         }
         self.rows.push(Event {
             ev: kind | side | EXCH_EVENT | LOCAL_EVENT,
@@ -149,11 +152,14 @@ pub enum Act {
     },
 }
 
+/// What the strategy was shown on each tick: (tick number, local time, market, known position).
+pub type SeenViews = std::rc::Rc<std::cell::RefCell<Vec<(u64, i64, MarketView, f64)>>>;
+
 /// Emits fixed intents at fixed ticks and remembers the views it was shown.
 #[derive(Default)]
 pub struct Script {
     pub acts: Vec<(u64, Act)>,
-    pub seen: std::rc::Rc<std::cell::RefCell<Vec<(u64, i64, MarketView, f64)>>>,
+    pub seen: SeenViews,
 }
 
 impl Script {

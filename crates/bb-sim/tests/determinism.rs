@@ -5,10 +5,10 @@
 mod common;
 
 use bb_core::{
+    Side, Tif,
     config::{ExchangeModel, OrderLatencyConfig, QueueModelConfig},
     hash::sha256_json,
     strategy::order_id,
-    Side, Tif,
 };
 use common::*;
 

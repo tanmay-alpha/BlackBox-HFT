@@ -2,7 +2,7 @@
 //!
 //! The engine keeps a local-side account (`StateValues`), but in 0.9.4 that account only applies
 //! responses whose status is `Filled` and uses the response's last `exec_qty`. Partial fills and
-//! multi-level taker sweeps are therefore under-counted (see docs/ENGINE_NOTES.md). BlackBox
+//! multi-level taker sweeps are therefore under-counted (see docs/EXECUTION_MODEL.md). BlackBox
 //! records every execution from the exchange side and does its own bookkeeping; the engine's
 //! account is used only as a cross-check where the two are expected to agree.
 
@@ -28,6 +28,10 @@ impl Book {
     /// * `sign` is `+1.0` for a buy, `-1.0` for a sell.
     /// * `value` is the traded value in quote currency as the engine computed it.
     /// * `half_lot` is the tolerance below which a position counts as flat.
+    ///
+    /// The arguments are the fields of one execution as the engine reports it; a struct would
+    /// only be built to be taken apart again on the hot path.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &mut self,
         sign: f64,

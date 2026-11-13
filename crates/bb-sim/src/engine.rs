@@ -9,6 +9,7 @@
 use bb_core::config::{ExchangeModel, OrderLatencyConfig, QueueModelConfig, RunConfig};
 use hftbacktest::{
     backtest::{
+        Asset, Backtest,
         assettype::LinearAsset,
         data::{Data, DataSource, FeedLatencyAdjustment, Reader},
         models::{
@@ -19,17 +20,16 @@ use hftbacktest::{
         order::order_bus,
         proc::{Local, LocalProcessor, NoPartialFillExchange, PartialFillExchange, Processor},
         state::State,
-        Asset, Backtest,
     },
     depth::HashMapMarketDepth,
     types::Event,
 };
 
 use crate::{
+    SimError, SimInput,
     procs::{RecExch, RecLocal},
     tape::Tape,
     taps::{F64Probe, JitterLatency, LatencyKind, QueuePosProbe, TapFee, TapLatency, TapQueue},
-    SimError, SimInput,
 };
 
 pub(crate) type Depth = HashMapMarketDepth;

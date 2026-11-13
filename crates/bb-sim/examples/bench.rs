@@ -28,6 +28,9 @@
 //!   `RiskAdverseQueueModel`.
 //!
 //! Run from the repository root: stored datasets are looked up in `data/datasets/<id>`.
+// Compile the production reader here too, so the micro-benchmark cannot drift from the tap.
+#[path = "../src/queue_probe.rs"]
+mod queue_probe;
 
 use std::{
     collections::BTreeSet,
@@ -37,6 +40,7 @@ use std::{
 };
 
 use bb_core::{
+    ReqKind,
     config::{
         AvellanedaStoikovParams, ExchangeModel, ExecutionConfig, FeeConfig, OrderLatencyConfig,
         QueueModelConfig, RecordConfig, RiskConfig, RunConfig, ScriptedParams, StrategyConfig,
@@ -46,22 +50,21 @@ use bb_core::{
     flight::FlightBody,
     hash::sha256_json,
     strategy::{Intent, LocalView, Strategy},
-    ReqKind,
 };
-use bb_data::synthetic::{generate, SyntheticConfig};
-use bb_sim::{simulate, Event, SimInput, SimOutput};
+use bb_data::synthetic::{SyntheticConfig, generate};
+use bb_sim::{Event, SimInput, SimOutput, simulate};
 use hftbacktest::{
     backtest::{
+        Backtest, ExchangeKind, L2AssetBuilder,
         assettype::LinearAsset,
         data::{Data, DataSource},
         models::{
-            CommonFees, ConstantLatency, PowerProbQueueFunc3, ProbQueueModel, QueueModel,
-            QueuePos, RiskAdverseQueueModel, TradingValueFeeModel,
+            CommonFees, ConstantLatency, PowerProbQueueFunc3, ProbQueueModel, QueueModel, QueuePos,
+            RiskAdverseQueueModel, TradingValueFeeModel,
         },
-        Backtest, ExchangeKind, L2AssetBuilder,
     },
     depth::{HashMapMarketDepth, L2MarketDepth},
-    types::{Bot, ElapseResult, OrdType, Order, Side as HSide, TimeInForce, LOCAL_EVENT},
+    types::{Bot, ElapseResult, LOCAL_EVENT, OrdType, Order, Side as HSide, TimeInForce},
 };
 
 type Depth = HashMapMarketDepth;
@@ -109,10 +112,14 @@ fn parse_args() -> Args {
         match flag.as_str() {
             "--reps" => a.reps = value("--reps").parse().expect("--reps: integer"),
             "--duration-s" => {
-                a.duration_s = value("--duration-s").parse().expect("--duration-s: integer")
+                a.duration_s = value("--duration-s")
+                    .parse()
+                    .expect("--duration-s: integer")
             }
             "--interval-ms" => {
-                a.interval_ms = value("--interval-ms").parse().expect("--interval-ms: integer")
+                a.interval_ms = value("--interval-ms")
+                    .parse()
+                    .expect("--interval-ms: integer")
             }
             "--dataset" => a.datasets.push(value("--dataset")),
             "--no-synthetic" => a.synthetic = false,
@@ -164,7 +171,11 @@ impl Stats {
 
 /// One untimed warm-up, then `reps` timed runs. `inspect` sees every result (warm-up included,
 /// index 0) outside the timed region.
-fn measure<R>(reps: usize, mut run: impl FnMut() -> R, mut inspect: impl FnMut(usize, &R)) -> Stats {
+fn measure<R>(
+    reps: usize,
+    mut run: impl FnMut() -> R,
+    mut inspect: impl FnMut(usize, &R),
+) -> Stats {
     let warm = run();
     inspect(0, &warm);
     drop(warm);
@@ -227,7 +238,10 @@ fn stored(id: &str) -> Option<Dataset> {
     }
     let t = Instant::now();
     let ds = bb_data::store::load(root, id).unwrap_or_else(|e| panic!("loading `{id}`: {e}"));
-    eprintln!("loaded dataset `{id}` in {:.1} ms (hash-verified)", ms(t.elapsed()));
+    eprintln!(
+        "loaded dataset `{id}` in {:.1} ms (hash-verified)",
+        ms(t.elapsed())
+    );
     let events: Vec<Event> = ds.events.as_ref().clone();
     Some(Dataset {
         name: id.to_string(),
@@ -258,7 +272,9 @@ where
         .data(vec![DataSource::Data(Data::from_data(&ds.events))])
         .latency_model(ConstantLatency::new(LATENCY_NS, LATENCY_NS))
         .asset_type(LinearAsset::new(inst.contract_size))
-        .fee_model(TradingValueFeeModel::new(CommonFees::new(MAKER_FEE, TAKER_FEE)))
+        .fee_model(TradingValueFeeModel::new(CommonFees::new(
+            MAKER_FEE, TAKER_FEE,
+        )))
         .exchange(ExchangeKind::NoPartialFillExchange)
         .queue_model(queue_model)
         .depth(move || Depth::new(inst.tick_size, inst.lot_size))
@@ -544,10 +560,11 @@ impl Shape {
         s
     }
 
-    /// Exact number of queue-probe reads: one per `new_order`, two per `trade`/`depth` callback
-    /// (before and after), whether the resulting update is kept or dropped by the cap.
+    /// Exact for the pinned probabilistic model: one new-order read, one after each trade/depth
+    /// (including dropped updates), and one after each surviving partial-fill reset. Cached
+    /// before values and unsuccessful is_filled calls need no Debug read.
     fn probe_reads(&self) -> u64 {
-        self.exch_queued as u64 + 2 * (self.queue_updates as u64 + self.queue_dropped)
+        self.exch_queued as u64 + self.queue_updates as u64 + self.queue_dropped
     }
 }
 
@@ -559,19 +576,24 @@ fn output_hash(out: &SimOutput) -> String {
 // Queue-probe micro-benchmark
 // ------------------------------------------------------------------------------------------------
 
-/// Same parsing as `taps::parse_front_qty` (crate-private there).
-fn parse_front_qty(debug: &str) -> Option<f64> {
-    let rest = debug.split_once("front_q_qty: ")?.1;
-    let end = rest.find([',', ' ', '}']).unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
+// Parsing and Debug-prefix capture are shared with the production tap above.
 
 /// Nanoseconds per read for the Debug-format probe and for the `f64` downcast probe.
 fn probe_microbench() -> (f64, f64) {
     const N: u32 = 2_000_000;
     let mut depth = Depth::new(0.1, 0.001);
     depth.update_bid_depth(30_000.0, 2.347, 0);
-    let make = || Order::new(1, 300_000, 0.1, 0.01, HSide::Buy, OrdType::Limit, TimeInForce::GTC);
+    let make = || {
+        Order::new(
+            1,
+            300_000,
+            0.1,
+            0.01,
+            HSide::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        )
+    };
 
     let mut prob_order = make();
     let prob = ProbQueueModel::<_, Depth>::new(PowerProbQueueFunc3::new(3.0));
@@ -579,7 +601,7 @@ fn probe_microbench() -> (f64, f64) {
     prob.trade(&mut prob_order, 0.123, &depth);
     let read_debug = |o: &Order| {
         let pos = (*o.q).as_any().downcast_ref::<QueuePos>()?;
-        parse_front_qty(&format!("{pos:?}"))
+        queue_probe::front_qty(pos)
     };
     assert_eq!(read_debug(&prob_order), Some(2.347 - 0.123));
 
@@ -692,7 +714,10 @@ fn bench_dataset(ds: &Dataset, args: &Args, probe_ns: f64, sweep: bool) {
         args.reps,
         || run_adapter(ds, &idle_cfg, Box::new(Idle)),
         |_, out| {
-            assert!(out.tape.is_empty() && out.fills.is_empty(), "idle run produced output");
+            assert!(
+                out.tape.is_empty() && out.fills.is_empty(),
+                "idle run produced output"
+            );
             idle_ticks = out.ticks;
         },
     );
@@ -710,7 +735,11 @@ fn bench_dataset(ds: &Dataset, args: &Args, probe_ns: f64, sweep: bool) {
     ];
     let end = data_end(ds);
     // `simulate` scans every row once for the last local timestamp before it starts.
-    let prescan = measure(args.reps, || data_end(black_box(ds)), |_, e| assert_eq!(*e, end));
+    let prescan = measure(
+        args.reps,
+        || data_end(black_box(ds)),
+        |_, e| assert_eq!(*e, end),
+    );
     println!(
         "Adapter pre-scan for the last local timestamp (same scan as `simulate`): median {:.2} ms \
          ({:.2} ns/row)\n",
@@ -723,16 +752,26 @@ fn bench_dataset(ds: &Dataset, args: &Args, probe_ns: f64, sweep: bool) {
             ("no-partial", ExchangeModel::NoPartialFill),
             ("partial", ExchangeModel::PartialFill),
         ] {
-            let cfg = config(ds, interval_ns, kind.clone(), ex, QueueModelConfig::PowerProb3 {
-                n: 3.0,
-            });
+            let cfg = config(
+                ds,
+                interval_ns,
+                kind.clone(),
+                ex,
+                QueueModelConfig::PowerProb3 { n: 3.0 },
+            );
             let mut hashes: BTreeSet<String> = BTreeSet::new();
             let mut runs = 0;
             let mut shape = Shape::default();
             let mut actions: Vec<Action> = Vec::new();
             let stats = measure(
                 args.reps,
-                || run_adapter(ds, &cfg, bb_strategies::build(&cfg.strategy, &ds.instrument)),
+                || {
+                    run_adapter(
+                        ds,
+                        &cfg,
+                        bb_strategies::build(&cfg.strategy, &ds.instrument),
+                    )
+                },
                 |i, out| {
                     hashes.insert(output_hash(out));
                     runs += 1;
@@ -859,7 +898,9 @@ fn bench_dataset(ds: &Dataset, args: &Args, probe_ns: f64, sweep: bool) {
 
     if sweep {
         println!("\nInterval sweep, idle adapter vs raw engine (median ms):\n");
-        println!("| interval ms | raw ticks | raw ms | idle ticks | idle ms | overhead ms | overhead % |");
+        println!(
+            "| interval ms | raw ticks | raw ms | idle ticks | idle ms | overhead ms | overhead % |"
+        );
         println!("|---:|---:|---:|---:|---:|---:|---:|");
         for interval_ms in [10_i64, 100, 1_000] {
             let iv = interval_ms * MS;
@@ -887,7 +928,11 @@ fn main() {
     println!("# BlackBox bench\n");
     println!(
         "build: {} profile, hftbacktest 0.9.4, logical CPUs reported by std: {}",
-        if cfg!(debug_assertions) { "debug" } else { "release" },
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
         std::thread::available_parallelism().map_or(0, |n| n.get())
     );
 

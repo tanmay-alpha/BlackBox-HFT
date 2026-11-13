@@ -20,11 +20,11 @@ use std::{
 };
 
 use bb_core::{
+    OrderStatus, RelNs, ReqKind, Side,
     config::RecordConfig,
     dataset::InstrumentMeta,
     flight::{FlightBody, FlightEvent, QueueCause},
     result::FillRecord,
-    OrderStatus, RelNs, ReqKind, Side,
 };
 
 use crate::ledger::Book;
@@ -34,9 +34,13 @@ use crate::ledger::Book;
 enum Effect {
     None,
     /// An exchange-side execution: update the true position and remember the fill.
-    Fill { side: Side },
+    Fill {
+        side: Side,
+    },
     /// A response reached the local side: fills of this order up to `exch_ts` become known.
-    Release { exch_ts: RelNs },
+    Release {
+        exch_ts: RelNs,
+    },
 }
 
 struct Pending {
@@ -51,6 +55,8 @@ struct QueueCount {
     kept: u32,
     dropped: u64,
     first_drop_ts: RelNs,
+    /// Last engine state read, not merely the last value retained on the capped tape.
+    ahead: Option<f64>,
 }
 
 pub(crate) struct Inner {
@@ -61,6 +67,8 @@ pub(crate) struct Inner {
     /// Absolute exchange time of the engine step in progress.
     exch_now: i64,
     step: Option<Vec<Pending>>,
+    /// Draining retains the allocation for the next engine step.
+    step_buffer: Vec<Pending>,
     events: Vec<FlightEvent>,
     queue_counts: BTreeMap<u64, QueueCount>,
     /// All simulated fills as they happened at the exchange.
@@ -92,6 +100,7 @@ impl Tape {
             queue_cap: record.max_queue_updates_per_order,
             exch_now: origin,
             step: None,
+            step_buffer: Vec::new(),
             events: Vec::new(),
             queue_counts: BTreeMap::new(),
             truth: Book::default(),
@@ -108,15 +117,15 @@ impl Tape {
         abs - self.0.borrow().origin
     }
 
-    /// Marks the start of one engine processing step at absolute exchange time `exch_now`
-    /// (ignored for local-side steps, which pass the local time for symmetry).
+    /// Marks the start of one engine processing step. Local-side steps leave the last exchange
+    /// timestamp unchanged.
     pub fn begin_step(&self, exch_now: Option<i64>) {
         let mut t = self.0.borrow_mut();
         if let Some(now) = exch_now {
             t.exch_now = now;
         }
         debug_assert!(t.step.is_none(), "engine steps do not nest");
-        t.step = Some(Vec::new());
+        t.step = Some(std::mem::take(&mut t.step_buffer));
     }
 
     /// Commits the step's events in canonical order.
@@ -127,9 +136,10 @@ impl Tape {
         };
         // Stable: each order's events keep their engine order.
         pending.sort_by_key(|p| p.order_id);
-        for p in pending {
+        for p in pending.drain(..) {
             t.commit(p);
         }
+        t.step_buffer = pending;
     }
 
     fn push(&self, ts: RelNs, order_id: u64, body: FlightBody, effect: Effect) {
@@ -154,7 +164,10 @@ impl Tape {
     /// Records a run-level event with no order.
     pub fn run_event(&self, ts: RelNs, body: FlightBody) {
         let mut t = self.0.borrow_mut();
-        debug_assert!(t.step.is_none(), "run-level events are emitted by the harness only");
+        debug_assert!(
+            t.step.is_none(),
+            "run-level events are emitted by the harness only"
+        );
         let seq = t.events.len() as u64;
         t.events.push(FlightEvent::new(seq, ts, None, body));
     }
@@ -202,6 +215,12 @@ impl Tape {
         best_bid_tick: Option<i64>,
         best_ask_tick: Option<i64>,
     ) {
+        self.0
+            .borrow_mut()
+            .queue_counts
+            .entry(order_id)
+            .or_default()
+            .ahead = queue_ahead;
         let ts = self.exch_now_rel();
         self.push(
             ts,
@@ -233,6 +252,7 @@ impl Tape {
             let lot = t.instrument.lot_size;
             let cap = t.queue_cap;
             let count = t.queue_counts.entry(order_id).or_default();
+            count.ahead = ahead_after;
             let significant = match (cause, ahead_before, ahead_after) {
                 (QueueCause::Trade { .. }, _, _) => true,
                 (_, Some(b), Some(a)) => (a - b).abs() >= lot,
@@ -305,10 +325,9 @@ impl Tape {
 
     /// Notes that the queue model reset an order's estimate while deciding a partial fill.
     pub fn queue_reset(&self, order_id: u64, before: Option<f64>, after: Option<f64>) {
-        self.0
-            .borrow_mut()
-            .pending_reset
-            .insert(order_id, (before, after));
+        let mut t = self.0.borrow_mut();
+        t.queue_counts.entry(order_id).or_default().ahead = after;
+        t.pending_reset.insert(order_id, (before, after));
     }
 
     pub fn exch_response(
@@ -366,6 +385,15 @@ impl Tape {
 
     // ----- harness queries -----
 
+    /// Only the Debug-based probe uses this cache: a direct f64 downcast is cheaper.
+    pub fn queue_ahead(&self, order_id: u64) -> Option<f64> {
+        self.0
+            .borrow()
+            .queue_counts
+            .get(&order_id)
+            .and_then(|c| c.ahead)
+    }
+
     fn exch_now_rel(&self) -> RelNs {
         let t = self.0.borrow();
         t.exch_now - t.origin
@@ -406,10 +434,7 @@ impl Tape {
                 FlightBody::QueueTruncated { dropped },
             ));
         }
-        (
-            std::mem::take(&mut t.events),
-            std::mem::take(&mut t.fills),
-        )
+        (std::mem::take(&mut t.events), std::mem::take(&mut t.fills))
     }
 }
 
