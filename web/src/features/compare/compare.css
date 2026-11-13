@@ -1,0 +1,500 @@
+/* Scenario comparison. A is drawn in the foreground colour and B in the accent colour throughout;
+   neither is "good" or "bad". */
+
+.cmp-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.cmp-page :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cmp-title h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.cmp-title p {
+  margin: 0;
+  max-width: 110ch;
+  font-size: 13px;
+}
+
+.cmp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.cmp-btn:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.cmp-btn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.cmp-btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.cmp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---- Picker ---- */
+
+.cmp-picker {
+  display: grid;
+  gap: 10px;
+  max-width: 900px;
+}
+
+.cmp-pick {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.cmp-pick-label {
+  color: var(--muted);
+}
+
+.cmp-pick select {
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.cmp-picker-go {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 104px;
+  font-size: 12px;
+}
+
+/* ---- Scenario headers ---- */
+
+.cmp-scenarios,
+.cmp-outcomes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap);
+}
+
+@media (max-width: 900px) {
+  .cmp-scenarios,
+  .cmp-outcomes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.cmp-scenario,
+.cmp-outcome {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-top-width: 3px;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.cmp-outcome {
+  background: var(--surface-2);
+}
+
+.cmp-scenario-a {
+  border-top-color: var(--fg);
+}
+
+.cmp-scenario-b {
+  border-top-color: var(--accent);
+}
+
+.cmp-scenario h2,
+.cmp-outcome h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cmp-tag {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.cmp-scenario-b .cmp-tag {
+  color: var(--accent);
+}
+
+.cmp-scenario dl,
+.cmp-outcome dl {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.cmp-scenario dl > div,
+.cmp-outcome dl > div {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.cmp-scenario dt,
+.cmp-outcome dt {
+  color: var(--muted);
+}
+
+.cmp-scenario dd,
+.cmp-outcome dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cmp-warning {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ---- Tables ---- */
+
+.cmp-caption {
+  caption-side: top;
+  padding: 0 0 6px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--muted);
+}
+
+.cmp-num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cmp-json {
+  overflow-wrap: anywhere;
+}
+
+.cmp-diffs tbody th,
+.cmp-metrics tbody th,
+.cmp-classes tbody th,
+.cmp-pairs-table tbody th {
+  font-weight: 400;
+  text-align: left;
+}
+
+.cmp-pos {
+  color: var(--buy);
+}
+
+.cmp-neg {
+  color: var(--sell);
+}
+
+/* ---- Alignment ---- */
+
+.cmp-seg-identical { --seg: color-mix(in srgb, var(--muted) 50%, var(--surface)); }
+.cmp-seg-same_decision_different_outcome { --seg: var(--modeled); }
+.cmp-seg-different_decision { --seg: var(--warn); }
+.cmp-seg-only_a { --seg: var(--fg); }
+.cmp-seg-only_b { --seg: var(--accent); }
+
+.cmp-align p {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.cmp-bar {
+  display: flex;
+  gap: 2px;
+  height: 18px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.cmp-seg {
+  flex-basis: 0;
+  flex-shrink: 1;
+  min-width: 3px;
+  background: var(--seg);
+}
+
+.cmp-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 4px;
+  background: var(--seg);
+}
+
+.cmp-class {
+  display: inline-block;
+  padding: 0 6px;
+  border-left: 3px solid var(--seg);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ---- First divergence ---- */
+
+.cmp-first {
+  padding: 2px 0 0 12px;
+  border-left: 3px solid var(--accent);
+}
+
+.cmp-first-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 18px;
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.cmp-first > p.dim {
+  margin: 0 0 10px;
+  max-width: 120ch;
+  font-size: 12px;
+}
+
+.cmp-outcome p {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* ---- Pairs ---- */
+
+.cmp-pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cmp-pairs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  font-size: 12px;
+}
+
+.cmp-pairs-bar .cmp-pick {
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.cmp-scroll {
+  max-height: 560px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.cmp-pairs-table thead th {
+  background: var(--surface);
+}
+
+.cmp-side-start {
+  border-left: 1px solid var(--border);
+}
+
+.cmp-more {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+/* ---- Equity overlay ---- */
+
+.cmp-equity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cmp-equity-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  font-size: 12px;
+}
+
+.cmp-equity-key {
+  display: flex;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cmp-equity-key li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmp-line {
+  display: inline-block;
+  width: 18px;
+  height: 0;
+  border-top: 2px solid var(--fg);
+}
+
+.cmp-line-b {
+  border-top-color: var(--accent);
+}
+
+.cmp-line-div {
+  width: 0;
+  height: 12px;
+  border-top: 0;
+  border-left: 1px dashed var(--warn);
+}
+
+.cmp-equity-read {
+  margin-left: auto;
+}
+
+.cmp-equity-stage {
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.cmp-equity-svg {
+  display: block;
+  cursor: crosshair;
+}
+
+.cmp-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  opacity: 0.6;
+  shape-rendering: crispEdges;
+}
+
+.cmp-axis {
+  stroke: var(--border);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.cmp-zero {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 6 4;
+  shape-rendering: crispEdges;
+}
+
+.cmp-tick {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.cmp-trace {
+  fill: none;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+
+.cmp-trace-a {
+  stroke: var(--fg);
+}
+
+.cmp-trace-b {
+  stroke: var(--accent);
+}
+
+.cmp-div {
+  stroke: var(--warn);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  shape-rendering: crispEdges;
+}
+
+.cmp-div-label {
+  fill: var(--warn);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.cmp-cursor {
+  stroke: var(--muted);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+
+.cmp-note {
+  margin: 0;
+  max-width: 130ch;
+  font-size: 12px;
+}
+
+/* ---- Interpretation ---- */
+
+.cmp-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cmp-notes li {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}

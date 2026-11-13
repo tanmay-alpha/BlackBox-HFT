@@ -1,0 +1,745 @@
+/* Order forensics view. Colour is reserved for meaning: evidence basis, side, cancel/warn. */
+
+.fx-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.fx-page :focus-visible,
+.ev-legend :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Tones: one custom property so SVG glyphs, swatches and chart marks share the mapping. */
+.fx-tone-fg { --tone: var(--fg); }
+.fx-tone-muted { --tone: var(--muted); }
+.fx-tone-modeled { --tone: var(--modeled); }
+.fx-tone-observed { --tone: var(--observed); }
+.fx-tone-warn { --tone: var(--warn); }
+.fx-tone-error { --tone: var(--error); }
+.fx-tone-buy { --tone: var(--buy); }
+.fx-tone-sell { --tone: var(--sell); }
+
+/* ---- Legend (shared with the comparison and grid views) ---- */
+
+.ev-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 28px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.ev-legend-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.ev-legend-title {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.ev-legend-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+}
+
+/* ---- Breadcrumb and order navigation ---- */
+
+.fx-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fx-nav {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.fx-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.fx-btn:hover {
+  border-color: var(--muted);
+}
+
+.fx-btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.fx-btn.is-disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.fx-toggle {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* ---- Header ---- */
+
+.fx-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.fx-order-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+
+.fx-order-size {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.fx-question {
+  margin: 4px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.fx-headline {
+  margin: 0;
+  max-width: 96ch;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.fx-verdict {
+  margin: 0;
+  max-width: 110ch;
+  font-size: 12px;
+}
+
+.fx-verdict code {
+  color: var(--fg);
+}
+
+.fx-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.fx-assumptions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px 20px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.fx-assumptions dt {
+  color: var(--muted);
+}
+
+.fx-assumptions dd {
+  margin: 0;
+}
+
+/* ---- Two-clock timeline ---- */
+
+.fx-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fx-timeline-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.fx-timeline-zoom {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.fx-timeline-stage {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.fx-timeline-canvas {
+  display: block;
+  width: 100%;
+  height: 236px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.fx-timeline-canvas:active {
+  cursor: grabbing;
+}
+
+.fx-timeline-canvas.is-hit {
+  cursor: pointer;
+}
+
+.fx-tooltip {
+  position: absolute;
+  z-index: 5;
+  width: max-content;
+  max-width: min(420px, 80vw);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.fx-tooltip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fx-tooltip-title {
+  margin: 4px 0 2px;
+  font-weight: 600;
+}
+
+.fx-fields {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+}
+
+.fx-field {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  gap: 10px;
+}
+
+.fx-field dt {
+  color: var(--muted);
+}
+
+.fx-field dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fx-hint {
+  margin: 0;
+  font-size: 11px;
+}
+
+.fx-glyph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.fx-glyph-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.fx-glyph-svg {
+  flex: none;
+}
+
+.fx-glyph {
+  fill: var(--tone);
+  stroke: var(--tone);
+  stroke-width: 1.5;
+}
+
+.fx-glyph.is-hollow {
+  fill: none;
+}
+
+.fx-clock-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg);
+}
+
+/* The two clock domains differ by fill, not hue, so they never collide with a basis colour. */
+.fx-clock-tag[data-clock="exchange"] {
+  background: var(--surface-2);
+  border-style: solid;
+}
+
+.fx-clock-tag[data-clock="local"] {
+  background: transparent;
+  border-style: dashed;
+}
+
+.fx-selected {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 12px;
+}
+
+.fx-selected-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.fx-kvs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  font-size: 12px;
+}
+
+.fx-kv {
+  overflow-wrap: anywhere;
+}
+
+/* ---- Queue trajectory ---- */
+
+.fx-queue-model,
+.fx-truncated {
+  margin: 0 0 8px;
+  max-width: 120ch;
+  font-size: 12px;
+}
+
+.fx-queue {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.fx-queue-svg {
+  display: block;
+}
+
+.fx-q-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  opacity: 0.6;
+  shape-rendering: crispEdges;
+}
+
+.fx-q-axis {
+  stroke: var(--border);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.fx-q-label {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.fx-q-zero {
+  stroke: var(--fg);
+  stroke-width: 1;
+  stroke-dasharray: 6 4;
+  shape-rendering: crispEdges;
+}
+
+.fx-q-zero-label {
+  fill: var(--fg);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.fx-q-line {
+  fill: none;
+  stroke: var(--modeled);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+
+.fx-q-point {
+  fill: var(--modeled);
+  stroke: transparent;
+  stroke-width: 10;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.fx-q-point.is-cited {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2;
+}
+
+.fx-q-point.is-selected {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: none;
+}
+
+.fx-q-trade {
+  fill: var(--observed);
+  cursor: pointer;
+}
+
+.fx-q-trade.is-marked {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.fx-q-guide {
+  stroke: var(--accent);
+  stroke-width: 1;
+  opacity: 0.8;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+
+.fx-q-fill {
+  cursor: pointer;
+}
+
+.fx-q-fill-dot {
+  fill: var(--tone);
+}
+
+.fx-q-fill-ring {
+  fill: none;
+  stroke: var(--tone);
+  stroke-width: 1.5;
+}
+
+.fx-q-fill.is-cited .fx-q-fill-ring,
+.fx-q-fill.is-selected .fx-q-fill-ring {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.fx-queue-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 20px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.fx-queue-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fx-swatch {
+  display: inline-block;
+  flex: none;
+}
+
+.fx-swatch-line {
+  width: 18px;
+  height: 0;
+  border-top: 2px solid var(--modeled);
+}
+
+.fx-swatch-bar {
+  width: 4px;
+  height: 12px;
+  background: var(--observed);
+}
+
+.fx-swatch-fill {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tone);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--tone);
+}
+
+/* ---- Explanation ---- */
+
+.fx-two {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .fx-two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.fx-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fx-step {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.fx-step.is-citing {
+  border-left-color: var(--accent);
+}
+
+.fx-step.is-active {
+  border-color: var(--accent);
+}
+
+.fx-step-main {
+  display: grid;
+  grid-template-columns: 22px max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fx-step-no {
+  color: var(--muted);
+}
+
+.fx-step-cites {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 0 10px 8px 40px;
+  font-size: 11px;
+}
+
+.fx-chip {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.fx-chip:hover {
+  border-color: var(--muted);
+}
+
+.fx-chip.is-selected,
+.fx-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.fx-caveats {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--unobservable);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.fx-caveats h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.fx-caveats ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.fx-caveats p {
+  margin: 0;
+}
+
+/* ---- Tables ---- */
+
+.fx-caption {
+  caption-side: top;
+  padding: 0 0 6px;
+  max-width: 130ch;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  color: var(--muted);
+}
+
+.fx-num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.fx-context p {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.fx-context th,
+.fx-latency tbody th {
+  font-weight: 400;
+  text-align: left;
+  color: var(--muted);
+}
+
+.fx-scroll-x {
+  overflow-x: auto;
+}
+
+.fx-derived-col {
+  box-shadow: inset 0 -2px 0 var(--derived);
+}
+
+.fx-fills tbody tr,
+.fx-events-table tbody tr {
+  cursor: pointer;
+}
+
+.fx-fills tbody tr.is-selected > td,
+.fx-events-table tbody tr.is-selected > td {
+  background: var(--surface-2);
+  box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent);
+}
+
+.fx-events-table tbody tr.is-cited > td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.fx-events-table tbody tr.is-selected > td:first-child {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 1px 0 var(--accent),
+    inset 0 -1px 0 var(--accent);
+}
+
+.fx-events {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fx-events-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.fx-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.fx-events-scroll {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.fx-events-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+.fx-events-table td {
+  vertical-align: top;
+}

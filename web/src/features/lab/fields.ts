@@ -1,0 +1,991 @@
+// Typed field descriptors for the Strategy Laboratory form. The form is generated from these:
+// each descriptor names one `RunConfig` field, how to read and write it, the Rust type's bounds,
+// and any unit conversion between what the user types and what is stored. Conversions are
+// explicit functions so milliseconds never silently become nanoseconds, nor basis points
+// fractions.
+
+import type {
+  AvellanedaStoikovParams,
+  ExchangeModel,
+  ExecutionConfig,
+  ImbalanceTakerParams,
+  InstrumentMeta,
+  OrdType,
+  OrderLatencyConfig,
+  Preset,
+  QueueModelConfig,
+  RiskConfig,
+  RunConfig,
+  ScriptedOrder,
+  Side,
+  StrategyKind,
+  Tif,
+  TouchMakerParams,
+} from '../../api/types';
+import {
+  EXCHANGE_MODELS,
+  EXCHANGE_MODEL_INFO,
+  QUEUE_MODEL_INFO,
+  QUEUE_MODEL_TYPES,
+  STRATEGY_INFO,
+  bpsToFraction,
+  fractionToBps,
+  queueModelHasExponent,
+} from '../../components/describe';
+import type { QueueModelType } from '../../components/describe';
+
+// ----- descriptor types -------------------------------------------------------------------
+
+export interface UnitConversion {
+  /** Unit of the value stored in the configuration. */
+  storedUnit: string;
+  toStored: (display: number) => number;
+  toDisplay: (stored: number) => number;
+}
+
+interface FieldCommon {
+  /** Dotted path of the field in the serialized `RunConfig` (unique within a form). */
+  id: string;
+  label: string;
+  /** One line: what the field means. */
+  help: string;
+}
+
+export interface NumberField<T> extends FieldCommon {
+  kind: 'number';
+  /** The Rust field is an integer type. */
+  integer: boolean;
+  /** Unit of the value as typed by the user. */
+  unit?: string;
+  convert?: UnitConversion;
+  /** Inclusive bounds of the Rust type, in stored units (0 for unsigned integers). */
+  min?: number;
+  max?: number;
+  get: (obj: T) => number;
+  set: (obj: T, stored: number) => T;
+}
+
+export interface OptionalNumberField<T> extends FieldCommon {
+  kind: 'optional_number';
+  integer: boolean;
+  unit?: string;
+  min?: number;
+  max?: number;
+  /** Label of the checkbox that switches the value on. */
+  enableLabel: string;
+  get: (obj: T) => number | null;
+  set: (obj: T, stored: number | null) => T;
+}
+
+export interface SelectOption {
+  value: string;
+  label: string;
+  /** One line: what this choice models. */
+  help?: string;
+}
+
+export interface SelectField<T> extends FieldCommon {
+  kind: 'select';
+  options: SelectOption[];
+  get: (obj: T) => string;
+  set: (obj: T, value: string) => T;
+}
+
+export interface TextField<T> extends FieldCommon {
+  kind: 'text';
+  get: (obj: T) => string;
+  set: (obj: T, value: string) => T;
+}
+
+export type Field<T> = NumberField<T> | OptionalNumberField<T> | SelectField<T> | TextField<T>;
+
+export interface Section {
+  id: string;
+  title: string;
+  /** One line under the title. */
+  description: string;
+  /** The section is an execution assumption: its outputs are estimates, not observations. */
+  modeled: boolean;
+  fields: Field<RunConfig>[];
+}
+
+// ----- unit conversions -------------------------------------------------------------------
+
+/** Milliseconds as typed, whole nanoseconds as stored (1 ms = 1,000,000 ns). */
+export const MS_TO_NS: UnitConversion = {
+  storedUnit: 'ns',
+  toStored: (ms) => Math.round(ms * 1_000_000),
+  toDisplay: (ns) => ns / 1_000_000,
+};
+
+/** Basis points as typed, fraction of traded value as stored (1 bp = 0.0001). */
+export const BPS_TO_FRACTION: UnitConversion = {
+  storedUnit: 'fraction of traded value',
+  toStored: bpsToFraction,
+  toDisplay: fractionToBps,
+};
+
+const U8_MAX = 255;
+const U32_MAX = 4_294_967_295;
+/** u64/i64 fields travel as JSON numbers; beyond 2^53 - 1 they would lose precision. */
+const SAFE_MAX = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Type-level problem of one field's current value (not a number, not whole, outside the Rust
+ * type's range), or `null`. Semantic rules live in `validate.ts`.
+ */
+export function fieldProblem<T>(field: Field<T>, obj: T): string | null {
+  if (field.kind === 'select' || field.kind === 'text') return null;
+  const v = field.get(obj);
+  if (v === null) return null;
+  if (!Number.isFinite(v)) return 'Enter a number.';
+  if (field.integer && !Number.isInteger(v)) return 'Must be a whole number.';
+  const shown = (stored: number) =>
+    field.kind === 'number' && field.convert ? field.convert.toDisplay(stored) : stored;
+  if (field.min !== undefined && v < field.min) return `Must be at least ${shown(field.min)}.`;
+  if (field.max !== undefined && v > field.max) return `Must be at most ${shown(field.max)}.`;
+  if (field.integer && Math.abs(v) > SAFE_MAX) return 'Too large to be sent exactly.';
+  return null;
+}
+
+// ----- RunConfig lenses -------------------------------------------------------------------
+
+function withExecution(c: RunConfig, patch: Partial<ExecutionConfig>): RunConfig {
+  return { ...c, execution: { ...c.execution, ...patch } };
+}
+
+function withRisk(c: RunConfig, patch: Partial<RiskConfig>): RunConfig {
+  return { ...c, risk: { ...c.risk, ...patch } };
+}
+
+function withKind(c: RunConfig, kind: StrategyKind): RunConfig {
+  return { ...c, strategy: { ...c.strategy, kind } };
+}
+
+function patchTouch(c: RunConfig, patch: Partial<TouchMakerParams>): RunConfig {
+  const k = c.strategy.kind;
+  return k.type === 'touch_maker' ? withKind(c, { ...k, ...patch }) : c;
+}
+
+function patchAvellaneda(c: RunConfig, patch: Partial<AvellanedaStoikovParams>): RunConfig {
+  const k = c.strategy.kind;
+  return k.type === 'avellaneda_stoikov' ? withKind(c, { ...k, ...patch }) : c;
+}
+
+function patchImbalance(c: RunConfig, patch: Partial<ImbalanceTakerParams>): RunConfig {
+  const k = c.strategy.kind;
+  return k.type === 'imbalance_taker' ? withKind(c, { ...k, ...patch }) : c;
+}
+
+function withLatency(c: RunConfig, patch: { entry_ns?: number; response_ns?: number; jitter_ns?: number }): RunConfig {
+  const l = c.execution.order_latency;
+  const entry_ns = patch.entry_ns ?? l.entry_ns;
+  const response_ns = patch.response_ns ?? l.response_ns;
+  const next: OrderLatencyConfig =
+    l.type === 'jitter'
+      ? { type: 'jitter', entry_ns, response_ns, jitter_ns: patch.jitter_ns ?? l.jitter_ns }
+      : { type: 'constant', entry_ns, response_ns };
+  return withExecution(c, { order_latency: next });
+}
+
+// ----- defaults ---------------------------------------------------------------------------
+
+/** `lots` lot sizes, free of binary-float noise (10 x 0.001 is 0.01, not 0.010000000000000002). */
+function lotsOf(inst: InstrumentMeta | null, lots: number): number {
+  if (!inst) return Number.NaN;
+  return Number((inst.lot_size * lots).toPrecision(12));
+}
+
+/**
+ * Parameters for a strategy kind the user just switched to. They come from the first server
+ * preset of that kind when there is one. Otherwise sizes start at the smallest valid values for
+ * the instrument and model parameters start blank (NaN) so the user has to choose them.
+ */
+export function strategyKindDefaults(
+  type: StrategyKind['type'],
+  inst: InstrumentMeta | null,
+  presets: Preset[],
+): StrategyKind {
+  for (const p of presets) {
+    if (p.config.strategy.kind.type === type) return p.config.strategy.kind;
+  }
+  const order_qty = lotsOf(inst, 1);
+  const max_position = lotsOf(inst, 10);
+  switch (type) {
+    case 'touch_maker':
+      return { type, order_qty, max_position, offset_ticks: 0, skew_ticks_per_unit: 0 };
+    case 'avellaneda_stoikov':
+      return {
+        type,
+        order_qty,
+        max_position,
+        gamma: Number.NaN,
+        kappa: Number.NaN,
+        horizon_s: Number.NaN,
+        vol_halflife_ticks: Number.NaN,
+      };
+    case 'imbalance_taker':
+      return {
+        type,
+        order_qty,
+        max_position,
+        threshold: Number.NaN,
+        hold_ticks: Number.NaN,
+        cooldown_ticks: 0,
+      };
+    case 'scripted':
+      return { type, orders: [] };
+  }
+}
+
+/**
+ * Starting form values when no preset or run has been loaded: a touch maker with the smallest
+ * valid sizes for the instrument and the most conservative execution assumptions (risk-adverse
+ * queue, no fees, 1 ms order latency). These are form defaults to edit, not a recommendation.
+ */
+export function startingConfig(datasetId: string, inst: InstrumentMeta | null): RunConfig {
+  return {
+    dataset_id: datasetId,
+    strategy: {
+      interval_ns: 100_000_000,
+      kind: strategyKindDefaults('touch_maker', inst, []),
+    },
+    execution: {
+      exchange_model: 'partial_fill',
+      queue_model: { type: 'risk_adverse' },
+      order_latency: { type: 'constant', entry_ns: 1_000_000, response_ns: 1_000_000 },
+      feed_latency_offset_ns: 0,
+      fees: { maker: 0, taker: 0 },
+    },
+    risk: {
+      max_position: lotsOf(inst, 10),
+      max_order_qty: lotsOf(inst, 1),
+      max_open_orders: 10,
+      max_drawdown: null,
+    },
+    // Mirrors `RecordConfig::default()`.
+    record: { sample_every_ticks: 1, max_queue_updates_per_order: 2_000 },
+    seed: 1,
+  };
+}
+
+/** A new scripted order row. Quantity starts blank so it has to be chosen. */
+export function newScriptedOrder(orders: ScriptedOrder[]): ScriptedOrder {
+  const lastTick = orders.reduce((m, o) => (Number.isFinite(o.at_tick) ? Math.max(m, o.at_tick) : m), -1);
+  return {
+    at_tick: lastTick + 1,
+    slot: 0,
+    side: 'buy',
+    price: { type: 'from_touch', offset: 0 },
+    qty: Number.NaN,
+    tif: 'gtc',
+    ord_type: 'limit',
+    cancel_after_ticks: null,
+    label: '',
+  };
+}
+
+// ----- sections ---------------------------------------------------------------------------
+
+export interface SectionContext {
+  instrument: InstrumentMeta | null;
+  presets: Preset[];
+}
+
+const STRATEGY_TYPES: StrategyKind['type'][] = [
+  'touch_maker',
+  'avellaneda_stoikov',
+  'imbalance_taker',
+  'scripted',
+];
+
+function isStrategyType(v: string): v is StrategyKind['type'] {
+  return (STRATEGY_TYPES as string[]).includes(v);
+}
+
+function isQueueModelType(v: string): v is QueueModelType {
+  return (QUEUE_MODEL_TYPES as string[]).includes(v);
+}
+
+function isExchangeModel(v: string): v is ExchangeModel {
+  return (EXCHANGE_MODELS as string[]).includes(v);
+}
+
+function strategyFields(c: RunConfig, ctx: SectionContext): Field<RunConfig>[] {
+  const fields: Field<RunConfig>[] = [
+    {
+      kind: 'number',
+      id: 'strategy.interval_ns',
+      label: 'Evaluation interval',
+      help: 'Local-clock time between strategy evaluations. Every strategy runs on this fixed grid, which is what lets two scenarios be aligned decision by decision.',
+      integer: true,
+      unit: 'ms',
+      convert: MS_TO_NS,
+      max: SAFE_MAX,
+      get: (x) => x.strategy.interval_ns,
+      set: (x, v) => ({ ...x, strategy: { ...x.strategy, interval_ns: v } }),
+    },
+    {
+      kind: 'select',
+      id: 'strategy.kind.type',
+      label: 'Strategy',
+      help: STRATEGY_INFO[c.strategy.kind.type].help,
+      options: STRATEGY_TYPES.map((t) => ({
+        value: t,
+        label: STRATEGY_INFO[t].label,
+        help: STRATEGY_INFO[t].help,
+      })),
+      get: (x) => x.strategy.kind.type,
+      set: (x, v) =>
+        isStrategyType(v) && v !== x.strategy.kind.type
+          ? withKind(x, strategyKindDefaults(v, ctx.instrument, ctx.presets))
+          : x,
+    },
+  ];
+
+  const kind = c.strategy.kind;
+  switch (kind.type) {
+    case 'touch_maker':
+      fields.push(
+        {
+          kind: 'number',
+          id: 'strategy.kind.order_qty',
+          label: 'Order quantity',
+          help: 'Size of each quote, in base units. Must be a multiple of the lot size.',
+          integer: false,
+          unit: 'base units',
+          get: (x) => (x.strategy.kind.type === 'touch_maker' ? x.strategy.kind.order_qty : Number.NaN),
+          set: (x, v) => patchTouch(x, { order_qty: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.max_position',
+          label: 'Strategy position limit',
+          help: 'Stop quoting the side that would grow |position| beyond this.',
+          integer: false,
+          unit: 'base units',
+          get: (x) =>
+            x.strategy.kind.type === 'touch_maker' ? x.strategy.kind.max_position : Number.NaN,
+          set: (x, v) => patchTouch(x, { max_position: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.offset_ticks',
+          label: 'Offset from touch',
+          help: 'Quote this many ticks behind the touch (0 joins the best price).',
+          integer: true,
+          unit: 'ticks',
+          get: (x) =>
+            x.strategy.kind.type === 'touch_maker' ? x.strategy.kind.offset_ticks : Number.NaN,
+          set: (x, v) => patchTouch(x, { offset_ticks: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.skew_ticks_per_unit',
+          label: 'Inventory skew',
+          help: 'Shift both quotes by -skew x position ticks (rounded), so inventory pushes quotes toward flattening.',
+          integer: false,
+          unit: 'ticks per unit',
+          get: (x) =>
+            x.strategy.kind.type === 'touch_maker'
+              ? x.strategy.kind.skew_ticks_per_unit
+              : Number.NaN,
+          set: (x, v) => patchTouch(x, { skew_ticks_per_unit: v }),
+        },
+      );
+      break;
+    case 'avellaneda_stoikov':
+      fields.push(
+        {
+          kind: 'number',
+          id: 'strategy.kind.order_qty',
+          label: 'Order quantity',
+          help: 'Size of each quote, in base units. Must be a multiple of the lot size.',
+          integer: false,
+          unit: 'base units',
+          get: (x) =>
+            x.strategy.kind.type === 'avellaneda_stoikov' ? x.strategy.kind.order_qty : Number.NaN,
+          set: (x, v) => patchAvellaneda(x, { order_qty: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.max_position',
+          label: 'Strategy position limit',
+          help: 'Largest |position| the strategy quotes toward.',
+          integer: false,
+          unit: 'base units',
+          get: (x) =>
+            x.strategy.kind.type === 'avellaneda_stoikov'
+              ? x.strategy.kind.max_position
+              : Number.NaN,
+          set: (x, v) => patchAvellaneda(x, { max_position: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.gamma',
+          label: 'Risk aversion gamma',
+          help: 'Risk aversion (per price unit) in the reservation price and spread.',
+          integer: false,
+          get: (x) =>
+            x.strategy.kind.type === 'avellaneda_stoikov' ? x.strategy.kind.gamma : Number.NaN,
+          set: (x, v) => patchAvellaneda(x, { gamma: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.kappa',
+          label: 'Arrival decay kappa',
+          help: 'Order-arrival decay (per price unit) in lambda(delta) = A * exp(-kappa * delta).',
+          integer: false,
+          get: (x) =>
+            x.strategy.kind.type === 'avellaneda_stoikov' ? x.strategy.kind.kappa : Number.NaN,
+          set: (x, v) => patchAvellaneda(x, { kappa: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.horizon_s',
+          label: 'Horizon',
+          help: 'Remaining horizon T - t, held constant (the common stationary variant).',
+          integer: false,
+          unit: 's',
+          get: (x) =>
+            x.strategy.kind.type === 'avellaneda_stoikov' ? x.strategy.kind.horizon_s : Number.NaN,
+          set: (x, v) => patchAvellaneda(x, { horizon_s: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.vol_halflife_ticks',
+          label: 'Volatility half-life',
+          help: 'Volatility is an exponentially weighted estimate of mid-price changes with this half-life.',
+          integer: true,
+          unit: 'strategy ticks',
+          min: 0,
+          max: U32_MAX,
+          get: (x) =>
+            x.strategy.kind.type === 'avellaneda_stoikov'
+              ? x.strategy.kind.vol_halflife_ticks
+              : Number.NaN,
+          set: (x, v) => patchAvellaneda(x, { vol_halflife_ticks: v }),
+        },
+      );
+      break;
+    case 'imbalance_taker':
+      fields.push(
+        {
+          kind: 'number',
+          id: 'strategy.kind.order_qty',
+          label: 'Order quantity',
+          help: 'Size of each entry, in base units. Must be a multiple of the lot size.',
+          integer: false,
+          unit: 'base units',
+          get: (x) =>
+            x.strategy.kind.type === 'imbalance_taker' ? x.strategy.kind.order_qty : Number.NaN,
+          set: (x, v) => patchImbalance(x, { order_qty: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.max_position',
+          label: 'Strategy position limit',
+          help: 'Largest |position| the strategy will build.',
+          integer: false,
+          unit: 'base units',
+          get: (x) =>
+            x.strategy.kind.type === 'imbalance_taker' ? x.strategy.kind.max_position : Number.NaN,
+          set: (x, v) => patchImbalance(x, { max_position: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.threshold',
+          label: 'Imbalance threshold',
+          help: 'Enter when (bid_qty - ask_qty) / (bid_qty + ask_qty) exceeds this in absolute value. Between 0 and 1, exclusive.',
+          integer: false,
+          get: (x) =>
+            x.strategy.kind.type === 'imbalance_taker' ? x.strategy.kind.threshold : Number.NaN,
+          set: (x, v) => patchImbalance(x, { threshold: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.hold_ticks',
+          label: 'Holding time',
+          help: 'Close the position this many strategy ticks after entry.',
+          integer: true,
+          unit: 'strategy ticks',
+          min: 0,
+          max: U32_MAX,
+          get: (x) =>
+            x.strategy.kind.type === 'imbalance_taker' ? x.strategy.kind.hold_ticks : Number.NaN,
+          set: (x, v) => patchImbalance(x, { hold_ticks: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.cooldown_ticks',
+          label: 'Cooldown',
+          help: 'Minimum strategy ticks between entries.',
+          integer: true,
+          unit: 'strategy ticks',
+          min: 0,
+          max: U32_MAX,
+          get: (x) =>
+            x.strategy.kind.type === 'imbalance_taker' ? x.strategy.kind.cooldown_ticks : Number.NaN,
+          set: (x, v) => patchImbalance(x, { cooldown_ticks: v }),
+        },
+      );
+      break;
+    case 'scripted':
+      // The order list is edited by `ScriptedOrdersEditor` from `SCRIPTED_ORDER_FIELDS`.
+      break;
+  }
+  return fields;
+}
+
+function queueFields(c: RunConfig): Field<RunConfig>[] {
+  const q = c.execution.queue_model;
+  const fields: Field<RunConfig>[] = [
+    {
+      kind: 'select',
+      id: 'execution.queue_model.type',
+      label: 'Queue-position model',
+      help: QUEUE_MODEL_INFO[q.type].help,
+      options: QUEUE_MODEL_TYPES.map((t) => ({
+        value: t,
+        label: `${QUEUE_MODEL_INFO[t].label} (${t})`,
+        help: QUEUE_MODEL_INFO[t].help,
+      })),
+      get: (x) => x.execution.queue_model.type,
+      set: (x, v) => {
+        if (!isQueueModelType(v)) return x;
+        const prev = x.execution.queue_model;
+        let next: QueueModelConfig;
+        if (v === 'power_prob' || v === 'power_prob2' || v === 'power_prob3') {
+          // Keep an exponent already chosen; otherwise leave it blank for the user to set.
+          next = { type: v, n: queueModelHasExponent(prev) ? prev.n : Number.NaN };
+        } else {
+          next = { type: v };
+        }
+        return withExecution(x, { queue_model: next });
+      },
+    },
+  ];
+  if (queueModelHasExponent(q)) {
+    fields.push({
+      kind: 'number',
+      id: 'execution.queue_model.n',
+      label: 'Exponent n',
+      help: 'Exponent of the probability function above. Must be finite and positive.',
+      integer: false,
+      get: (x) =>
+        queueModelHasExponent(x.execution.queue_model) ? x.execution.queue_model.n : Number.NaN,
+      set: (x, v) => {
+        const prev = x.execution.queue_model;
+        return queueModelHasExponent(prev)
+          ? withExecution(x, { queue_model: { type: prev.type, n: v } })
+          : x;
+      },
+    });
+  }
+  return fields;
+}
+
+function latencyFields(c: RunConfig): Field<RunConfig>[] {
+  const l = c.execution.order_latency;
+  const fields: Field<RunConfig>[] = [
+    {
+      kind: 'select',
+      id: 'execution.order_latency.type',
+      label: 'Order latency model',
+      help:
+        l.type === 'constant'
+          ? 'Every request takes exactly the entry latency to reach the exchange, and every response the response latency to come back.'
+          : 'Each request\u2019s latency is the base plus a seeded uniform draw from [0, jitter]. The engine\u2019s order bus keeps requests in send order, so jitter never reorders them.',
+      options: [
+        { value: 'constant', label: 'Constant (constant)' },
+        { value: 'jitter', label: 'Constant plus seeded jitter (jitter)' },
+      ],
+      get: (x) => x.execution.order_latency.type,
+      set: (x, v) => {
+        const prev = x.execution.order_latency;
+        if (v === prev.type) return x;
+        const next: OrderLatencyConfig =
+          v === 'jitter'
+            ? { type: 'jitter', entry_ns: prev.entry_ns, response_ns: prev.response_ns, jitter_ns: 0 }
+            : { type: 'constant', entry_ns: prev.entry_ns, response_ns: prev.response_ns };
+        return withExecution(x, { order_latency: next });
+      },
+    },
+    {
+      kind: 'number',
+      id: 'execution.order_latency.entry_ns',
+      label: 'Entry latency',
+      help: 'Time for a request to travel from the strategy host to the exchange. Applies to new orders and cancels alike.',
+      integer: true,
+      unit: 'ms',
+      convert: MS_TO_NS,
+      max: SAFE_MAX,
+      get: (x) => x.execution.order_latency.entry_ns,
+      set: (x, v) => withLatency(x, { entry_ns: v }),
+    },
+    {
+      kind: 'number',
+      id: 'execution.order_latency.response_ns',
+      label: 'Response latency',
+      help: 'Time for the exchange\u2019s response (acknowledgement, fill, cancel) to reach the strategy host.',
+      integer: true,
+      unit: 'ms',
+      convert: MS_TO_NS,
+      max: SAFE_MAX,
+      get: (x) => x.execution.order_latency.response_ns,
+      set: (x, v) => withLatency(x, { response_ns: v }),
+    },
+  ];
+  if (l.type === 'jitter') {
+    fields.push({
+      kind: 'number',
+      id: 'execution.order_latency.jitter_ns',
+      label: 'Jitter range',
+      help: 'Upper end of the uniform draw added to each request\u2019s latency. Draws are seeded, so a run is reproducible.',
+      integer: true,
+      unit: 'ms',
+      convert: MS_TO_NS,
+      max: SAFE_MAX,
+      get: (x) =>
+        x.execution.order_latency.type === 'jitter'
+          ? x.execution.order_latency.jitter_ns
+          : Number.NaN,
+      set: (x, v) => withLatency(x, { jitter_ns: v }),
+    });
+  }
+  return fields;
+}
+
+/** Every editable section of a `RunConfig`, in display order. */
+export function buildSections(c: RunConfig, ctx: SectionContext): Section[] {
+  return [
+    {
+      id: 'strategy',
+      title: 'Strategy',
+      description:
+        'What decides the orders. A strategy only sees information that had reached the strategy host by each evaluation.',
+      modeled: false,
+      fields: strategyFields(c, ctx),
+    },
+    {
+      id: 'exchange_model',
+      title: 'Exchange model',
+      description: 'How the simulated matching engine turns a met fill condition into a fill.',
+      modeled: true,
+      fields: [
+        {
+          kind: 'select',
+          id: 'execution.exchange_model',
+          label: 'Exchange model',
+          help: EXCHANGE_MODEL_INFO[c.execution.exchange_model].help,
+          options: EXCHANGE_MODELS.map((m) => ({
+            value: m,
+            label: `${EXCHANGE_MODEL_INFO[m].label} (${m})`,
+            help: EXCHANGE_MODEL_INFO[m].help,
+          })),
+          get: (x) => x.execution.exchange_model,
+          set: (x, v) => (isExchangeModel(v) ? withExecution(x, { exchange_model: v }) : x),
+        },
+      ],
+    },
+    {
+      id: 'queue_model',
+      title: 'Queue position',
+      description:
+        'Level-2 data does not show individual orders, so a resting order\u2019s place in the queue is never observed. This model estimates it.',
+      modeled: true,
+      fields: queueFields(c),
+    },
+    {
+      id: 'order_latency',
+      title: 'Order latency',
+      description: 'Delay between the strategy host and the simulated exchange, in both directions.',
+      modeled: true,
+      fields: latencyFields(c),
+    },
+    {
+      id: 'feed_latency',
+      title: 'Feed latency',
+      description: 'How late market data reaches the strategy, on top of what the dataset recorded.',
+      modeled: true,
+      fields: [
+        {
+          kind: 'number',
+          id: 'execution.feed_latency_offset_ns',
+          label: 'Feed latency offset',
+          help: 'Added to every feed event\u2019s local receipt time. Zero keeps the dataset\u2019s own exchange-to-local latency. Cannot be negative: the strategy must never see an event before the dataset says it was received.',
+          integer: true,
+          unit: 'ms',
+          convert: MS_TO_NS,
+          max: SAFE_MAX,
+          get: (x) => x.execution.feed_latency_offset_ns,
+          set: (x, v) => withExecution(x, { feed_latency_offset_ns: v }),
+        },
+      ],
+    },
+    {
+      id: 'fees',
+      title: 'Fees',
+      description: 'Charged on traded value for every simulated fill. A negative fee is a rebate.',
+      modeled: true,
+      fields: [
+        {
+          kind: 'number',
+          id: 'execution.fees.maker',
+          label: 'Maker fee',
+          help: 'Applied to fills of resting orders.',
+          integer: false,
+          unit: 'bp',
+          convert: BPS_TO_FRACTION,
+          get: (x) => x.execution.fees.maker,
+          set: (x, v) => withExecution(x, { fees: { ...x.execution.fees, maker: v } }),
+        },
+        {
+          kind: 'number',
+          id: 'execution.fees.taker',
+          label: 'Taker fee',
+          help: 'Applied to fills of orders that take liquidity on arrival.',
+          integer: false,
+          unit: 'bp',
+          convert: BPS_TO_FRACTION,
+          get: (x) => x.execution.fees.taker,
+          set: (x, v) => withExecution(x, { fees: { ...x.execution.fees, taker: v } }),
+        },
+      ],
+    },
+    {
+      id: 'risk',
+      title: 'Risk limits',
+      description:
+        'Pre-trade rules enforced by the strategy harness before a request reaches the engine. A blocked order is recorded on the tape with the rule that stopped it.',
+      modeled: false,
+      fields: [
+        {
+          kind: 'number',
+          id: 'risk.max_position',
+          label: 'Max position',
+          help: 'Reject an order whose fill would take |position| above this, counting the locally known position plus all working orders on the same side (worst case).',
+          integer: false,
+          unit: 'base units',
+          get: (x) => x.risk.max_position,
+          set: (x, v) => withRisk(x, { max_position: v }),
+        },
+        {
+          kind: 'number',
+          id: 'risk.max_order_qty',
+          label: 'Max order quantity',
+          help: 'Reject any single order larger than this.',
+          integer: false,
+          unit: 'base units',
+          get: (x) => x.risk.max_order_qty,
+          set: (x, v) => withRisk(x, { max_order_qty: v }),
+        },
+        {
+          kind: 'number',
+          id: 'risk.max_open_orders',
+          label: 'Max open orders',
+          help: 'Reject new orders while this many are already working.',
+          integer: true,
+          min: 0,
+          max: U32_MAX,
+          get: (x) => x.risk.max_open_orders,
+          set: (x, v) => withRisk(x, { max_open_orders: v }),
+        },
+        {
+          kind: 'optional_number',
+          id: 'risk.max_drawdown',
+          label: 'Max drawdown',
+          help: 'Halt (cancel everything, stop quoting) once equity falls this far below its running peak.',
+          integer: false,
+          unit: 'quote currency',
+          enableLabel: 'Enforce a drawdown halt',
+          get: (x) => x.risk.max_drawdown,
+          set: (x, v) => withRisk(x, { max_drawdown: v }),
+        },
+      ],
+    },
+    {
+      id: 'record',
+      title: 'Flight recorder',
+      description: 'What the tape keeps. These settings change how much is recorded, not what is simulated; they are still part of the run configuration and its hash.',
+      modeled: false,
+      fields: [
+        {
+          kind: 'number',
+          id: 'record.sample_every_ticks',
+          label: 'Sample every',
+          help: 'Equity, position and market are sampled every this many strategy ticks.',
+          integer: true,
+          unit: 'strategy ticks',
+          min: 0,
+          max: U32_MAX,
+          get: (x) => x.record.sample_every_ticks,
+          set: (x, v) => ({ ...x, record: { ...x.record, sample_every_ticks: v } }),
+        },
+        {
+          kind: 'number',
+          id: 'record.max_queue_updates_per_order',
+          label: 'Queue updates kept per order',
+          help: 'Beyond this, the recorder keeps only updates that move the estimate by at least one lot and writes an explicit truncation marker with the number dropped.',
+          integer: true,
+          min: 0,
+          max: U32_MAX,
+          get: (x) => x.record.max_queue_updates_per_order,
+          set: (x, v) => ({ ...x, record: { ...x.record, max_queue_updates_per_order: v } }),
+        },
+      ],
+    },
+    {
+      id: 'seed',
+      title: 'Seed',
+      description: 'Makes every stochastic component reproducible.',
+      modeled: false,
+      fields: [
+        {
+          kind: 'number',
+          id: 'seed',
+          label: 'Seed',
+          help: 'Seed for every stochastic component (currently only jittered order latency). The same seed, configuration and dataset reproduce the same result hash.',
+          integer: true,
+          min: 0,
+          max: SAFE_MAX,
+          get: (x) => x.seed,
+          set: (x, v) => ({ ...x, seed: v }),
+        },
+      ],
+    },
+  ];
+}
+
+// ----- scripted orders --------------------------------------------------------------------
+
+const SIDES: Side[] = ['buy', 'sell'];
+const TIFS: Tif[] = ['gtc', 'gtx', 'ioc', 'fok'];
+const ORD_TYPES: OrdType[] = ['limit', 'market'];
+
+const TIF_HELP: Record<Tif, string> = {
+  gtc: 'rests until filled or cancelled; takes liquidity if it crosses on arrival',
+  gtx: 'post-only; expired by the exchange model if it would cross on arrival',
+  ioc: 'executes what it can on arrival, remainder expires',
+  fok: 'executes fully on arrival or expires',
+};
+
+/** One descriptor per `ScriptedOrder` field (the price is edited as its type plus its value). */
+export const SCRIPTED_ORDER_FIELDS: Field<ScriptedOrder>[] = [
+  {
+    kind: 'number',
+    id: 'at_tick',
+    label: 'At tick',
+    help: 'Strategy tick at which to place the order.',
+    integer: true,
+    min: 0,
+    max: SAFE_MAX,
+    get: (o) => o.at_tick,
+    set: (o, v) => ({ ...o, at_tick: v }),
+  },
+  {
+    kind: 'number',
+    id: 'slot',
+    label: 'Slot',
+    help: 'Slot within the tick; (at_tick, slot) must be unique across the script.',
+    integer: true,
+    min: 0,
+    max: U8_MAX,
+    get: (o) => o.slot,
+    set: (o, v) => ({ ...o, slot: v }),
+  },
+  {
+    kind: 'select',
+    id: 'side',
+    label: 'Side',
+    help: 'Buy or sell.',
+    options: SIDES.map((s) => ({ value: s, label: s })),
+    get: (o) => o.side,
+    set: (o, v) => (v === 'buy' || v === 'sell' ? { ...o, side: v } : o),
+  },
+  {
+    kind: 'select',
+    id: 'price.type',
+    label: 'Price is',
+    help: 'Absolute tick, or relative to the same-side best price seen locally at placement (buy: best_bid + offset; sell: best_ask - offset; positive is more aggressive).',
+    options: [
+      { value: 'from_touch', label: 'offset from touch' },
+      { value: 'tick', label: 'absolute tick' },
+    ],
+    get: (o) => o.price.type,
+    set: (o, v) => {
+      if (v === o.price.type) return o;
+      // The number means something different under the other type, so it starts blank.
+      if (v === 'tick') return { ...o, price: { type: 'tick', tick: Number.NaN } };
+      if (v === 'from_touch') return { ...o, price: { type: 'from_touch', offset: 0 } };
+      return o;
+    },
+  },
+  {
+    kind: 'number',
+    id: 'price.value',
+    label: 'Tick / offset',
+    help: 'The absolute price tick, or the offset in ticks from the touch.',
+    integer: true,
+    unit: 'ticks',
+    get: (o) => (o.price.type === 'tick' ? o.price.tick : o.price.offset),
+    set: (o, v) =>
+      o.price.type === 'tick'
+        ? { ...o, price: { type: 'tick', tick: v } }
+        : { ...o, price: { type: 'from_touch', offset: v } },
+  },
+  {
+    kind: 'number',
+    id: 'qty',
+    label: 'Qty',
+    help: 'Order quantity in base units; a positive multiple of the lot size.',
+    integer: false,
+    get: (o) => o.qty,
+    set: (o, v) => ({ ...o, qty: v }),
+  },
+  {
+    kind: 'select',
+    id: 'tif',
+    label: 'TIF',
+    help: TIFS.map((t) => `${t}: ${TIF_HELP[t]}`).join('; '),
+    options: TIFS.map((t) => ({ value: t, label: t, help: TIF_HELP[t] })),
+    get: (o) => o.tif,
+    set: (o, v) => {
+      const tif = TIFS.find((t) => t === v);
+      return tif ? { ...o, tif } : o;
+    },
+  },
+  {
+    kind: 'select',
+    id: 'ord_type',
+    label: 'Type',
+    help: 'Limit or market order.',
+    options: ORD_TYPES.map((t) => ({ value: t, label: t })),
+    get: (o) => o.ord_type,
+    set: (o, v) => {
+      const ord_type = ORD_TYPES.find((t) => t === v);
+      return ord_type ? { ...o, ord_type } : o;
+    },
+  },
+  {
+    kind: 'optional_number',
+    id: 'cancel_after_ticks',
+    label: 'Cancel after',
+    help: 'Request cancellation this many ticks after placement if still working.',
+    integer: true,
+    unit: 'ticks',
+    min: 0,
+    max: SAFE_MAX,
+    enableLabel: 'cancel',
+    get: (o) => o.cancel_after_ticks,
+    set: (o, v) => ({ ...o, cancel_after_ticks: v }),
+  },
+  {
+    kind: 'text',
+    id: 'label',
+    label: 'Label',
+    help: 'Free text shown as the order\u2019s reason in the forensics view.',
+    get: (o) => o.label,
+    set: (o, v) => ({ ...o, label: v }),
+  },
+];

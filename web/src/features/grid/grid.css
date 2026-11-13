@@ -1,0 +1,420 @@
+/* Sensitivity grid. The heatmap hues encode sign or magnitude only; they are deliberately not the
+   buy/sell colours and do not mean good or bad. */
+
+.grd-page {
+  --grd-pos: #3f8fd0;
+  --grd-neg: #d08a3f;
+  --grd-seq: #3f8fd0;
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.grd-page :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.grd-title h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.grd-title p {
+  margin: 0;
+  max-width: 110ch;
+  font-size: 13px;
+}
+
+/* ---- Form ---- */
+
+.grd-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.grd-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.grd-fieldset legend {
+  padding: 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.grd-field {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.grd-field-label {
+  color: var(--muted);
+}
+
+.grd-field select,
+.grd-field input {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+}
+
+.grd-field select {
+  font-family: var(--mono);
+}
+
+.grd-base {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 6px 20px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.grd-base dt {
+  color: var(--muted);
+}
+
+.grd-base dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.grd-axes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .grd-axes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.grd-help {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.grd-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.grd-queue-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.grd-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.grd-exponent {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grd-exponent input {
+  width: 130px;
+  font-size: 12px;
+}
+
+.grd-converted {
+  font-size: 12px;
+}
+
+.grd-converted ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grd-submit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.grd-count {
+  margin: 0;
+  font-size: 13px;
+}
+
+.grd-count.is-over {
+  color: var(--error);
+}
+
+.grd-problems {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--error);
+}
+
+.grd-problems li::before {
+  content: "\2717\00a0";
+}
+
+.grd-problem {
+  margin: 0;
+  font-size: 12px;
+  color: var(--error);
+}
+
+.grd-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.grd-btn-primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.grd-btn:disabled {
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.grd-pending {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.grd-pending p {
+  margin: 0;
+  max-width: 100ch;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ---- Result ---- */
+
+.grd-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.grd-summary,
+.grd-axes-note {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.grd-axes-note {
+  font-size: 12px;
+}
+
+.grd-scroll {
+  overflow-x: auto;
+}
+
+.grd-heat {
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-size: 12px;
+}
+
+.grd-caption {
+  caption-side: top;
+  padding: 0 0 6px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--muted);
+}
+
+.grd-heat th {
+  padding: 4px 8px;
+  font-weight: 400;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--surface);
+}
+
+.grd-heat thead th {
+  text-align: center;
+}
+
+.grd-heat th.grd-corner {
+  max-width: 220px;
+  font-size: 11px;
+  text-align: left;
+  white-space: normal;
+  color: var(--muted);
+}
+
+.grd-cell {
+  min-width: 112px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  text-align: right;
+  vertical-align: top;
+}
+
+.grd-cell > span,
+.grd-cell > a {
+  display: block;
+}
+
+.grd-cell-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.grd-cell-run {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--fg);
+  opacity: 0.85;
+}
+
+.grd-cell-state {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--error);
+}
+
+.grd-cell-error {
+  max-width: 200px;
+  margin-left: auto;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+
+/* Missing cells carry a hatch instead of a scale colour so they can never be read as a value. */
+.grd-missing,
+.grd-swatch-missing {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--bg) 0 5px,
+    var(--surface-2) 5px 10px
+  );
+  border: 1px dashed var(--error);
+}
+
+.grd-na,
+.grd-swatch-na {
+  background: var(--bg);
+  border: 1px dashed var(--muted);
+}
+
+.grd-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 22px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.grd-stops {
+  display: flex;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grd-stops li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 34px;
+  font-size: 10px;
+}
+
+.grd-stops li > .mono {
+  min-height: 14px;
+  white-space: nowrap;
+}
+
+.grd-swatch {
+  display: inline-block;
+  width: 34px;
+  height: 14px;
+  border: 1px solid var(--border);
+}
+
+.grd-legend-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.grd-legend-note .grd-swatch {
+  width: 18px;
+}
+
+.grd-statement {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  max-width: 130ch;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--modeled);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.grd-num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.grd-hash {
+  overflow-wrap: anywhere;
+}
