@@ -670,7 +670,26 @@ async fn compare_runs(
         let label_b = label(&request.b)?;
         let a = load_run(&state, &request.a)?;
         let b = load_run(&state, &request.b)?;
-        Ok(bb_forensics::compare_runs(&a, &label_a, &b, &label_b))
+        // A run whose dataset is gone or changed still compares; its instrument is then
+        // reported as unverified rather than assumed.
+        let instrument = |run: &RunResult| {
+            datasets::manifest_for_run(&state.data_root, &run.manifest)
+                .ok()
+                .map(|m| m.instrument)
+        };
+        let (inst_a, inst_b) = (instrument(&a), instrument(&b));
+        Ok(bb_forensics::compare_runs(
+            bb_forensics::CompareInput {
+                run: &a,
+                label: &label_a,
+                instrument: inst_a.as_ref(),
+            },
+            bb_forensics::CompareInput {
+                run: &b,
+                label: &label_b,
+                instrument: inst_b.as_ref(),
+            },
+        ))
     })
     .await
     .map(Json)

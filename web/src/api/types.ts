@@ -796,41 +796,115 @@ export interface MetricRow {
   delta: number | null;
 }
 
+/** What an eligibility difference does to a comparison. */
+export type EligibilityEffect = 'no_alignment' | 'not_like_for_like';
+
+export interface EligibilityReason {
+  /** e.g. `strategy.interval_ns`, `dataset.sha256`, `instrument.tick_size`. */
+  field: string;
+  /** `null` when unknown. */
+  a: JsonValue;
+  b: JsonValue;
+  effect: EligibilityEffect;
+  explanation: string;
+}
+
+/** Checked before any per-order alignment. */
+export interface Eligibility {
+  /** Per-order alignment was produced (no `no_alignment` reason). */
+  aligned: boolean;
+  /** No reason at all: metric deltas are like-for-like. */
+  like_for_like: boolean;
+  reasons: EligibilityReason[];
+}
+
 export interface DecisionOutcome {
   side: Side;
   price_tick: number;
   qty: number;
+  tif: Tif;
+  ord_type: OrdType;
+  decision_ts: RelNs;
   outcome: OrderOutcome;
+  final_status: OrderStatus;
   filled_qty: number;
   avg_fill_tick: number | null;
+  maker_qty: number;
+  taker_qty: number;
+  fees: number;
+  fill_count: number;
   queue_ahead_at_entry: number | null;
   exch_arrival_ts: RelNs | null;
+  first_response_ts: RelNs | null;
   first_fill_ts: RelNs | null;
+  last_fill_ts: RelNs | null;
+  cancel_sent_ts: RelNs | null;
+  terminal_ts: RelNs | null;
 }
 
+/** Checked in this order for orders present in both runs; the first group that differs decides. */
 export type PairClass =
   | 'identical'
+  | 'same_fills_different_history'
+  | 'same_fills_different_fees'
+  | 'same_outcome_different_timing'
   | 'same_decision_different_outcome'
   | 'different_decision'
   | 'only_a'
   | 'only_b';
 
+/** B minus A in nanoseconds; `null` unless both orders have the timestamp. */
+export interface PairTiming {
+  decision_ns: number | null;
+  exch_arrival_ns: number | null;
+  first_response_ns: number | null;
+  first_fill_ns: number | null;
+  completion_ns: number | null;
+}
+
+export interface DeltaStats {
+  count: number;
+  nonzero: number;
+  min: number | null;
+  median: number | null;
+  max: number | null;
+}
+
+export interface TimingSummary {
+  decision: DeltaStats;
+  exch_arrival: DeltaStats;
+  first_response: DeltaStats;
+  first_fill: DeltaStats;
+  completion: DeltaStats;
+}
+
 export interface OrderPair {
   order_id: number;
   tick_no: number;
+  /** Decision time in A (in B for `only_b`). */
   decision_ts: RelNs;
   class: PairClass;
+  /** Every compared field that differs, most significant first. */
+  differences: string[];
+  timing: PairTiming | null;
   a: DecisionOutcome | null;
   b: DecisionOutcome | null;
 }
 
 export interface Alignment {
   identical: number;
+  same_fills_different_history: number;
+  same_fills_different_fees: number;
+  same_outcome_different_timing: number;
   same_decision_different_outcome: number;
   different_decision: number;
   only_a: number;
   only_b: number;
+  /** Earliest non-identical pair; every pair before it is identical, timing included. */
   first_divergence: OrderPair | null;
+  /** Earliest pair whose decision or fills differ. */
+  first_outcome_divergence: OrderPair | null;
+  timing: TimingSummary;
   pairs: OrderPair[];
   pairs_cap: number;
   pairs_truncated: boolean;
@@ -846,11 +920,12 @@ export interface Comparison {
   run_b: string;
   label_a: string;
   label_b: string;
-  same_dataset: boolean;
-  same_strategy: boolean;
+  eligibility: Eligibility;
   config_diffs: ConfigDiff[];
+  /** Returned even when not like-for-like. */
   metrics: MetricRow[];
-  alignment: Alignment;
+  /** `null` when `eligibility.aligned` is false. */
+  alignment: Alignment | null;
   interpretation: InterpretationNote[];
 }
 

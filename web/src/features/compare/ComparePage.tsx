@@ -6,6 +6,7 @@ import type {
   Comparison,
   DatasetManifest,
   DecisionOutcome,
+  DeltaStats,
   InstrumentMeta,
   MetricRow,
   OrderPair,
@@ -23,36 +24,9 @@ import {
   queueModelLabel,
   words,
 } from "../forensics/labels";
+import { CLASS_LABEL, CLASS_MEANING, EligibilityNotice, PAIR_CLASSES } from "./classes";
 import { EquityOverlay } from "./EquityOverlay";
 import "./compare.css";
-
-const PAIR_CLASSES: readonly PairClass[] = [
-  "identical",
-  "same_decision_different_outcome",
-  "different_decision",
-  "only_a",
-  "only_b",
-];
-
-const CLASS_LABEL: Record<PairClass, string> = {
-  identical: "Identical",
-  same_decision_different_outcome: "Same decision, different outcome",
-  different_decision: "Different decision",
-  only_a: "Only in A",
-  only_b: "Only in B",
-};
-
-// Definitions only. What a class implies about the scenarios is left to the interpretation notes
-// the backend returns with their evidence basis.
-const CLASS_MEANING: Record<PairClass, string> = {
-  identical: "Same decision, same outcome and same filled quantity in both runs.",
-  same_decision_different_outcome:
-    "The strategy made the same decision (side, price, quantity) in both runs; the simulated execution of it differed.",
-  different_decision:
-    "The strategy made a different decision (side, price or quantity) at this tick and slot.",
-  only_a: "The decision exists only in scenario A.",
-  only_b: "The decision exists only in scenario B.",
-};
 
 const PAGE_ROWS = 200;
 
@@ -225,7 +199,18 @@ function CompareView({
   const [cmp, runA, runB] = fresh;
   const instA = datasets.data ? datasets.data[0].instrument : null;
   const instB = datasets.data ? datasets.data[1].instrument : null;
-  const first = cmp.alignment.first_divergence;
+  const alignment = cmp.alignment;
+  const first = alignment === null ? null : alignment.first_divergence;
+  const notAligned = (
+    <Empty>
+      No per-order alignment: the runs differ in{" "}
+      {cmp.eligibility.reasons
+        .filter((r) => r.effect === "no_alignment")
+        .map((r) => r.field)
+        .join(", ")}
+      , so the same order id does not name the same decision in both runs.
+    </Empty>
+  );
 
   return (
     <>
@@ -236,45 +221,45 @@ function CompareView({
         <ScenarioCard tag="A" label={cmp.label_a} run={runA} />
         <ScenarioCard tag="B" label={cmp.label_b} run={runB} />
       </section>
-      {cmp.same_dataset ? null : (
-        <p className="cmp-warning" role="note">
-          <Badge kind="warn">different datasets</Badge> The two runs did not replay the same
-          dataset (their event-file hashes differ). The rows below compare simulations over
-          different market data.
-        </p>
-      )}
-      {cmp.same_strategy ? null : (
-        <p className="cmp-warning" role="note">
-          <Badge kind="warn">different strategies</Badge> The two runs did not use the same
-          strategy configuration. The fields that differ are listed under "What changed".
-        </p>
-      )}
+      <EligibilityNotice cmp={cmp} />
 
       <Panel title="What changed">
         <ConfigDiffTable cmp={cmp} />
       </Panel>
 
       <Panel title="Measured outcomes">
-        <MetricsTable rows={cmp.metrics} />
+        <MetricsTable rows={cmp.metrics} likeForLike={cmp.eligibility.like_for_like} />
       </Panel>
 
       <Panel title="Order alignment">
-        <AlignmentSummary alignment={cmp.alignment} />
+        {alignment === null ? notAligned : <AlignmentSummary alignment={alignment} />}
       </Panel>
 
       <Panel title="First divergence">
-        {first === null ? (
+        {alignment === null ? (
+          notAligned
+        ) : first === null ? (
           <Empty>
-            No non-identical pair: every aligned decision has the same outcome and filled quantity
-            in both runs.
+            No non-identical pair: every aligned decision is identical in both runs, timing, fees
+            and recorded lifecycle included.
           </Empty>
         ) : (
-          <FirstDivergence pair={first} cmp={cmp} instA={instA} instB={instB} />
+          <FirstDivergence
+            pair={first}
+            outcomePair={alignment.first_outcome_divergence}
+            cmp={cmp}
+            instA={instA}
+            instB={instB}
+          />
         )}
       </Panel>
 
       <Panel title="Diverging decisions">
-        <PairsTable cmp={cmp} instA={instA} instB={instB} />
+        {alignment === null ? (
+          notAligned
+        ) : (
+          <PairsTable cmp={cmp} alignment={alignment} instA={instA} instB={instB} />
+        )}
       </Panel>
 
       <Panel title="Equity, overlaid">
@@ -285,7 +270,7 @@ function CompareView({
             a={equity.data[0]}
             b={equity.data[1]}
             divergenceTs={first === null ? null : first.decision_ts}
-            sameDataset={cmp.same_dataset}
+            sameDataset={!cmp.eligibility.reasons.some((r) => r.field === "dataset.sha256")}
           />
         ) : (
           <Spinner />
@@ -439,7 +424,7 @@ function fmtMetricDelta(value: number | null, unit: string): string {
   }
 }
 
-function MetricsTable({ rows }: { rows: MetricRow[] }) {
+function MetricsTable({ rows, likeForLike }: { rows: MetricRow[]; likeForLike: boolean }) {
   if (rows.length === 0) return <Empty>The comparison returned no metric rows.</Empty>;
   // Net P&L is the only row coloured, and only by its sign; no other difference is marked as
   // better or worse.
@@ -452,6 +437,12 @@ function MetricsTable({ rows }: { rows: MetricRow[] }) {
   return (
     <table className="table cmp-metrics">
       <caption className="cmp-caption">
+        {likeForLike ? null : (
+          <>
+            <Badge kind="warn">not like-for-like</Badge> The runs differ in identity fields listed
+            above, so these deltas do not isolate the configuration change.{" "}
+          </>
+        )}
         Delta is B minus A. A dash means the value is undefined for that run. Only net P&amp;L is
         coloured, by sign.
       </caption>
@@ -495,7 +486,8 @@ function AlignmentSummary({ alignment }: { alignment: Alignment }) {
   return (
     <div className="cmp-align">
       <p className="dim">
-        Orders are aligned by order id, which encodes the strategy tick and slot of the decision.{" "}
+        Orders are aligned by order id, which encodes the strategy tick and slot of the decision;
+        the runs share dataset, instrument, strategy kind, decision grid and simulator revision.{" "}
         {total} aligned decisions in total.
       </p>
       <div className="cmp-bar" aria-hidden="true">
@@ -537,7 +529,66 @@ function AlignmentSummary({ alignment }: { alignment: Alignment }) {
           ))}
         </tbody>
       </table>
+      <TimingTable alignment={alignment} />
     </div>
+  );
+}
+
+const TIMING_ROWS: readonly [keyof Alignment["timing"], string][] = [
+  ["decision", "Decision (local)"],
+  ["exch_arrival", "Exchange arrival"],
+  ["first_response", "First response (local)"],
+  ["first_fill", "First fill"],
+  ["completion", "Completion (terminal)"],
+];
+
+function fmtStat(ns: number | null): string {
+  return ns === null ? EM_DASH : fmtSignedDuration(Math.round(ns));
+}
+
+function TimingTable({ alignment }: { alignment: Alignment }) {
+  return (
+    <table className="table cmp-timing">
+      <caption className="cmp-caption">
+        Timing deltas, B minus A, over pairs present in both runs with the same decision. A pair
+        counts when both orders have the timestamp.
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">Timestamp</th>
+          <th scope="col" className="cmp-num">
+            Pairs
+          </th>
+          <th scope="col" className="cmp-num">
+            Non-zero
+          </th>
+          <th scope="col" className="cmp-num">
+            Min
+          </th>
+          <th scope="col" className="cmp-num">
+            Median
+          </th>
+          <th scope="col" className="cmp-num">
+            Max
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {TIMING_ROWS.map(([key, label]) => {
+          const s: DeltaStats = alignment.timing[key];
+          return (
+            <tr key={key}>
+              <th scope="row">{label}</th>
+              <td className="mono cmp-num">{s.count}</td>
+              <td className="mono cmp-num">{s.nonzero}</td>
+              <td className="mono cmp-num">{fmtStat(s.min)}</td>
+              <td className="mono cmp-num">{fmtStat(s.median)}</td>
+              <td className="mono cmp-num">{fmtStat(s.max)}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
@@ -596,6 +647,12 @@ function OutcomeCard({
               </dd>
             </div>
             <div>
+              <dt>Decided at (local)</dt>
+              <dd>
+                <ClockText ns={outcome.decision_ts} />
+              </dd>
+            </div>
+            <div>
               <dt>Simulated outcome</dt>
               <dd>
                 <Badge kind={outcomeKind(outcome.outcome)}>{words(outcome.outcome)}</Badge>
@@ -626,6 +683,12 @@ function OutcomeCard({
                 <ClockText ns={outcome.first_fill_ts} />
               </dd>
             </div>
+            <div>
+              <dt>Completion (terminal)</dt>
+              <dd>
+                <ClockText ns={outcome.terminal_ts} />
+              </dd>
+            </div>
           </dl>
           <Link className="cmp-btn" to={`/runs/${runId}/orders/${orderId}`}>
             Open this order's forensics in {tag}
@@ -638,11 +701,13 @@ function OutcomeCard({
 
 function FirstDivergence({
   pair,
+  outcomePair,
   cmp,
   instA,
   instB,
 }: {
   pair: OrderPair;
+  outcomePair: OrderPair | null;
   cmp: Comparison;
   instA: InstrumentMeta | null;
   instB: InstrumentMeta | null;
@@ -663,7 +728,9 @@ function FirstDivergence({
       </p>
       <p className="dim">
         The earliest non-identical pair in decision order. Every aligned pair before it is
-        identical in both runs. {CLASS_MEANING[pair.class]}
+        identical in both runs, timing, fees and recorded lifecycle included.{" "}
+        {CLASS_MEANING[pair.class]}
+        {pair.differences.length > 0 ? ` Differs in: ${pair.differences.join(", ")}.` : ""}
       </p>
       <div className="cmp-outcomes">
         <OutcomeCard
@@ -683,6 +750,22 @@ function FirstDivergence({
           inst={instB}
         />
       </div>
+      {outcomePair === null ? (
+        <p className="dim">
+          No aligned decision or fill differs in price, quantity or maker/taker side; the
+          non-identical pairs differ only in timing, fees or recorded history.
+        </p>
+      ) : outcomePair.order_id === pair.order_id ? null : (
+        <p className="dim">
+          First difference in a decision or its fills: order{" "}
+          <span className="mono">{outcomePair.order_id}</span> (strategy tick{" "}
+          <span className="mono">{outcomePair.tick_no}</span>,{" "}
+          <span className={`cmp-class cmp-seg-${outcomePair.class}`}>
+            {CLASS_LABEL[outcomePair.class]}
+          </span>
+          ). The pairs before it may differ in timing, fees or recorded history only.
+        </p>
+      )}
     </div>
   );
 }
@@ -727,22 +810,22 @@ function PairSide({
 
 function PairsTable({
   cmp,
+  alignment,
   instA,
   instB,
 }: {
   cmp: Comparison;
+  alignment: Alignment;
   instA: InstrumentMeta | null;
   instB: InstrumentMeta | null;
 }) {
-  const { alignment } = cmp;
   const [filter, setFilter] = useState<PairClass | "all">("all");
   const [limit, setLimit] = useState(PAGE_ROWS);
 
-  const nonIdentical =
-    alignment.same_decision_different_outcome +
-    alignment.different_decision +
-    alignment.only_a +
-    alignment.only_b;
+  const nonIdentical = PAIR_CLASSES.filter((cls) => cls !== "identical").reduce(
+    (sum, cls) => sum + alignment[cls],
+    0,
+  );
   if (alignment.pairs.length === 0) {
     return (
       <Empty>
@@ -810,6 +893,9 @@ function PairsTable({
                 <th scope="col" rowSpan={2}>
                   Class
                 </th>
+                <th scope="col" rowSpan={2}>
+                  Differs in
+                </th>
                 <th scope="colgroup" colSpan={3} className="cmp-side-start">
                   <span className="cmp-tag">A</span> {cmp.label_a}
                 </th>
@@ -849,6 +935,7 @@ function PairsTable({
                       {CLASS_LABEL[pair.class]}
                     </span>
                   </td>
+                  <td className="mono small">{pair.differences.join(", ")}</td>
                   <PairSide
                     tag="A"
                     runId={cmp.run_a}

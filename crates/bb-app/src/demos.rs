@@ -13,27 +13,14 @@ use crate::{
     presets,
 };
 
-// Mirrors bb_forensics::compare_runs: object keys recurse, missing keys and non-object
-// values (including arrays) are differences at their dotted path.
-fn diff_paths(path: &str, a: &Value, b: &Value, out: &mut BTreeSet<String>) {
-    if let (Value::Object(a), Value::Object(b)) = (a, b) {
-        let keys: BTreeSet<_> = a.keys().chain(b.keys()).collect();
-        for key in keys {
-            let child = if path.is_empty() {
-                key.clone()
-            } else {
-                format!("{path}.{key}")
-            };
-            match (a.get(key), b.get(key)) {
-                (Some(a), Some(b)) => diff_paths(&child, a, b, out),
-                _ => {
-                    out.insert(child);
-                }
-            }
-        }
-    } else if a != b {
-        out.insert(path.to_string());
-    }
+/// Dotted configuration paths that differ from the first run in at least one other run, by the
+/// same rule the comparison uses.
+fn varied(runs: &[DemoRun]) -> BTreeSet<String> {
+    runs[1..]
+        .iter()
+        .flat_map(|r| bb_forensics::config_diffs(&runs[0].config, &r.config))
+        .map(|d| d.path)
+        .collect()
 }
 
 /// A copyable POSIX-shell recipe. It writes the complete config before invoking the CLI;
@@ -58,10 +45,7 @@ fn experiment(
         .iter()
         .map(|r| serde_json::to_value(&r.config).expect("RunConfig serializes"))
         .collect();
-    let mut varied = BTreeSet::new();
-    for other in &values[1..] {
-        diff_paths("", &values[0], other, &mut varied);
-    }
+    let varied = varied(&runs);
     let mut controlled = vec![format!(
         "Dataset id: {}; events SHA-256: {}",
         manifest.id, manifest.events_sha256

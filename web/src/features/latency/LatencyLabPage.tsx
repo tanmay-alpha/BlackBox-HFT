@@ -21,6 +21,7 @@ import { PageHeader, usePageTitle } from '../../components/page';
 import { Badge, BasisBadge, ClockText, Empty, ErrorBox, Panel, Spinner, useAsync } from '../../components/ui';
 import { fmtSignedDuration, outcomeKind } from '../forensics/labels';
 import { fmtQuoteSigned } from '../runs/format';
+import { CLASS_LABEL as COMPARE_CLASS_LABEL, EligibilityNotice, PAIR_CLASSES } from '../compare/classes';
 import '../compare/compare.css';
 import './latency.css';
 
@@ -46,18 +47,9 @@ const KEY_METRICS = [
   'max_drawdown',
 ];
 
-const PAIR_CLASSES: PairClass[] = [
-  'identical',
-  'same_decision_different_outcome',
-  'different_decision',
-  'only_a',
-  'only_b',
-];
-
+/** The comparison's class names, with the two one-sided classes named for this page's runs. */
 const CLASS_LABEL: Record<PairClass, string> = {
-  identical: 'Identical',
-  same_decision_different_outcome: 'Same decision, different outcome',
-  different_decision: 'Different decision',
+  ...COMPARE_CLASS_LABEL,
   only_a: 'Only in baseline',
   only_b: 'Only in this run',
 };
@@ -373,13 +365,14 @@ function VariablesPanel({ ids, runs, comparisons }: PairPanelProps) {
             <section key={ids[i + 1]} className="col">
               <h3>
                 Baseline vs {runLabel(runs, ids, i + 1)}{' '}
-                <Badge kind={cmp.same_dataset ? 'ok' : 'warn'}>
-                  {cmp.same_dataset ? 'same dataset' : 'different dataset'}
+                <Badge kind={cmp.eligibility.aligned ? 'ok' : 'warn'}>
+                  {cmp.eligibility.aligned ? 'aligned by decision' : 'no per-order alignment'}
                 </Badge>{' '}
-                <Badge kind={cmp.same_strategy ? 'ok' : 'warn'}>
-                  {cmp.same_strategy ? 'same strategy' : 'different strategy'}
+                <Badge kind={cmp.eligibility.like_for_like ? 'ok' : 'warn'}>
+                  {cmp.eligibility.like_for_like ? 'like-for-like' : 'not like-for-like'}
                 </Badge>
               </h3>
+              <EligibilityNotice cmp={cmp} />
               {cmp.config_diffs.length === 0 ? (
                 <p className="note">The configurations are identical.</p>
               ) : (
@@ -488,7 +481,7 @@ function DivergenceSide({ label, pair, side }: { label: string; pair: OrderPair;
   if (!o) return <p className="small">{label}: no such decision.</p>;
   return (
     <p className="small">
-      {label}: {o.side} {o.qty} @ tick {o.price_tick} ·{' '}
+      {label}: {o.side} {o.qty} @ tick {o.price_tick} · decided <ClockText ns={o.decision_ts} /> ·{' '}
       <Badge kind={outcomeKind(o.outcome)}>{words(o.outcome)}</Badge> · filled {o.filled_qty} · arrival{' '}
       <ClockText ns={o.exch_arrival_ts} /> · first fill <ClockText ns={o.first_fill_ts} />
     </p>
@@ -500,14 +493,33 @@ function AlignmentPanel({ ids, runs, comparisons }: PairPanelProps) {
     <Panel title="Decision alignment and first divergence">
       <div className="col">
         <p className="note">
-          Orders are aligned by order id, which encodes the strategy tick and slot of the decision.
+          Orders are aligned by order id, which encodes the strategy tick and slot of the decision,
+          only when both runs share dataset, instrument, strategy kind, decision grid and simulator
+          revision. A pair is identical only when its timing, every fill and its recorded lifecycle
+          match too.
         </p>
         {comparisons.map((cmp, i) => {
           if (!cmp) return null;
           const al = cmp.alignment;
           const other = ids[i + 1];
+          if (al === null) {
+            return (
+              <section key={other} className="col lat-pair">
+                <h3>Baseline vs {runLabel(runs, ids, i + 1)}</h3>
+                <p className="note">
+                  No per-order alignment: the runs differ in{' '}
+                  {cmp.eligibility.reasons
+                    .filter((r) => r.effect === 'no_alignment')
+                    .map((r) => r.field)
+                    .join(', ')}
+                  .
+                </p>
+              </section>
+            );
+          }
           const total = PAIR_CLASSES.reduce((s, c) => s + al[c], 0);
           const fd = al.first_divergence;
+          const fo = al.first_outcome_divergence;
           return (
             <section key={other} className="col lat-pair">
               <h3>Baseline vs {runLabel(runs, ids, i + 1)}</h3>
@@ -528,15 +540,33 @@ function AlignmentPanel({ ids, runs, comparisons }: PairPanelProps) {
                   </li>
                 ))}
               </ul>
+              <p className="small">
+                Exchange arrival delta (this run minus baseline): median{' '}
+                {al.timing.exch_arrival.median === null ? '\u2014' : fmtSignedDuration(Math.round(al.timing.exch_arrival.median))}{' '}
+                over {al.timing.exch_arrival.count} pairs · first fill delta: median{' '}
+                {al.timing.first_fill.median === null ? '\u2014' : fmtSignedDuration(Math.round(al.timing.first_fill.median))}{' '}
+                over {al.timing.first_fill.count} pairs
+              </p>
               {fd ? (
                 <div className="lat-divergence col">
                   <p>
                     First divergence: order <span className="mono">{fd.order_id}</span> (tick{' '}
                     {fd.tick_no}), decided at <ClockText ns={fd.decision_ts} /> ·{' '}
                     <Badge kind="neutral">{CLASS_LABEL[fd.class]}</Badge>
+                    {fd.differences.length > 0 ? (
+                      <span className="small"> · differs in {fd.differences.join(', ')}</span>
+                    ) : null}
                   </p>
+                  <p className="small">Every pair before it is identical, timing included.</p>
                   <DivergenceSide label="Baseline" pair={fd} side="a" />
                   <DivergenceSide label="This run" pair={fd} side="b" />
+                  {fo && fo.order_id !== fd.order_id ? (
+                    <p className="small">
+                      First difference in a decision or its fills: order{' '}
+                      <span className="mono">{fo.order_id}</span> (tick {fo.tick_no}) ·{' '}
+                      <Badge kind="neutral">{CLASS_LABEL[fo.class]}</Badge>
+                    </p>
+                  ) : null}
                   <div className="row small">
                     <Link to={`/runs/${encodeURIComponent(ids[0])}/replay?order=${fd.order_id}`}>
                       Baseline in Replay Terminal
@@ -556,7 +586,10 @@ function AlignmentPanel({ ids, runs, comparisons }: PairPanelProps) {
                   </div>
                 </div>
               ) : (
-                <p className="note">No divergence: every aligned decision and outcome is identical.</p>
+                <p className="note">
+                  No divergence: every aligned decision is identical, timing, fees and recorded
+                  lifecycle included.
+                </p>
               )}
             </section>
           );

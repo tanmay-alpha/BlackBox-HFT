@@ -919,10 +919,66 @@ async fn http_api_end_to_end() {
     assert_eq!(comparison.run_b, slow.manifest.run_id);
     assert_eq!(comparison.label_a, "baseline");
     assert_eq!(comparison.label_b, "touch_maker");
-    assert!(comparison.same_dataset);
-    assert!(comparison.same_strategy);
+    assert!(comparison.eligibility.aligned && comparison.eligibility.like_for_like);
     assert!(!comparison.config_diffs.is_empty());
     assert!(!comparison.metrics.is_empty());
+    // AT-2: 1 ms versus 50 ms entry latency on the same grid moves every arrival by 49 ms, so
+    // no pair that reached the exchange in both runs can be identical.
+    let alignment = comparison.alignment.as_ref().expect("same grid: aligned");
+    let arrival = alignment.timing.exch_arrival;
+    assert!(arrival.count > 0);
+    assert_eq!(arrival.nonzero, arrival.count);
+    assert_eq!(
+        (arrival.min, arrival.max),
+        (Some(49_000_000), Some(49_000_000))
+    );
+    for pair in &alignment.pairs {
+        if pair.timing.is_some_and(|t| t.exch_arrival_ns.is_some()) {
+            assert!(pair.differences.iter().any(|d| d == "exch_arrival_ts"));
+        }
+    }
+    // AT-1: a different evaluation interval is refused alignment, naming the field.
+    let mut coarse = preset_config(&manifest, "maker_baseline");
+    coarse.strategy.interval_ns *= 2;
+    let coarse: RunSummary = ok(
+        &app,
+        post(
+            "/api/runs",
+            &RunRequest {
+                config: coarse,
+                label: None,
+            },
+        ),
+    )
+    .await;
+    let refused: serde_json::Value = ok(
+        &app,
+        post(
+            "/api/compare",
+            &CompareRequest {
+                a: baseline.manifest.run_id.clone(),
+                b: coarse.manifest.run_id.clone(),
+            },
+        ),
+    )
+    .await;
+    assert_eq!(refused["alignment"], serde_json::Value::Null);
+    assert_eq!(refused["eligibility"]["aligned"], false);
+    assert_eq!(
+        refused["eligibility"]["reasons"][0]["field"],
+        "strategy.interval_ns"
+    );
+    assert_eq!(
+        refused["eligibility"]["reasons"][0]["effect"],
+        "no_alignment"
+    );
+    assert!(refused["metrics"].as_array().is_some_and(|m| !m.is_empty()));
+    let (status, _) = send(
+        &app,
+        delete(&format!("/api/runs/{}", coarse.manifest.run_id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
     expect_error(
         &app,
         post(
@@ -1421,8 +1477,9 @@ async fn demos_validate_execute_and_vary_exactly_the_declared_paths() {
         }
         let mut differences = BTreeSet::new();
         for result in &results[1..] {
-            let comparison = bb_forensics::compare_runs(&results[0], "first", result, "other");
-            differences.extend(comparison.config_diffs.into_iter().map(|d| d.path));
+            let diffs =
+                bb_forensics::config_diffs(&results[0].manifest.config, &result.manifest.config);
+            differences.extend(diffs.into_iter().map(|d| d.path));
         }
         assert_eq!(demo.varied, differences.into_iter().collect::<Vec<_>>());
         let expected: &[&str] = match demo.id.as_str() {
@@ -1505,7 +1562,12 @@ fn demos_cli_lists_and_executes_every_scenario_idempotently() {
     assert!(!dir.runs().exists(), "listing must not simulate");
     let first = invoke(true);
     assert_eq!(first.matches("Stored simulated run:").count(), 8);
-    assert_eq!(first.matches("same dataset: true").count(), 5);
+    assert_eq!(
+        first
+            .matches("per-order alignment: yes, like-for-like: yes")
+            .count(),
+        5
+    );
     let store = FsRunStore::open(dir.runs()).unwrap();
     let before = store.list().unwrap();
     assert_eq!(before.len(), 6);

@@ -229,10 +229,31 @@
 /* ---- Alignment ---- */
 
 .cmp-seg-identical { --seg: color-mix(in srgb, var(--muted) 50%, var(--surface)); }
+.cmp-seg-same_fills_different_history { --seg: var(--unobservable); }
+.cmp-seg-same_fills_different_fees { --seg: var(--derived); }
+.cmp-seg-same_outcome_different_timing { --seg: var(--observed); }
 .cmp-seg-same_decision_different_outcome { --seg: var(--modeled); }
 .cmp-seg-different_decision { --seg: var(--warn); }
 .cmp-seg-only_a { --seg: var(--fg); }
 .cmp-seg-only_b { --seg: var(--accent); }
+
+.cmp-eligibility-head {
+  margin: 0 0 6px;
+}
+
+.cmp-eligibility tbody th {
+  font-weight: 400;
+  text-align: left;
+}
+
+.cmp-timing {
+  margin-top: 10px;
+}
+
+.cmp-timing tbody th {
+  font-weight: 400;
+  text-align: left;
+}
 
 .cmp-align p {
   margin: 0 0 8px;

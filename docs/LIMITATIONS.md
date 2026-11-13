@@ -87,9 +87,22 @@ page lists those assumptions and the things the simulation cannot know.
 
 ## Comparisons
 
-- Two scenarios are aligned by decision point (strategy tick and slot). The first point at which
-  they differ is identified exactly. After it, the strategy's own state differs, so later
-  differences are knock-on effects.
+- Two scenarios are aligned by decision point (strategy tick and slot) **only** when they share
+  the dataset events hash, instrument tick and lot size, strategy kind, evaluation interval and
+  simulation revision. Otherwise no per-order alignment is produced; metric deltas are still shown,
+  labelled not like-for-like. A different engine version, contract size, equity sampling or
+  queue-update retention keeps the alignment but marks the comparison not like-for-like. Runs whose
+  dataset manifest is unavailable cannot have their instrument checked; that is reported, not
+  assumed.
+- A pair is `identical` only when decision, decision time, exchange arrival, first response, every
+  fill (time, price, quantity, maker/taker, fee), cancel and terminal times, final status and the
+  recorded lifecycle events all match. The first divergence is the first pair in decision order
+  that is not identical in that sense, so everything before it really is identical. After it, the
+  strategy's own state may differ, so later differences may be knock-on effects. Equal events are
+  compared exactly (no tolerance on timestamps; quantities and fees within 1e-9 relative).
+- Pairs that differ only in timing, fees or recorded history (for example the modeled queue under
+  a different queue model) are classed separately from outcome differences; on L2 data such
+  history differences are model output, not observations.
 - A difference in P&L between two scenarios is **not attributed** to a single parameter unless
   that is arithmetically certain (for example, identical fills under different fee rates). When
   several parameters differ at once their contributions are not separated.

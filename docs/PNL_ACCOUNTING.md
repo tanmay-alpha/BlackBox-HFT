@@ -207,13 +207,16 @@ excluded from the result hash ([EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPROD
 
 The comparison (`crates/bb-forensics/src/compare.rs`) never attributes a P&L difference to one
 parameter unless the arithmetic proves it. The one case it can prove: when two runs' fills are
-identical and only fees differ, `Δnet = −Δfees` exactly (test
-`compare::tests::fee_only_difference_has_checked_exact_arithmetic`).
+identical in time, price, quantity and maker/taker side, only fees differ (no pair differs in
+timing or recorded history, and only `execution.fees.*` paths differ), then `Δnet = −Δfees` exactly
+(test `compare::tests::fee_only_difference_has_checked_exact_arithmetic`). Fee-only pairs are
+classed `same_fills_different_fees`, never `identical` ([API.md](API.md#comparison-semantics)).
 
 Measured: `maker_baseline` (2 bp maker fee) against `maker_rebate` (−1 bp) on the Tardis sample,
-runs `6e84d8b06ed6b959` and `9891fe2628409dca`: 1,874 decisions identical, 305 fills identical,
-fees 5.715603 versus −2.857801, net P&L −7.847353 versus 0.726051. `blackbox compare` reports "Fills
-are identical. The net P&L difference (B − A) of 8.57340396 quote equals the negative fee difference
-of 8.57340396 quote" with basis *derived*. With any other parameter changed, fills differ and the
-comparison lists the differences without splitting the P&L between causes
-([LIMITATIONS.md](LIMITATIONS.md#comparisons)).
+runs `6e84d8b06ed6b959` and `9891fe2628409dca`: 1,569 decisions identical and 305 classed
+`same_fills_different_fees` (every filled order; first-fill timing deltas all zero), fees 5.715603
+versus −2.857801, net P&L −7.847353 versus 0.726051. `blackbox compare` reports "Fills are
+identical apart from their fees (time, price, quantity and maker/taker all agree). The net P&L
+difference (B - A) of 8.573404 quote equals the negative fee difference of 8.573404 quote" with
+basis *derived*. With any other parameter changed, fills differ and the comparison lists the
+differences without splitting the P&L between causes ([LIMITATIONS.md](LIMITATIONS.md#comparisons)).
