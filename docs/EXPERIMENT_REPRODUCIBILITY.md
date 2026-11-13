@@ -79,7 +79,7 @@ hashes to its own `result_sha256` (`crates/bb-app/Cargo.toml`).
 | Generated markets and request streams | identical inputs give identical hashes | `crates/bb-sim/tests/properties.rs::identical_inputs_have_identical_hashes` |
 | The application pipeline, twice | identical run id, both hashes, tape, orders, fills, equity, metrics | `crates/bb-app/tests/integration.rs::execution_is_deterministic_and_identity_tracks_every_assumption` |
 | Seed changes jittered latency and nothing else | different seed → different jitter; same seed → identical | `determinism.rs::seed_changes_jittered_latency_and_nothing_else_is_hidden` |
-| Benchmark sessions 1 and 2, separate processes on the same day | the four `no_partial_fill` result hashes identical across processes | [BENCHMARKS.md](BENCHMARKS.md#determinism-under-load) |
+| Benchmark sessions 1 and 2, separate processes on the same day | the four `no_partial_fill` result hashes identical across processes | [PERFORMANCE.md](PERFORMANCE.md#determinism-under-load) |
 | CI "Determinism across processes" step (Linux) | `maker_baseline` on a freshly generated synthetic dataset, simulated in two separate processes, must print the same result hash | `.github/workflows/ci.yml` |
 | Golden runs | seven fixed preset runs on a fixed synthetic dataset must reproduce pinned `result_sha256` values | `crates/bb-app/tests/golden.rs` |
 | Fresh processes on the Tardis sample (measured for this page on 2026-11-14) | see below | release binary `target/release/blackbox.exe` |
@@ -119,23 +119,26 @@ The revision history is kept in the constant's doc comment (1 = first release; 2
 late cancel rejections recorded, `fill_reset` queue events, hard risk limits, market orders
 rejected, drawdown halt on locally known fills). Earlier, before the revision existed, `bb-sim`'s
 partial-fill handling changed between two benchmark sessions and the partial-fill hashes changed
-with it ([BENCHMARKS.md](BENCHMARKS.md#determinism-under-load)); that is the situation this
+with it ([PERFORMANCE.md](PERFORMANCE.md#determinism-under-load)); that is the situation this
 mechanism now catches.
 
 ## Caveats
 
-- **Platform.** Results are reproducible for the same binary on the same platform. Across platforms
-  they are expected to match for exact arithmetic; strategies that call `ln`/`exp`
-  (Avellaneda-Stoikov) can differ in the last bit of an intermediate value between math libraries,
-  which changes a quote only if it lands exactly on a rounding boundary
-  ([BUILDING.md](BUILDING.md#reproducibility)). The PRNG uses only integer and IEEE `+ − × ÷`
-  operations (`crates/bb-core/src/rng.rs`). The golden test runs on Windows locally and on Linux in
-  CI; the same pinned hashes passing on both is the cross-platform evidence for the
-  exact-arithmetic strategies it covers. Avellaneda-Stoikov is deliberately not pinned and has no
-  cross-platform evidence.
-- **Build profile.** Recorded in the manifest. Debug and release builds have not been compared hash
-  for hash. The one known profile-dependent engine behaviour (integer overflow in the partial-fill
-  market-order sweep) is unreachable because the harness blocks market orders
+- **Platform.** Results are reproducible for the same binary on the same platform. Across operating
+  systems they are identical only for configurations whose result path uses exact arithmetic. The
+  engine's probability queue models (`log_prob*`, `power_prob*`) call `f64::ln` / `f64::powf`, and
+  Avellaneda-Stoikov calls `ln`; these come from the platform math library (MinGW on the Windows
+  development machine, glibc on Linux CI) and may differ in the last bit. That almost never
+  matters, but it was observed: in the first Linux CI run (43503383714) the `maker_slow` preset
+  (`power_prob3`, 50 ms latency) produced a different result hash than on Windows, while the other
+  six pinned configurations, including four that also use `power_prob3`, matched exactly. The
+  golden test therefore pins `maker_slow` per operating system and requires the libm-free
+  `maker_conservative_queue` (risk-adverse queue model) to be identical everywhere. The PRNG uses
+  only integer and IEEE `+ − × ÷` operations (`crates/bb-core/src/rng.rs`).
+- **Build profile.** Recorded in the manifest. The golden test passes unchanged in both the debug
+  and the release profile on Windows (2026-11-14), so the pinned configurations are
+  profile-independent there. The one known profile-dependent engine behaviour (integer overflow in
+  the partial-fill market-order sweep) is unreachable because the harness blocks market orders
   ([EXECUTION_MODEL.md](EXECUTION_MODEL.md#5-market-orders)).
 - **The revision is only as good as the golden coverage.** A change that alters results only on
   paths the golden runs do not exercise (Avellaneda-Stoikov, jittered latency, a feed offset, a

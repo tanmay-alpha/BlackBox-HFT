@@ -129,7 +129,7 @@ coverage claim is reproducible. The market-order defect (5) was found by these p
   tests yet (Playwright is planned, `TODO.md` M6). Browser verification is manual.
 - **Cross-platform equality for Avellaneda-Stoikov**, and debug versus release hash equality
   ([EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPRODUCIBILITY.md#caveats)).
-- **Performance regressions.** Benchmarks are run by hand ([BENCHMARKS.md](BENCHMARKS.md)); no
+- **Performance regressions.** Benchmarks are run by hand ([PERFORMANCE.md](PERFORMANCE.md)); no
   test fails on a slowdown.
 - **The ingestion of the full 250 MB Tardis book file**, other exchanges, or other Tardis data
   types.

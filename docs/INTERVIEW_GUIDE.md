@@ -106,7 +106,7 @@ an unobservable assumption, not which model is right
 The engine is Rust; BlackBox's recorder, ledger and forensics run in the same process with no
 garbage collector and no serialisation boundary. The cost of recording is measured, not assumed:
 on the 10-minute BTCUSDT sample the stock engine replays 9.39 M rows/s and the adapter with an idle
-strategy 8.53 M rows/s ([BENCHMARKS.md](BENCHMARKS.md)). Why Rust instead of the brief's
+strategy 8.53 M rows/s ([PERFORMANCE.md](PERFORMANCE.md)). Why Rust instead of the brief's
 Python/FastAPI is in [ARCHITECTURE.md](ARCHITECTURE.md#why-rust-and-axum-rather-than-python-and-fastapi).
 
 ### Efficient trace recording

@@ -62,7 +62,8 @@ installed, the `bash` found first on `PATH` may be the WSL launcher, which fails
 
 - `Cargo.lock` is committed; the engine is pinned with `hftbacktest = "=0.9.4"`.
 - A run's `result_sha256` is reproducible for the same binary on the same platform. Across
-  platforms it is expected to match for strategies that use only exact arithmetic; strategies that
-  call `ln`/`exp` (Avellaneda-Stoikov) can differ in the last bit of an intermediate value between
-  math libraries, which changes a quote only if it lands exactly on a rounding boundary. Run
-  manifests record the platform for that reason.
+  operating systems it is identical only when the result path uses exact arithmetic: the engine's
+  probability queue models call `powf`/`ln` and Avellaneda-Stoikov calls `ln`, whose last bit can
+  differ between math libraries; one such difference was observed between Windows and Linux (see
+  [EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPRODUCIBILITY.md#caveats)). Run manifests record
+  the platform for that reason.

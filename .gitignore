@@ -2,6 +2,8 @@
 /target/
 /web/node_modules/
 /web/dist/
+/web/playwright-report/
+/web/test-results/
 
 # Machine-local toolchain workaround (see docs/BUILDING.md)
 /.toolchain/

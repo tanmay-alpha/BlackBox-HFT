@@ -46,7 +46,7 @@ result is quoted here, not merely written.
   data (ExplainAudit agent).
 
 ### M6 System quality — in progress
-- Done: 196 Rust tests; benchmarks with hardware and method (docs/BENCHMARKS.md).
+- Done: 196 Rust tests; benchmarks with hardware and method (docs/PERFORMANCE.md).
 - Measured (lead, i7-14650HX, release build, real 10-min BTCUSDT dataset):
   - Peak working set of `blackbox run` (Avellaneda-Stoikov, 64,540 tape events, includes writing
     the run): 78 MB; peak paged 87 MB; simulation wall time 144 ms.

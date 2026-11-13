@@ -26,6 +26,18 @@ replay; simulated orders do not affect historical prices. See [docs/LIMITATIONS.
 | **Scenario Comparison** | Run the same strategy under two sets of assumptions. Orders are aligned by stable decision id; the first divergence is identified exactly; P&L differences are attributed to a cause only when that is arithmetically certain. |
 | **Sensitivity Grid** | A bounded two-parameter sweep. Every heatmap cell is one completed simulation with its own run id and result hash. |
 
+## Screens
+
+All screenshots show the generated **synthetic** dataset; vendor market data is never published.
+
+| | |
+|---|---|
+| ![Replay Terminal: reconstructed book with the run's own resting orders and simulated fills](docs/screenshots/terminal.png) **Replay Terminal**: the book reconstructed from L2 updates, with the run's own orders (dashed) and simulated fills on one playback clock. | ![Order forensics: two-clock timeline, modeled queue position and explanation](docs/screenshots/forensics.png) **Execution Forensics**: why one order filled, on the strategy and exchange clocks, with its modeled queue position. |
+| ![Mission Control with the three canonical experiments](docs/screenshots/mission.png) **Mission Control**: three controlled experiments, each listing what varies and what is held identical. | ![Latency Lab comparing 1 ms and 50 ms order latency](docs/screenshots/latency.png) **Latency Lab**: the same strategy at 1 ms and 50 ms order latency, aligned decision by decision. |
+| ![Scenario comparison](docs/screenshots/compare.png) **Compare** | ![Sensitivity grid](docs/screenshots/grid.png) **Sensitivity Grid**: every cell is one stored simulation. |
+| ![Market replay heatmap and depth ladder](docs/screenshots/replay.png) **Market Replay** | ![Dataset quality report](docs/screenshots/datasets.png) **Data quality** |
+| ![Run overview with engine cross-check](docs/screenshots/run.png) **Run overview** | ![Strategy Lab](docs/screenshots/lab.png) **Strategy Lab** |
+
 ## The flight recorder
 
 The engine exposes no event hooks, so each engine model (queue, latency, fees, order responses) is
@@ -140,7 +152,8 @@ explains the concepts from scratch and has a five-minute demo script.
 | [TESTING.md](docs/TESTING.md) | Test inventory, what each suite proves, what is not tested |
 | [LIMITATIONS.md](docs/LIMITATIONS.md) | What the simulation assumes and cannot know |
 | [OPEN_SOURCE_RESEARCH.md](docs/OPEN_SOURCE_RESEARCH.md) | Prior art, inspected versions, licences, reuse decisions, data terms |
-| [BENCHMARKS.md](docs/BENCHMARKS.md) | Measured replay cost of the adapter versus the stock engine |
+| [PERFORMANCE.md](docs/PERFORMANCE.md) | Measured replay cost versus the stock engine, resource use, API latency, scaling |
+| [SECURITY.md](docs/SECURITY.md) | Threat model, controls with their tests, review findings, residual risks |
 | [API.md](docs/API.md) | HTTP API |
 | [BUILDING.md](docs/BUILDING.md) | Build requirements and Windows notes |
 | [INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md) | Concepts explained from scratch, and a demo script |

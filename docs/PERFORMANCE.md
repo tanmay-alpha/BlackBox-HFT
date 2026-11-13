@@ -1,8 +1,10 @@
-# Benchmarks
+# Performance
 
 Wall-clock cost of replaying a dataset through the BlackBox adapter (`bb_sim::simulate`) compared
-with the stock `hftbacktest 0.9.4` engine on the same data. Every number below was measured on the
-machine described here with the commands shown; nothing is extrapolated from other hardware.
+with the stock `hftbacktest 0.9.4` engine on the same data, followed by resource use, API latency
+and how costs scale. Every number below was measured on the machine described here with the
+commands shown; nothing is extrapolated from other hardware. Everything measured is offline
+simulation on historical replay.
 
 ## Reproduce
 
@@ -378,3 +380,74 @@ EXECUTION_MODEL.md, the engine's own floating-point totals can differ in their l
 randomized fill iteration order; cross-process bit identity of those engine-side totals is not
 claimed. All executions here remain simulated on historical replay, with modeled L2 queues.
 
+## Resource and latency measurements (lead)
+
+Measured by the lead on the machine above (i7-14650HX), release build, on the real 10-minute
+BTCUSDT dataset, and recorded in `TODO.md` (M6). Single sessions; no repetition beyond what is
+stated.
+
+| Quantity | Value | Method |
+|---|---|---|
+| Peak working set of `blackbox run` | **78.0 MB** working set, 87.3 MB peak paged | A PowerShell loop polled `Process.PeakWorkingSet64` (and peak paged memory) every 5 ms for the `blackbox.exe run` process: Avellaneda-Stoikov preset with `seed` changed to 999 so it simulated afresh (64,540 tape events), including writing the run to the store |
+| Simulation wall time of that run | 144 ms | As printed by the same run |
+| Stored trace size | **~465 bytes per tape event** as JSON | `stat` size of `data/runs/<id>/run.json` (30.2 MB) divided by its tape length (`jq '.tape\|length'`, 64,540) |
+
+API latency: 20 sequential `curl -w %{time_total}` requests per endpoint over local loopback
+against the release server; p50 and p95 by nearest rank:
+
+| Endpoint | p50 ms | p95 ms |
+|---|---:|---:|
+| `GET /api/health` | 0.7 | 23.5 |
+| replay window, 60 s × 25 levels | 18.5 | 29.1 |
+| orders page | 1.1 | 14.4 |
+| order detail with explanation | 0.8 | 14.8 |
+| tape page | 1.4 | 1.8 |
+| equity series | 4.1 | 5.4 |
+
+With 20 samples the p95 is the second-largest value, so a single slow request (for example the
+first request on a connection) moves it; the p50 is the stable figure.
+
+### Additional measurements (2026-11-14)
+
+Same machine, `target/release/blackbox.exe`, other agents' builds running concurrently.
+
+* **Run store on disk.** `du -sb data/runs` reported **310,765,466 bytes** for 34 stored runs
+  (local development store, synthetic and Tardis-sample runs; not committed). Average about 9.1 MB
+  per run; the per-run size follows its tape length (above).
+* **End-to-end CLI run, new configuration.** The `maker_baseline` preset configuration for
+  `synthetic-demo` (taken from `GET /api/presets?dataset_id=synthetic-demo`) was written to a temp
+  file with `seed` changed to 987654321 so the run id was new and nothing came from the store, then
+  timed once with `date +%s%N` around
+  `blackbox.exe --data-dir data run --config <file> --dataset synthetic-demo`:
+  **100 ms** end to end (process start, dataset load with hash check, simulation, writing the run,
+  printing). The run printed `1200 ticks, 2060 orders, 1241 fills, 25242 tape events, 31 ms wall
+  time` (run id `30091e7c9254183d`). Its directory measured **9,000,415 bytes** (`du -sb`), about
+  357 bytes per tape event, and the store grew to 319,765,881 bytes / 35 runs. One sample only.
+
+## Scaling
+
+Three quantities drive cost; which one dominates depends on the operation (read from the code):
+
+| Cost | Grows with | Where |
+|---|---|---|
+| Dataset ingestion | input CSV rows (every row is parsed even past `--max-duration-s`; 4 KiB per-line cap, no total-row cap) | `crates/bb-data/src/tardis.rs` |
+| Dataset load | stored engine rows (decode and SHA-256 check of `events.npz`) | `crates/bb-data/src/store.rs` |
+| Replay through the engine | engine rows (~9–11 ns/row adapter overhead on top of the engine, see above) | `crates/bb-sim` |
+| Strategy evaluations, per-tick view, equity samples | ticks = dataset span / `interval_ns`, capped at 2,000,000 per run | `crates/bb-core/src/config.rs`, `crates/bb-app/src/pipeline.rs`, `crates/bb-sim/src/lib.rs` |
+| Recording, ledger, stored run size, forensics | tape events (orders × their lifecycle and queue updates; ~140–260 ns and ~360–465 bytes each, above) | `crates/bb-sim/src/tape.rs`, `crates/bb-app/src/store.rs` |
+| Replay-window response | engine rows up to `t1` (one pass), output bounded by 5,000 frames × 100 levels and 50,000 trades | `crates/bb-data/src/book.rs`, `crates/bb-app/src/server.rs` |
+| Orders and tape pages | page size (max 2,000 orders / 5,000 tape events) | `crates/bb-app/src/server.rs` |
+| Fills, equity, timeline responses | run size (fills, ticks); not paginated | `crates/bb-app/src/server.rs` |
+| Sensitivity grid | cells (max 100) × one run each, one grid at a time | `crates/bb-core/src/compare.rs`, `crates/bb-app/src/server.rs` |
+
+So a shorter interval multiplies tick costs, a busier strategy multiplies tape costs, and a longer
+dataset multiplies everything.
+
+## What we do not claim
+
+- No live-trading or order-to-exchange latency figures: nothing here sends orders anywhere. The
+  latencies modeled inside a simulation are configuration inputs, not measurements.
+- The throughput figures are offline simulation throughput on this machine, not a statement about
+  any production trading system.
+- API latencies are local loopback on a developer laptop, not a hosted service.
+- No figures for other hardware, other datasets or full-day Tardis files.
