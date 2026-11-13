@@ -27,6 +27,11 @@ down.
 
 ## Machine and build
 
+The numbers below were measured on the working tree that was committed as `fba556d` (recorder
+optimisation; the "Optimization" section's "after" figures are that code, its "before" figures the
+parent state). Later commits changed validation, explanations and documentation but not the
+simulation hot path; re-measure before quoting these numbers for a later revision.
+
 | | |
 |---|---|
 | CPU | Intel Core i7-14650HX, 16 cores / 24 logical processors (WMI; `nproc` = 24); WMI `MaxClockSpeed` 2200 MHz |

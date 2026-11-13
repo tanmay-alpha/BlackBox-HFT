@@ -1557,3 +1557,55 @@ fn degenerate_intervals_are_refused_before_simulation() {
     };
     assert!(!config.validate().is_empty());
 }
+
+// ----- (6) input validation from the final review -----
+
+#[test]
+fn unknown_or_misspelled_config_fields_are_rejected() {
+    let dir = TempDir::new("unknown-fields");
+    let manifest = write_dataset(&dir);
+    let config = presets::presets(&manifest)[0].config.clone();
+    let mut value = serde_json::to_value(&config).unwrap();
+    // A misspelled optional risk field must not silently disable the limit.
+    value["risk"]
+        .as_object_mut()
+        .unwrap()
+        .insert("max_drawdwon".into(), serde_json::json!(5.0));
+    let err = serde_json::from_value::<RunConfig>(value).unwrap_err();
+    assert!(err.to_string().contains("max_drawdwon"), "{err}");
+
+    let mut value = serde_json::to_value(&config).unwrap();
+    value["strategy"]["kind"]
+        .as_object_mut()
+        .unwrap()
+        .insert("ofset_ticks".into(), serde_json::json!(1));
+    assert!(serde_json::from_value::<RunConfig>(value).is_err());
+
+    let request = serde_json::json!({ "config": config, "lable": "typo" });
+    assert!(serde_json::from_value::<bb_app::api::RunRequest>(request).is_err());
+}
+
+#[test]
+fn degenerate_sizes_and_fees_are_refused() {
+    let dir = TempDir::new("sizes-fees");
+    let manifest = write_dataset(&dir);
+    let base = presets::find(&manifest, "maker_baseline").unwrap().config;
+
+    let mut c = base.clone();
+    if let bb_core::config::StrategyKind::TouchMaker(p) = &mut c.strategy.kind {
+        p.order_qty = 1e308;
+    }
+    let problems = c.validate();
+    assert!(
+        problems.iter().any(|p| p.contains("max_position")),
+        "{problems:?}"
+    );
+
+    let mut c = base.clone();
+    c.execution.fees.maker = 5.0;
+    assert!(c.validate().iter().any(|p| p.contains("fees.maker")));
+
+    let mut c = base;
+    c.execution.fees.taker = -0.0001;
+    assert!(c.validate().is_empty(), "a small rebate is valid");
+}

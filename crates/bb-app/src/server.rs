@@ -56,6 +56,8 @@ const DEFAULT_ORDERS_LIMIT: u64 = 200;
 const MAX_ORDERS_LIMIT: u64 = 2_000;
 const DEFAULT_TAPE_LIMIT: u64 = 500;
 const MAX_TAPE_LIMIT: u64 = 5_000;
+/// Longest accepted run label. Labels are display text stored with every run.
+const MAX_LABEL_CHARS: usize = 200;
 
 /// Everything the handlers share.
 pub struct AppState {
@@ -333,6 +335,13 @@ async fn create_run(
     admitted(&RUN_SLOTS, move || {
         // Validate before looking for the dataset so a broken config is reported as such.
         pipeline::check_config(&request.config)?;
+        if let Some(label) = &request.label
+            && label.chars().count() > MAX_LABEL_CHARS
+        {
+            return Err(AppError::InvalidRequest(format!(
+                "label is longer than {MAX_LABEL_CHARS} characters"
+            )));
+        }
         let ctx = state
             .datasets
             .get_or_load(&state.data_root, &request.config.dataset_id)?;
@@ -519,8 +528,9 @@ async fn get_tape(
     .map(Json)
 }
 
-/// Selects inclusive windows without assuming the tape's two clocks are time-sorted.
-fn timeline(run: &RunResult, query: &TimelineQuery) -> Result<RunTimeline, AppError> {
+/// Selects inclusive windows without assuming the tape's two clocks are time-sorted. Shared with
+/// [`crate::export_static`], which precomputes the same responses.
+pub fn timeline(run: &RunResult, query: &TimelineQuery) -> Result<RunTimeline, AppError> {
     let run_start = run.equity.first().map_or(0, |s| s.ts);
     let run_end = run.equity.last().map_or(0, |s| s.ts);
     let t0 = query.t0.unwrap_or(run_start);

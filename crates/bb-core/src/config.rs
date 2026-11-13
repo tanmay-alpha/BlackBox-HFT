@@ -7,6 +7,9 @@ use crate::{OrdType, Side, Tif};
 
 /// Complete, self-contained description of one simulation run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+// Every client-supplied type rejects unknown fields: a misspelled optional field such as
+// `max_drawdwon` must be an error, not a silently disabled risk limit.
+#[serde(deny_unknown_fields)]
 pub struct RunConfig {
     /// Dataset identifier (directory name under the dataset root).
     pub dataset_id: String,
@@ -20,6 +23,7 @@ pub struct RunConfig {
 
 /// The modeled execution assumptions. These are what counterfactual scenarios vary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionConfig {
     pub exchange_model: ExchangeModel,
     pub queue_model: QueueModelConfig,
@@ -45,7 +49,7 @@ pub enum ExchangeModel {
 /// Queue-position model for resting orders on Market-By-Price data. All are estimates: L2 data
 /// does not show individual orders, so position in the queue is never observed.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueueModelConfig {
     /// Engine `RiskAdverseQueueModel`: the queue ahead shrinks only when trades print at the
     /// order's price. Cancellations ahead are never credited. Most conservative.
@@ -82,7 +86,7 @@ impl QueueModelConfig {
 
 /// Order-entry and order-response latency. Entry latency applies to new orders and cancels alike.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OrderLatencyConfig {
     /// Engine `ConstantLatency`.
     Constant { entry_ns: i64, response_ns: i64 },
@@ -101,6 +105,7 @@ pub enum OrderLatencyConfig {
 /// Fees as a fraction of traded value (engine `TradingValueFeeModel<CommonFees>`). Negative means
 /// a rebate. Example: `0.0002` is 2 basis points.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeeConfig {
     pub maker: f64,
     pub taker: f64,
@@ -108,6 +113,7 @@ pub struct FeeConfig {
 
 /// Pre-trade risk rules enforced by the strategy harness before a request reaches the engine.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RiskConfig {
     /// Reject an order whose fill would take `|position|` above this. Uses the locally known
     /// position plus all working orders on the same side (worst case).
@@ -123,6 +129,7 @@ pub struct RiskConfig {
 
 /// What the flight recorder keeps.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordConfig {
     /// Equity, position and market are sampled every this many strategy ticks.
     pub sample_every_ticks: u32,
@@ -144,6 +151,7 @@ impl Default for RecordConfig {
 
 /// Strategy selection. Every strategy is evaluated on a fixed local-time grid of `interval_ns`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StrategyConfig {
     /// Local-clock time between strategy evaluations.
     pub interval_ns: i64,
@@ -151,7 +159,7 @@ pub struct StrategyConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StrategyKind {
     /// Joins the best bid and best ask with post-only orders and skews away from inventory.
     TouchMaker(TouchMakerParams),
@@ -175,6 +183,7 @@ impl StrategyKind {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TouchMakerParams {
     pub order_qty: f64,
     /// Stop quoting the side that would grow `|position|` beyond this.
@@ -187,6 +196,7 @@ pub struct TouchMakerParams {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AvellanedaStoikovParams {
     pub order_qty: f64,
     pub max_position: f64,
@@ -201,6 +211,7 @@ pub struct AvellanedaStoikovParams {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImbalanceTakerParams {
     pub order_qty: f64,
     pub max_position: f64,
@@ -213,11 +224,13 @@ pub struct ImbalanceTakerParams {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScriptedParams {
     pub orders: Vec<ScriptedOrder>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScriptedOrder {
     /// Strategy tick at which to place the order.
     pub at_tick: u64,
@@ -235,7 +248,7 @@ pub struct ScriptedOrder {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScriptedPrice {
     /// Absolute price in ticks.
     Tick { tick: i64 },
@@ -253,6 +266,8 @@ pub const MAX_LATENCY_NS: i64 = 60_000_000_000;
 /// Upper bound on strategy evaluations in one run, checked against the dataset's span by the
 /// application before simulating. At the minimum interval it allows a ~33-minute dataset.
 pub const MAX_TICKS_PER_RUN: i64 = 2_000_000;
+/// Largest accepted absolute fee rate, as a fraction of traded value (1% = 100 bp).
+pub const MAX_ABS_FEE: f64 = 0.01;
 
 impl RunConfig {
     /// Checks every numeric parameter. Returns human-readable problems; empty means valid.
@@ -317,8 +332,18 @@ impl RunConfig {
             }
             _ => {}
         }
-        if !self.execution.fees.maker.is_finite() || !self.execution.fees.taker.is_finite() {
-            e.push("fees must be finite".into());
+        // |fee| <= 1% of traded value: real venue fees are basis points, so anything larger is
+        // almost certainly a unit mistake (5 instead of 0.0005).
+        for (name, fee) in [
+            ("maker", self.execution.fees.maker),
+            ("taker", self.execution.fees.taker),
+        ] {
+            if !fee.is_finite() || fee.abs() > MAX_ABS_FEE {
+                e.push(format!(
+                    "fees.{name} must be a fraction of traded value between -{MAX_ABS_FEE} and \
+                     {MAX_ABS_FEE} (100 bp); got {fee}"
+                ));
+            }
         }
         if !finite_pos(self.risk.max_position) {
             e.push("risk.max_position must be finite and positive".into());
@@ -336,6 +361,31 @@ impl RunConfig {
         }
         if self.record.sample_every_ticks == 0 {
             e.push("record.sample_every_ticks must be at least 1".into());
+        }
+        // A strategy whose order size can never pass its own position limit or the order-size
+        // rule would produce a run with no orders at all; that is a configuration error.
+        let sizes = match &self.strategy.kind {
+            StrategyKind::TouchMaker(p) => Some((p.order_qty, p.max_position)),
+            StrategyKind::AvellanedaStoikov(p) => Some((p.order_qty, p.max_position)),
+            StrategyKind::ImbalanceTaker(p) => Some((p.order_qty, p.max_position)),
+            StrategyKind::Scripted(_) => None,
+        };
+        if let Some((order_qty, max_position)) = sizes
+            && finite_pos(order_qty)
+        {
+            if order_qty > max_position {
+                e.push(format!(
+                    "strategy order_qty {order_qty} exceeds the strategy's max_position \
+                     {max_position}: it could never place an order"
+                ));
+            }
+            if order_qty > self.risk.max_order_qty {
+                e.push(format!(
+                    "strategy order_qty {order_qty} exceeds risk.max_order_qty {}: every order \
+                     would be blocked",
+                    self.risk.max_order_qty
+                ));
+            }
         }
         match &self.strategy.kind {
             StrategyKind::TouchMaker(p) => {

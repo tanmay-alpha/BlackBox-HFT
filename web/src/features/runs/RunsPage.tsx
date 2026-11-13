@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { api } from '../../api/client';
+import { api, isStaticViewer, STATIC_VIEWER_MESSAGE } from '../../api/client';
 import type { RunSummary } from '../../api/types';
 import { assumptionsLabel, strategyLabel } from '../../components/describe';
 import { fmtDuration, fmtInt, fmtUnixMs } from '../../components/fmt';
@@ -102,6 +102,8 @@ function RunRow({
               type="button"
               className="btn-danger"
               onClick={onAskDelete}
+              disabled={isStaticViewer()}
+              title={isStaticViewer() ? STATIC_VIEWER_MESSAGE : undefined}
               aria-label={`Delete run ${run.label || m.run_id}`}
             >
               Delete

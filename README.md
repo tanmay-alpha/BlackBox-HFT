@@ -16,6 +16,10 @@ deterministic rules that cite their evidence, and compares scenarios decision by
 trading credentials and cannot place an order. Everything it reports is simulated on historical
 replay; simulated orders do not affect historical prices. See [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
+**Live viewer: https://blackbox-hft.vercel.app** shows precomputed simulations on synthetic data
+and is read-only. To run your own simulations, see Quick start below. How the viewer is built:
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#hosted-viewer-static).
+
 ## What it does
 
 | Area | What you get |
@@ -116,10 +120,13 @@ bundled demo and every test fixture use synthetic data only. Quotes and links:
 
 ## Reproducibility
 
-A run is identified by a hash of the dataset bytes, the engine version and the full configuration
-including the seed. Running the same experiment again returns the same `run_id` and the same
-`result_sha256` over the tape, fills and equity series. The manifest stored with every run records
-all of it. Details and evidence: [docs/EXPERIMENT_REPRODUCIBILITY.md](docs/EXPERIMENT_REPRODUCIBILITY.md).
+A run is identified by a hash of the dataset bytes, the engine version, BlackBox's simulation
+revision and the full configuration including the seed. On the same platform, running the same
+experiment again returns the same `run_id` and the same `result_sha256` over the tape, fills and
+equity series (verified across fresh processes and in CI). Across operating systems results are
+identical only where the result path uses exact arithmetic: the engine's probability queue models
+call the platform math library, and one configuration was observed to differ between Windows and
+Linux. Details and evidence: [docs/EXPERIMENT_REPRODUCIBILITY.md](docs/EXPERIMENT_REPRODUCIBILITY.md).
 
 ## Repository layout
 

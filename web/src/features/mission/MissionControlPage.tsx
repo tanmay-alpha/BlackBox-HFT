@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { api } from '../../api/client';
+import { api, isStaticViewer } from '../../api/client';
 import type { DatasetManifest, Demo, QualityReport, RunSummary, Severity } from '../../api/types';
 import { assumptionsLabel, severityBadge, strategyLabel } from '../../components/describe';
 import { fmtDuration, fmtInt, fmtUnixMs } from '../../components/fmt';
@@ -203,12 +203,21 @@ function DemoCard({
       </details>
       <div className="row mc-demo-actions">
         <button type="button" className="btn-primary" onClick={onRun} disabled={busy}>
-          Run demo
+          {isStaticViewer() ? 'Open precomputed demo' : 'Run demo'}
         </button>
         {running ? (
           <Spinner
-            label={`Simulating run ${Math.min(progress.done + 1, progress.total)} of ${progress.total} (stored runs return immediately)`}
+            label={
+              isStaticViewer()
+                ? 'Opening the precomputed runs'
+                : `Simulating run ${Math.min(progress.done + 1, progress.total)} of ${progress.total} (stored runs return immediately)`
+            }
           />
+        ) : isStaticViewer() ? (
+          <span className="dim small">
+            Opens the {demo.runs.length} precomputed runs in the Latency Lab. This hosted viewer
+            simulates nothing; run BlackBox locally to simulate (see README).
+          </span>
         ) : (
           <span className="dim small">
             Runs {demo.runs.length} simulations, or returns the stored ones, then opens the Latency

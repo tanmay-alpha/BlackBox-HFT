@@ -2,9 +2,10 @@ import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 
-import { api } from './api/client';
+import { api, isStaticViewer } from './api/client';
 import { CONTRACT_VERSION } from './api/types';
 import { usePageTitle } from './components/page';
+import { StaticViewerBanner } from './components/staticViewer';
 import { Badge, BasisLegend, Empty, ErrorBox, useAsync } from './components/ui';
 import ComparePage from './features/compare/ComparePage';
 import DatasetsPage from './features/datasets/DatasetsPage';
@@ -89,7 +90,13 @@ function ServerStatus() {
   const contractOk = h.contract_version === CONTRACT_VERSION;
   return (
     <span className="row shell-status">
-      <Badge kind={h.status === 'ok' ? 'ok' : 'warn'}>server {h.status}</Badge>
+      {isStaticViewer() ? (
+        <Badge kind="warn" title="No server: health, runs and results were precomputed by blackbox export-static.">
+          precomputed bundle
+        </Badge>
+      ) : (
+        <Badge kind={h.status === 'ok' ? 'ok' : 'warn'}>server {h.status}</Badge>
+      )}
       <span className="mono dim">
         blackbox {h.blackbox_version} · engine {h.engine.name} {h.engine.version} · contract v
         {h.contract_version}
@@ -141,6 +148,7 @@ function Shell() {
         <Badge kind="modeled">simulated</Badge>
         <span>{RESEARCH_BANNER}</span>
       </div>
+      <StaticViewerBanner />
       <main id="main" className="shell-main" tabIndex={-1}>
         <PageErrorBoundary key={location.pathname}>
           <Outlet />

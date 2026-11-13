@@ -108,7 +108,11 @@ fn expected(g: &Golden) -> Option<&'static str> {
 #[test]
 fn portable_entries_agree_across_platforms() {
     for g in RESULTS.iter().filter(|g| g.portable) {
-        assert_eq!(g.windows, g.linux, "{} is portable but pinned differently", g.preset);
+        assert_eq!(
+            g.windows, g.linux,
+            "{} is portable but pinned differently",
+            g.preset
+        );
     }
 }
 

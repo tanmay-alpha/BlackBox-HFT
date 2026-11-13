@@ -8,8 +8,15 @@ import { defineConfig } from 'vite';
 // for `npm run dev` (`http://localhost:4173` for `npm run preview`).
 const API_TARGET = 'http://127.0.0.1:8787';
 
-export default defineConfig({
+// `vite build --mode static` (`npm run build:static`) builds the hosted read-only viewer of
+// precomputed synthetic runs: the API client then reads the files `blackbox export-static` wrote
+// (copied to /static-data/) instead of calling the server. Set here, not in an .env file, so the
+// build command alone decides it.
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
+  define: {
+    'import.meta.env.VITE_STATIC_DATA': JSON.stringify(mode === 'static' ? '1' : ''),
+  },
   server: {
     proxy: {
       '/api': { target: API_TARGET, changeOrigin: true },
@@ -20,4 +27,4 @@ export default defineConfig({
       '/api': { target: API_TARGET, changeOrigin: true },
     },
   },
-});
+}));

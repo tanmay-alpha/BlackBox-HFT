@@ -11,8 +11,12 @@ Rust type with the same name in `crates/bb-core/src` — that crate is the sourc
 - **Enums** serialize as `snake_case` strings. Tagged enums carry a `type` field.
 - `Option<T>` serializes as `T` or `null`. Tuples such as `(i64, f64)` serialize as arrays.
 - **Errors**: non-2xx with body `{"error": {"code": "<snake_case>", "message": "<text>"}}`.
-  Codes: `not_found` (404), `invalid_request` (400), `invalid_config` (422, message lists every
-  problem), `simulation_failed` (500), `internal` (500).
+  Codes: `not_found` (404), `invalid_request` (400: malformed path, query or body, including
+  unknown JSON fields and bodies over the 2 MiB limit), `forbidden` (403: request addressed to a
+  host name or coming from an origin the server does not allow; see SECURITY.md),
+  `invalid_config` (422, message lists every problem), `simulation_failed` (500), `internal` (500;
+  the response carries a generic message, details go to the server log).
+- Run labels are at most 200 characters.
 - Everything returned is simulated. Nothing here is an exchange execution.
 
 ## Endpoints

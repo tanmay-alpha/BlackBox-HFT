@@ -11,9 +11,10 @@ run the real pinned engine, not a mock.
 
 ## Inventory
 
-Counts from `cargo test --workspace --no-fail-fast` in the debug profile on 2026-11-14, Windows
-(x86_64-pc-windows-gnu): **235 tests, all passing.** Other work was landing tests the same day, so
-re-run the command for current numbers.
+Counts from `cargo test --workspace --no-fail-fast` in the debug profile, Windows
+(x86_64-pc-windows-gnu): **241 tests, 0 failed, 0 ignored** at the commit that added the static
+viewer exporter and the input-validation fixes from the final review. The per-suite rows below
+were taken earlier at 235 tests; re-run the command for current numbers.
 
 | Crate | Suite | Tests | What it proves |
 |---|---|---:|---|

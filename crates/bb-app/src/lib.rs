@@ -12,6 +12,7 @@ pub mod api;
 pub mod datasets;
 pub mod demos;
 pub mod error;
+pub mod export_static;
 pub mod pipeline;
 pub mod presets;
 mod report;
@@ -23,4 +24,5 @@ pub use error::AppError;
 /// Shown by the health endpoint and printed by every command that reports results.
 pub const DISCLAIMER: &str = "Research only. Every order, fill, queue position and P&L figure is \
      the output of a simulation over historical or synthetic market data under stated latency, \
-     queue and fee assumptions. Nothing here is a real exchange execution.";
+     queue and fee assumptions. Simulated orders never move replayed prices or consume displayed \
+     depth (no market impact). Nothing here is a real exchange execution.";

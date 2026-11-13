@@ -27,6 +27,9 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 anyhow.workspace = true
 thiserror.workspace = true
+# Gzip and the content-hash root of the static viewer bundle (`blackbox export-static`).
+flate2.workspace = true
+sha2.workspace = true
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync"] }
 tower-http = { version = "0.6", features = ["fs", "cors"] }

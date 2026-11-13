@@ -123,7 +123,7 @@ pub struct Comparison {
 
 /// A parameter swept along one axis of a sensitivity grid.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GridAxis {
     /// Sets both entry and response order latency to each value.
     OrderLatencyNs {
@@ -251,6 +251,7 @@ impl GridAxis {
 
 /// A bounded two-dimensional sweep around a base configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GridSpec {
     pub base: RunConfig,
     pub x: GridAxis,

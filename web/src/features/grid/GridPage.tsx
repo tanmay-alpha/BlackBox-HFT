@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, isStaticViewer, precomputedGrids } from "../../api/client";
 import type { GridCell, GridResult, GridSpec, RunConfig, RunSummary } from "../../api/types";
 import { MAX_GRID_CELLS } from "../../api/types";
 import { fmtDuration } from "../../components/fmt";
+import { StaticViewerNote } from "../../components/staticViewer";
 import { Badge, Empty, ErrorBox, Panel, Spinner, useAsync } from "../../components/ui";
 import { EvidenceLegend } from "../forensics/evidence";
 import { queueModelLabel } from "../forensics/labels";
@@ -46,6 +47,7 @@ function initialY(): AxisDraft {
 export default function GridPage() {
   const [params] = useSearchParams();
   const runs = useAsync(() => api.runs(), []);
+  const staticGrids = useAsync(() => precomputedGrids(), []);
   const [baseId, setBaseId] = useState(params.get("base") ?? "");
   const [xDraft, setXDraft] = useState<AxisDraft>(initialX);
   const [yDraft, setYDraft] = useState<AxisDraft>(initialY);
@@ -67,10 +69,11 @@ export default function GridPage() {
     runs.data?.find((r) => r.manifest.run_id === baseId) ?? null;
   const cells = parsedX.axis.values.length * parsedY.axis.values.length;
   const pending = job.status === "pending";
-  const canRun = baseRun !== null && problems.length === 0 && !pending;
+  // The hosted read-only viewer cannot simulate; it shows the precomputed grid below instead.
+  const canRun = baseRun !== null && problems.length === 0 && !pending && !isStaticViewer();
 
   const submit = async () => {
-    if (baseRun === null || problems.length > 0 || pending) return;
+    if (baseRun === null || problems.length > 0 || pending || isStaticViewer()) return;
     const spec: GridSpec = { base: baseRun.manifest.config, x: parsedX.axis, y: parsedY.axis };
     ticket.current += 1;
     const mine = ticket.current;
@@ -167,6 +170,7 @@ export default function GridPage() {
                   <li key={i}>{problem}</li>
                 ))}
               </ul>
+              <StaticViewerNote />
               <button type="submit" className="grd-btn grd-btn-primary" disabled={!canRun}>
                 {pending ? "Running" : `Run ${cells} simulation${cells === 1 ? "" : "s"}`}
               </button>
@@ -201,6 +205,18 @@ export default function GridPage() {
       ) : null}
 
       {job.status === "done" ? <GridResultView result={job.result} /> : null}
+
+      {isStaticViewer() ? (
+        <Panel title="Precomputed grid">
+          <p className="dim">
+            Computed ahead of time by <span className="mono">blackbox export-static</span> on the
+            synthetic dataset: every cell is a stored simulation you can open.
+          </p>
+          {staticGrids.error ? <ErrorBox error={staticGrids.error} /> : null}
+          {staticGrids.loading && !staticGrids.data ? <Spinner /> : null}
+        </Panel>
+      ) : null}
+      {staticGrids.data?.map((result, i) => <GridResultView key={i} result={result} />)}
     </div>
   );
 }

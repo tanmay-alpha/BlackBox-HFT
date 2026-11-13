@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
-import { api } from '../../api/client';
+import { api, isStaticViewer } from '../../api/client';
 import type { DatasetManifest, Preset, RunConfig, RunSummary } from '../../api/types';
 import { JsonBlock } from '../../components/data';
 import { assumptionsLabel, strategyLabel } from '../../components/describe';
 import { PageHeader, usePageTitle } from '../../components/page';
+import { StaticViewerNote } from '../../components/staticViewer';
 import { Badge, Empty, ErrorBox, Panel, Spinner, useAsync } from '../../components/ui';
 import { FieldRow } from './FieldInput';
 import { ScriptedOrdersEditor } from './ScriptedOrdersEditor';
@@ -241,9 +242,11 @@ export default function LabPage() {
   };
 
   const blocked = fieldProblems.length > 0 || ruleProblems.length > 0;
+  // The hosted read-only viewer cannot simulate; the note above the buttons says so.
+  const readOnly = isStaticViewer();
 
   const submit = async (mode: SubmitMode) => {
-    if (!config || blocked || submitting) return;
+    if (!config || blocked || readOnly || submitting) return;
     setSubmitting(mode);
     setSubmitError(null);
     setSubmitNote(null);
@@ -502,13 +505,14 @@ export default function LabPage() {
                   {submitNote}
                 </p>
               ) : null}
+              <StaticViewerNote />
               <div className="row">
-                <button type="submit" className="btn-primary" disabled={blocked || submitting !== null}>
+                <button type="submit" className="btn-primary" disabled={blocked || readOnly || submitting !== null}>
                   {submitting === 'run' ? 'Simulating' : 'Run simulation'}
                 </button>
                 <button
                   type="button"
-                  disabled={blocked || submitting !== null || baseRunId === ''}
+                  disabled={blocked || readOnly || submitting !== null || baseRunId === ''}
                   onClick={() => void submit('scenario_b')}
                   title={baseRunId === '' ? 'Pick a scenario A run first.' : undefined}
                 >

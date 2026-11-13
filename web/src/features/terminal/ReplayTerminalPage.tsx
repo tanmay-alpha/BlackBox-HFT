@@ -595,7 +595,7 @@ function Terminal({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
       {loaded && tl && rp ? (
         <>
           <p className="mono dim small">
-            window <ClockText ns={loaded.win.t0} /> {'\u2192'} <ClockText ns={loaded.win.t1} /> ·{' '}
+            window <ClockText ns={tl.t0} /> {'\u2192'} <ClockText ns={tl.t1} /> ·{' '}
             {fmtInt(tl.events_total)} tape events · {fmtInt(tl.fills.length)} simulated fills ·{' '}
             {fmtInt(tl.orders.length)} orders alive · {fmtInt(rp.depth.length)} depth frames ·{' '}
             {fmtInt(rp.trades.ts.length)} market trades · run span <ClockText ns={tl.run_start} />{' '}

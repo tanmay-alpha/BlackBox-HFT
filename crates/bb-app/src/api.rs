@@ -59,6 +59,7 @@ pub struct Preset {
 
 /// Body of `POST /api/runs`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunRequest {
     pub config: RunConfig,
     #[serde(default)]
