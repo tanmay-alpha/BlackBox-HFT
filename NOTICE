@@ -3,7 +3,7 @@ Third-party software and attributions
 
 This file lists third-party work that BlackBox HFT depends on directly or adapts. Transitive
 dependencies are recorded in Cargo.lock and web/package-lock.json under their own licenses.
-License evidence for each entry is in docs/RESEARCH_AND_SOURCES.md.
+License evidence for each entry is in docs/OPEN_SOURCE_RESEARCH.md.
 
 --------------------------------------------------------------------------------
 HftBacktest

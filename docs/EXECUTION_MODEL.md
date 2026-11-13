@@ -1,4 +1,4 @@
-# Engine notes: hftbacktest 0.9.4
+# Execution model: hftbacktest 0.9.4 inside BlackBox
 
 BlackBox uses the Rust crate `hftbacktest` pinned at exactly `=0.9.4` (crates.io, MIT, published
 2025-12-10) with only the `backtest` feature. The `live` feature (exchange connectivity) is
@@ -6,6 +6,13 @@ disabled, so the binary contains no code that can reach an exchange.
 
 Everything below was established by reading the 0.9.4 source and is pinned by a test where stated.
 Statements about upstream `master` refer to commit `5f3ec40b2a` (2025-12-23).
+
+This page is the single home for engine internals: what is reused, how the flight recorder
+observes the engine, the engine's defects and what BlackBox does about them. The models
+themselves have their own pages: [QUEUE_MODELS.md](QUEUE_MODELS.md) (queue-position formulas),
+[LATENCY_MODEL.md](LATENCY_MODEL.md) (feed, entry and response latency, jitter, order bus) and
+[PNL_ACCOUNTING.md](PNL_ACCOUNTING.md) (ledger and engine cross-check). How the pieces fit
+together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## What BlackBox uses from the engine, unmodified
 
@@ -112,6 +119,35 @@ release (#298).
 
 **Handling.** The adapter calls only `submit_buy_order` and `submit_sell_order`.
 
+### 5. Market orders
+
+Both exchange models mishandle `OrdType::Market`:
+
+- **No price check on an empty side.** `NoPartialFillExchange::ack_new` fills a market buy at
+  `self.depth.best_ask_tick()` (`nopartialfillexchange.rs`, line 372) without checking that an
+  ask exists. On an empty ask side that is the sentinel `INVALID_MAX = i64::MAX`, an absurd
+  execution price; sells are symmetric with `INVALID_MIN`.
+- **A 100-tick sweep window.** `PartialFillExchange` sweeps `best_ask..best_ask + 100` for a
+  market buy and `(best_bid - 100..=best_bid).rev()` for a market sell (`partialfillexchange.rs`,
+  lines 504 and 634, each under the engine's own comment `// todo: set the proper upper/lower
+  bound`). On an empty side the bound arithmetic on the sentinel overflows `i64`: a panic in a
+  debug build, a silently empty range (the order expires) in a release build, so the behaviour
+  depends on the build profile. With liquidity present the sweep never reaches levels more than
+  100 ticks from the touch. On BTCUSDT with tick 0.01 that is $1, while the p99 spread of the
+  Tardis sample is 225 ticks ([MARKET_DATA.md](MARKET_DATA.md#measured-findings-on-the-real-sample)).
+
+Found by the property-based tests (shrunk case: `PartialFill`, zero latency, a sell market order
+on an ask-only book).
+
+**Handling.** BlackBox rejects every market order before it reaches the engine: the tape records
+`risk_blocked` with rule `invalid_order` and a detail explaining why. `RunConfig::validate`
+rejects scripted market orders. A marketable IOC limit order (priced at or through the opposite
+touch) is the supported equivalent; the bundled imbalance taker uses exactly that.
+
+Pinned by `upstream_market_buy_on_empty_ask_fills_at_the_sentinel_tick`,
+`upstream_partial_fill_market_order_scans_only_100_ticks` and
+`adapter_blocks_market_orders_before_the_engine` in `crates/bb-sim/tests/engine_defects.rs`.
+
 ## Recorder pitfalls found in review
 
 An independent review of the adapter against the engine source found four ways the first recorder
@@ -142,8 +178,8 @@ These are what the engine models; the UI labels them as modeled.
 - **Queue position is estimated.** On Market-By-Price data individual orders are invisible. A new
   order is assumed to join behind everything displayed at its price. Trades at the price reduce
   the estimate one for one. For a decrease in displayed quantity with no trade, the configured
-  model decides what share was ahead: `RiskAdverse` assumes none of it, the probability models
-  assume a share that depends on where the order sits in the queue.
+  model decides what share was ahead. Formulas and a worked example:
+  [QUEUE_MODELS.md](QUEUE_MODELS.md).
 - **Fill conditions (resting orders).** Filled when the market trades through the price, when the
   opposite best price crosses it, or when trades at the price exhaust the estimated queue ahead.
   `NoPartialFillExchange` then fills the whole order regardless of the traded quantity.
@@ -159,7 +195,8 @@ These are what the engine models; the UI labels them as modeled.
 ## BlackBox additions that are not the engine's
 
 - **Jitter latency.** `OrderLatencyConfig::Jitter` is a BlackBox model implementing the engine's
-  `LatencyModel` trait: base latency plus a seeded uniform draw. It is labeled as such.
+  `LatencyModel` trait: base latency plus a seeded uniform draw. It is labeled as such; why it is a
+  pure function rather than a random stream is explained in [LATENCY_MODEL.md](LATENCY_MODEL.md).
 - **Strategy tick grid.** Strategies are evaluated every `interval_ns` of local time starting from
   the dataset's first timestamp. The grid does not depend on execution assumptions, which is what
   lets an order id (`tick << 8 | slot`) name the same decision point in two scenarios.

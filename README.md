@@ -47,11 +47,12 @@ BlackBox annotations or post-run derivations.
 
 ## Engine findings
 
-Building the recorder meant reading the pinned engine closely. Four defects in hftbacktest 0.9.4
+Building the recorder meant reading the pinned engine closely. Five defects in hftbacktest 0.9.4
 were found, each pinned by a test against the unwrapped engine, and each handled without forking
 it: non-reproducible ordering of simultaneous fills, an abort after an exactly-completing partial
-fill, an under-counting local account under partial fills, and `submit_order` ignoring the order
-side. Details and evidence: [docs/ENGINE_NOTES.md](docs/ENGINE_NOTES.md).
+fill, an under-counting local account under partial fills, `submit_order` ignoring the order
+side, and market orders that can execute at a sentinel price or stop sweeping after 100 ticks.
+Details and evidence: [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md).
 
 ## Quick start
 
@@ -99,14 +100,14 @@ with others, and they do not allow using the data to offer others a backtesting 
 service. Running BlackBox locally on files you downloaded yourself is research use; hosting a
 public instance over vendor data is a different matter that needs the vendor's agreement. The
 bundled demo and every test fixture use synthetic data only. Quotes and links:
-[docs/RESEARCH_AND_SOURCES.md](docs/RESEARCH_AND_SOURCES.md). This is a summary, not legal advice.
+[docs/OPEN_SOURCE_RESEARCH.md](docs/OPEN_SOURCE_RESEARCH.md). This is a summary, not legal advice.
 
 ## Reproducibility
 
 A run is identified by a hash of the dataset bytes, the engine version and the full configuration
 including the seed. Running the same experiment again returns the same `run_id` and the same
 `result_sha256` over the tape, fills and equity series. The manifest stored with every run records
-all of it.
+all of it. Details and evidence: [docs/EXPERIMENT_REPRODUCIBILITY.md](docs/EXPERIMENT_REPRODUCIBILITY.md).
 
 ## Repository layout
 
@@ -118,16 +119,31 @@ crates/bb-sim         engine adapter, flight recorder, ledger, risk harness
 crates/bb-forensics   order records, explanations, metrics, scenario comparison
 crates/bb-app         pipeline, run store, HTTP API, CLI (binary: blackbox)
 web/                  React + TypeScript UI
-docs/                 API, engine notes, limitations, sources and licenses, build notes
+docs/                 design, models, data, testing, sources and licences (list below)
 ```
 
 ## Documentation
 
-- [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — what the simulation assumes and cannot know
-- [docs/ENGINE_NOTES.md](docs/ENGINE_NOTES.md) — how the engine is used, its defects, the workarounds
-- [docs/RESEARCH_AND_SOURCES.md](docs/RESEARCH_AND_SOURCES.md) — sources, licenses, reuse decisions
-- [docs/API.md](docs/API.md) — HTTP API
-- [docs/BUILDING.md](docs/BUILDING.md) — build requirements and Windows notes
+Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); [docs/INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md)
+explains the concepts from scratch and has a five-minute demo script.
+
+| Document | What it covers |
+|---|---|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, crates, data flow, determinism design, storage, why Rust/axum |
+| [MARKET_DATA.md](docs/MARKET_DATA.md) | Sources, Tardis schema and units, normalization, quality checks, synthetic generator, provenance |
+| [EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md) | How the engine is used and observed, its five defects, the workarounds |
+| [QUEUE_MODELS.md](docs/QUEUE_MODELS.md) | Every queue-position model's formula, a worked example, what L2 cannot reveal |
+| [LATENCY_MODEL.md](docs/LATENCY_MODEL.md) | Feed, entry and response latency, the two clocks, jitter, the order bus |
+| [STRATEGIES.md](docs/STRATEGIES.md) | The bundled strategies, Avellaneda-Stoikov derivation and scaling, no look-ahead |
+| [PNL_ACCOUNTING.md](docs/PNL_ACCOUNTING.md) | Ledger, fees, markouts, spread capture, engine cross-check, reconciliation |
+| [EXPERIMENT_REPRODUCIBILITY.md](docs/EXPERIMENT_REPRODUCIBILITY.md) | Run identity, result hash, manifests, how to reproduce a run |
+| [TESTING.md](docs/TESTING.md) | Test inventory, what each suite proves, what is not tested |
+| [LIMITATIONS.md](docs/LIMITATIONS.md) | What the simulation assumes and cannot know |
+| [OPEN_SOURCE_RESEARCH.md](docs/OPEN_SOURCE_RESEARCH.md) | Prior art, inspected versions, licences, reuse decisions, data terms |
+| [BENCHMARKS.md](docs/BENCHMARKS.md) | Measured replay cost of the adapter versus the stock engine |
+| [API.md](docs/API.md) | HTTP API |
+| [BUILDING.md](docs/BUILDING.md) | Build requirements and Windows notes |
+| [INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md) | Concepts explained from scratch, and a demo script |
 
 ## Acknowledgements
 

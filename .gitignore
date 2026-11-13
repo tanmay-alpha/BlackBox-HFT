@@ -9,7 +9,7 @@
 /rust-toolchain.toml
 
 # All datasets, runs and downloads are generated locally. Vendor market data must never be
-# committed: its terms forbid redistribution, including converted files (docs/RESEARCH_AND_SOURCES.md).
+# committed: its terms forbid redistribution, including converted files (docs/OPEN_SOURCE_RESEARCH.md).
 /data/
 
 # Scratch

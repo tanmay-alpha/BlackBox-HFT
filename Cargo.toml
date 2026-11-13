@@ -12,7 +12,7 @@ repository = "https://github.com/tanmay-alpha/BlackBox-HFT"
 
 [workspace.dependencies]
 # Simulation engine. Exact pin: the adapter relies on 0.9.4 internals that were
-# read and verified (see docs/ENGINE_NOTES.md). Only the backtest feature is used;
+# read and verified (see docs/EXECUTION_MODEL.md). Only the backtest feature is used;
 # `live` (exchange connectivity) is deliberately disabled.
 hftbacktest = { version = "=0.9.4", default-features = false, features = ["backtest"] }
 

@@ -1,8 +1,8 @@
-# Research and Sources
+# Open-source research, sources and licences
 
-Source-and-license record for BlackBox HFT (research-only execution forensics; never trades real money).
+Source-and-licence record for BlackBox HFT (research-only execution forensics; never trades real money): what exists, what was inspected at which version, what BlackBox reuses, what it must not copy, and what it adds.
 
-**Survey date:** 2026-11-13. All GitHub license API calls, HTTP status checks and page reads below were made on that date unless stated otherwise.
+**Survey date:** 2026-11-13. All GitHub license API calls, HTTP status checks and page reads below were made on that date unless stated otherwise. The [inspected versions](#inspected-versions) table and the crates.io / npm registry facts were queried on 2026-11-14.
 
 **Evidence conventions**
 
@@ -32,6 +32,29 @@ Source-and-license record for BlackBox HFT (research-only execution forensics; n
 
 No license fact found in this survey contradicts the lead's reuse decisions. Three facts differ from what the brief or a casual reading would suggest and are flagged in their sections: HFTENGINE does have a LICENSE file with MIT text (section 3); Binance's dataset terms are non-commercial share-alike, not MIT (section 9); the Tardis terms restrict more than redistribution of raw files (section 8).
 
+## Inspected versions
+
+Released artifacts BlackBox depends on are pinned exactly; repositories that were only read are identified by the default-branch commit.
+
+| Source | Version or commit | Evidence |
+|---|---|---|
+| hftbacktest (Rust crate) | **0.9.4**, published 2025-12-10T16:15:47Z, `license` MIT, `rust_version` 1.91.1 | `https://crates.io/api/v1/crates/hftbacktest/0.9.4`; pinned `=0.9.4` in `Cargo.toml`; the source read for [EXECUTION_MODEL.md](EXECUTION_MODEL.md) and [QUEUE_MODELS.md](QUEUE_MODELS.md) is this crate as unpacked by cargo |
+| hftbacktest (repository, Python reference converter) | `master` `5f3ec40b2afb764e0fea112f941ed85523ef4e88` (2025-12-23) | commits API; unchanged since the lead's survey |
+| TradingView Lightweight Charts (npm) | **5.3.0**, `license` Apache-2.0 | `web/package-lock.json` (`node_modules/lightweight-charts`); also the registry's `latest` tag |
+| NautilusTrader | `develop` `d930a10718fe99f36f663bc2dc6478ade83c3af2` (2026-11-13) | commits API |
+| HFTENGINE | `main` `8d7e2904d86d40265b05a366d57e296ee0cd5d98` (2026-09-17) | commits API |
+| market-maker-rs | `ae8cf040d3aa2f2fe9db1987f9e9f1a8a5763344` (2026-11-13) | commits API |
+| ABIDES | `c4bf157678928934417aba6073eb0651aeaf6d15` (2020-11-19) | commits API (the repository's last *push* is 2023-07-06, section 5) |
+| Apache Arrow | `b5dd104162f6c6a5e64a3f0c6ce8519349ea93fa` (2026-11-13) | commits API |
+| DuckDB | `05627314afbd122f5e761169147c720e1b10e4ae` (2026-11-13) | commits API |
+| Databento DBN | `a77693030595b8f29f6b4c58e63b1b1a9d899b3f` (2026-10-27) | commits API |
+| Lightweight Charts (repository) | `aebdfc8f0d85b95e43467ae79516753158d60e61` (2026-11-13) | commits API |
+| binance-public-data | `d571690eb66760763b0bd6e27e8cd35603c7e244` (2026-10-16) | commits API |
+| collect-binancefutures | `27abefde5d6a42db125c59bd47332db58677ba4b` (2024-07-26) | commits API |
+| tardis-node (normalizer read in section 8) | `master` `821adf5d227bda25227ca72f5819dceaab6c90a3` (2026-11-09) | commits API |
+
+Commits come from `https://api.github.com/repos/<owner>/<repo>/commits?per_page=1` (default branch). For a repository whose latest commit is dated 2026-11-13, the survey that day may have read the commit before it; the files cited here (licences, READMEs, one mapper) are the ones quoted below.
+
 ---
 
 ## 1. HftBacktest
@@ -40,13 +63,13 @@ No license fact found in this survey contradicts the lead's reuse decisions. Thr
 - **Purpose for BlackBox:** the simulation engine. BlackBox replays L2 data through it and layers recording, explanation and scenario comparison on top.
 - **License:** MIT.
   - API: `{"spdx":"MIT","path":"LICENSE"}`.
-  - Lead-verified: crates.io metadata for `hftbacktest` 0.9.4 declares license MIT.
+  - crates.io API (2026-11-14): `hftbacktest` 0.9.4 declares license MIT.
 - **Status:** **Reused.**
-  - Rust crate pinned at exactly `=0.9.4` (crates.io, published 2025-12-10, declared `rust-version` 1.91.1). Upstream `master` HEAD at time of the lead's survey: commit `5f3ec40b2a` (2025-12-23). (Lead-verified.)
-  - Only the `backtest` cargo feature is used; `live` and `s3` are disabled. (Lead-verified.)
-  - Two algorithms are **ported to Rust with attribution**, because the Rust crate has no Tardis CSV converter: the converter `py-hftbacktest/hftbacktest/data/utils/tardis.py` and the event-order correction `py-hftbacktest/hftbacktest/data/validation.py` exist only in the Python package. (Lead-verified.)
+  - Rust crate pinned at exactly `=0.9.4` (crates.io, published 2025-12-10, declared `rust-version` 1.91.1; both confirmed through the crates.io API). Upstream `master` HEAD: commit `5f3ec40b2a` (2025-12-23), unchanged on 2026-11-14.
+  - Only the `backtest` cargo feature is used; `live` and `s3` are disabled (`Cargo.toml`: `default-features = false, features = ["backtest"]`).
+  - Two algorithms are **ported to Rust with attribution**, because the Rust crate has no Tardis CSV converter: the converter `py-hftbacktest/hftbacktest/data/utils/tardis.py` and the event-order correction `py-hftbacktest/hftbacktest/data/validation.py` exist only in the Python package (`crates/bb-data/src/tardis.rs`, `crates/bb-data/src/normalize.rs`, both naming their source and licence in the module header). (Lead-verified.)
 - **Compatibility notes:** MIT is permissive; the obligation is to keep the copyright and permission notice with copies or substantial portions, which applies to the two ported algorithms as well as to the dependency. Replay data is stored as hftbacktest-compatible compressed `.npz`.
-- **Engine internals:** the four defects found in 0.9.4 and how BlackBox handles them, which engine items are reused, and what is modeled are documented in [ENGINE_NOTES.md](ENGINE_NOTES.md) and are not repeated here.
+- **Engine internals:** the five defects found in 0.9.4 and how BlackBox handles them, which engine items are reused, and what is modeled are documented in [EXECUTION_MODEL.md](EXECUTION_MODEL.md) and are not repeated here.
 
 ### Relevant technical assumptions (quoted from the docs)
 
@@ -229,7 +252,7 @@ Other statements from the same tutorial that BlackBox relies on:
 - **License:** Apache-2.0.
   - API: `{"spdx":"Apache-2.0","path":"LICENSE"}`.
   - File: `LICENSE` is "Apache License / Version 2.0, January 2004"; its appendix line reads "Copyright 2023 TradingView, Inc."
-  - npm registry (`https://registry.npmjs.org/lightweight-charts/latest`): `{"version":"5.3.0","license":"Apache-2.0"}`. This is the registry's latest version on the survey date, not necessarily the version BlackBox pins.
+  - npm registry (`https://registry.npmjs.org/lightweight-charts/latest`): `{"version":"5.3.0","license":"Apache-2.0"}`. BlackBox pins the same version: `web/package.json` requires `^5.3.0` and `web/package-lock.json` resolves `node_modules/lightweight-charts` to `5.3.0` (`license: Apache-2.0`).
 - **Status:** **Reused** as an npm dependency.
 - **Exact attribution requirement.**
   - `NOTICE` file, complete contents:
@@ -244,7 +267,7 @@ Other statements from the same tutorial that BlackBox relies on:
     > "You can use the [`attributionLogo`](https://tradingview.github.io/lightweight-charts/docs/api/interfaces/LayoutOptions#attributionLogo) chart option for displaying an appropriate link to <https://www.tradingview.com/> on the chart itself, which will satisfy the link requirement."
 
   - `LICENSE`, section 4(d): "If the Work includes a "NOTICE" text file as part of its distribution, then any Derivative Works that You distribute must include a readable copy of the attribution notices contained within such NOTICE file".
-- **Compatibility notes:** compatible with reuse. Two obligations follow for BlackBox: (1) the web UI must show the NOTICE text and a link to <https://www.tradingview.com/> on a page available to users (the `attributionLogo` option satisfies the link part only; the NOTICE text still has to appear somewhere, for example an About or licenses panel); (2) a copy of the Apache-2.0 license and the NOTICE must accompany any distributed bundle. Whether the BlackBox UI currently does this was not checked in this survey (see open items).
+- **Compatibility notes:** compatible with reuse. Two obligations follow for BlackBox: (1) the web UI must show the NOTICE text and a link to <https://www.tradingview.com/> on a page available to users (the `attributionLogo` option satisfies the link part only; the NOTICE text still has to appear somewhere, for example an About or licenses panel); (2) a copy of the Apache-2.0 license and the NOTICE must accompany any distributed bundle. Source check on 2026-11-14: `web/src/features/runs/TimeSeriesChart.tsx` sets `attributionLogo: true`, and `web/src/App.tsx` renders "TradingView Lightweight Charts™, Copyright (c) 2025 TradingView, Inc." with a link to <https://www.tradingview.com/>; the repository `NOTICE` carries the same attribution. Whether a distributed web bundle ships the Apache-2.0 text is a packaging question for the deployment work.
 - **Relevant technical assumptions:** the README also notes "This software incorporates several parts of tslib (<https://github.com/Microsoft/tslib>, (c) Microsoft Corporation) that are covered by BSD Zero Clause License."
 
 ---
@@ -414,6 +437,81 @@ Factual comparison, based on HFTENGINE's README as read on the survey date. HFTE
 
 ---
 
+## Reuse boundaries and licence obligations
+
+| Source | What it implements | BlackBox reuses | Must not copy / use | Obligation that applies today |
+|---|---|---|---|---|
+| hftbacktest 0.9.4 | Replay backtester: event loop, order bus, L2 and L3 exchange models, queue models, latency and fee models, data reader | The crate, unmodified, `backtest` feature only; two Python data-prep algorithms ported | Nothing restricted (MIT) | Keep the MIT notice for the crate and the two ports (`NOTICE`, module headers) |
+| NautilusTrader | Event-driven trading platform for research, simulation and live execution | Ideas only (one time model, typed values) | Any source or linked crate (LGPL-3.0 relinking duties, section 2) | None |
+| HFTENGINE | Replay console for hftbacktest market-making backtests, on a patched fork | Nothing; differentiation baseline | Its code, layouts and text, and its bundled fonts (CC BY-SA 4.0 and SIL OFL, section 3) | None |
+| market-maker-rs | Library of market-making models (Avellaneda-Stoikov, GLFT, grid, ...) | Nothing; the paper is the source of our formulas | Nothing restricted (MIT); none copied | None |
+| ABIDES | Agent-based reactive market simulator | The conceptual contrast only | Nothing restricted (BSD-3-Clause); none copied | None |
+| Arrow, DuckDB, DBN | Columnar storage, embedded SQL, market-data encoding | Nothing linked | n/a | None |
+| Lightweight Charts 5.3.0 | Canvas financial charts | npm dependency, unmodified | n/a | Apache-2.0 licence text with distributions; NOTICE attribution and TradingView link in the UI (section 7) |
+| Tardis.dev data | Recorded exchange feeds as CSV | The file format; users download their own files | The data itself and anything "merely reformatted" from it: never committed, published, or served to others (section 8) | Terms of Service clauses 9.1 to 9.5 |
+| Binance Vision data | Trades, klines, top-of-book archives | Nothing | Data in the repository (CC BY-NC-SA 4.0 plus extra terms, section 9) | None |
+| collect-binancefutures | Raw feed collector | Nothing | Any code (no licence granted, section 10) | None |
+
+## BlackBox's original contributions
+
+Everything in this list is BlackBox's own code; nothing was adapted from the projects above except the two ported data-prep algorithms.
+
+- **Flight recorder over an unmodified engine.** Recording wrappers around the engine's public traits, with deterministic commit order per engine step and a bit-exact read of the private queue estimate ([EXECUTION_MODEL.md](EXECUTION_MODEL.md)).
+- **Five upstream defects found, pinned by tests and worked around** without a fork ([EXECUTION_MODEL.md](EXECUTION_MODEL.md#defects-in-094-and-what-blackbox-does-about-each)).
+- **Order-level forensics:** one lifecycle record per order and a rule-based why-filled / why-not-filled explanation in which every statement carries a basis tag and cites tape events.
+- **Decision-aligned scenario comparison** by stable order id, with first-divergence detection and P&L attribution only where arithmetic proves it; bounded sensitivity grids made of real runs.
+- **An independent ledger** that sees every execution and reconciles with the engine where the engine is right ([PNL_ACCOUNTING.md](PNL_ACCOUNTING.md)).
+- **Strict ingestion and data-quality reports** ([MARKET_DATA.md](MARKET_DATA.md)), and a deterministic synthetic market so the whole system runs without vendor data.
+- **Content-addressed, idempotent run store** ([EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPRODUCIBILITY.md)).
+- **The jitter latency model** as a pure function of seed and request ([LATENCY_MODEL.md](LATENCY_MODEL.md)), and the bundled strategies ([STRATEGIES.md](STRATEGIES.md)).
+
+## Why this architecture
+
+The survey settled three choices; the full reasoning is in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+- **Build on hftbacktest, not on a reactive simulator.** It models L2 queue position, feed latency from two recorded timestamps, and order entry and response latency (section 1), and it is a Rust crate under MIT whose source could be read wherever BlackBox depends on it, which is what made the defect findings possible. ABIDES answers a different question (how a market reacts), which BlackBox does not claim to answer. No feature-by-feature comparison with other engines was made.
+- **Use the published crate, not a fork.** HFTENGINE patches the engine to read queue state; BlackBox reads it through the engine's own public traits instead, so an engine upgrade is a version bump plus the pinned defect tests, not a rebase.
+- **Rust end to end.** The engine is a Rust crate; recording, ledger and forensics run in the same process with no serialisation boundary.
+
+## How hftbacktest and BlackBox interact
+
+```mermaid
+flowchart LR
+  subgraph DATA["bb-data"]
+    CSV["Tardis CSV"] --> NORM["normalize (ported)"]
+    SYN["synthetic generator"] --> NORM
+    NORM --> NPZ["events.npz + dataset.json"]
+  end
+  subgraph ENGINE["hftbacktest 0.9.4, unmodified"]
+    READER["Reader + FeedLatencyAdjustment"] --> BT["Backtest event loop"]
+    BT --> LOCAL["Local"]
+    BT --> EXCH["NoPartialFill / PartialFill exchange"]
+    LOCAL <-->|"order bus"| EXCH
+    EXCH --> QM["queue model"]
+    EXCH --> FEE["State + fee model"]
+    LOCAL --> LAT["latency model"]
+  end
+  subgraph SIM["bb-sim"]
+    HARN["harness: tick grid, risk rules"]
+    TAPS["taps: RecLocal, RecExch, TapQueue, TapLatency, TapFee"]
+    TAPE["Tape: step ordering, ledger"]
+  end
+  NPZ --> READER
+  HARN -->|"submit_buy / submit_sell / cancel"| BT
+  BT -->|"depth, orders, trades"| HARN
+  TAPS -.->|"wrap"| LOCAL
+  TAPS -.->|"wrap"| EXCH
+  TAPS -.->|"wrap"| QM
+  TAPS -.->|"wrap"| LAT
+  TAPS -.->|"wrap"| FEE
+  TAPS --> TAPE
+  TAPE --> FOR["bb-forensics"] --> APP["bb-app: store, API, CLI"] --> WEB["web console"]
+```
+
+Dashed edges are wrappers: each implements the same public engine trait as the model it wraps and delegates every decision to it. BlackBox drives the engine only through `Backtest`'s public API.
+
+---
+
 ## Unverified or open items
 
 | Item | Status | What was tried |
@@ -432,9 +530,9 @@ Factual comparison, based on HFTENGINE's README as read on the survey date. HFTE
 | `Almgren5.pdf` reference on hftbacktest's order_fill page | Not checked | URL not requested. |
 | License of the xoshiro / SplitMix reference C code at prng.di.unimi.it | UNVERIFIED | Only the index page was read. BlackBox does not copy that code. |
 | `apache/arrow-rs` and Rust `duckdb` binding licenses | UNVERIFIED | Not checked because neither is linked in this version. Re-check before adopting. |
-| Lightweight Charts attribution present in the BlackBox UI | Not checked | Outside this survey's scope (no source files inspected). The requirement is quoted in section 7. |
-| Lightweight Charts version pinned by BlackBox | Not checked | Only the registry's latest (5.3.0, Apache-2.0) was read. |
-| hftbacktest crate facts (`=0.9.4`, publish date, MSRV, features, HEAD commit, Python-only converter) | Lead-verified | Recorded as given; only the repository license API call was re-run in this survey. |
+| Lightweight Charts attribution present in the BlackBox UI | Checked 2026-11-14 | `attributionLogo: true` in `TimeSeriesChart.tsx`; NOTICE text and link in `App.tsx` (section 7). Shipping the Apache-2.0 text with a distributed bundle is open. |
+| Lightweight Charts version pinned by BlackBox | Checked 2026-11-14 | `5.3.0` in `web/package-lock.json`, Apache-2.0. |
+| hftbacktest crate facts (`=0.9.4`, publish date, MSRV, features, HEAD commit, Python-only converter) | Verified 2026-11-14 except the converter | crates.io API (version, date, licence, `rust_version`), `Cargo.toml` (features), commits API (HEAD). That the Rust crate has no Tardis converter remains lead-verified. |
 | Tardis sample downloads without an API key | Lead-verified | Documented by Tardis (section 8); the download itself was not repeated in this survey. |
 | Build toolchain: portable WinLibs MinGW-w64 GCC 16.2.0 on the lead's Windows machine | Lead-provided, license UNVERIFIED | Recorded as given. It is not redistributed and is not a runtime dependency. Its license and those of the MinGW-w64 runtime libraries were not checked; if release binaries are distributed, whether the runtime is linked statically, and under which terms, should be confirmed. |
 | Terms and licenses can change | Note | Tardis terms, Binance Vision terms (dated 2026-08-26) and repository licenses reflect the survey date only. |

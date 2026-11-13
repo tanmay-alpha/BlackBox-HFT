@@ -25,7 +25,7 @@ result is quoted here, not merely written.
   fresh-process re-runs on real data give identical `result_sha256`.
 - Reconciliation: ledger vs engine local account agree under the no-partial-fill model on every
   real-data preset; the expected disagreement under partial fills is explained and pinned.
-- Four upstream defects pinned against the unwrapped engine (docs/ENGINE_NOTES.md).
+- Five upstream defects pinned against the unwrapped engine (docs/EXECUTION_MODEL.md).
 - Independent review (gpt-6.1-sol) found 4 recorder defects; all fixed with regression tests.
 
 ### M3 Functional replay interface — in progress
@@ -47,9 +47,16 @@ result is quoted here, not merely written.
 
 ### M6 System quality — in progress
 - Done: 196 Rust tests; benchmarks with hardware and method (docs/BENCHMARKS.md).
+- Measured (lead, i7-14650HX, release build, real 10-min BTCUSDT dataset):
+  - Peak working set of `blackbox run` (Avellaneda-Stoikov, 64,540 tape events, includes writing
+    the run): 78 MB; peak paged 87 MB; simulation wall time 144 ms.
+  - Stored trace: ~465 bytes per tape event as JSON (30.2 MB for 64,540 events). Candidate for
+    compression.
+  - API latency, 20 sequential requests each, local loopback, p50 / p95: health 0.7 / 23.5 ms;
+    replay window 60 s x 25 levels 18.5 / 29.1 ms; orders page 1.1 / 14.4 ms; order detail with
+    explanation 0.8 / 14.8 ms; tape page 1.4 / 1.8 ms; equity series 4.1 / 5.4 ms.
 - Open: property-based tests (proptest) for accounting and order-state invariants; Playwright E2E;
-  security review; recorder overhead optimisation with bit-identical output (PerfTune agent);
-  peak memory and API latency measurements.
+  security review; recorder overhead optimisation with bit-identical output (PerfTune agent).
 
 ### M7 Deployment and presentation — open
 - Done: public repo https://github.com/tanmay-alpha/BlackBox-HFT, CI workflow.
@@ -63,4 +70,4 @@ result is quoted here, not merely written.
   Python service would add a process boundary and serialisation without improving correctness.
   Reasoning in docs/ARCHITECTURE.md.
 - No reactive market / market impact model: replay only, disclosed everywhere.
-- Hosted demo shows synthetic data only (docs/RESEARCH_AND_SOURCES.md, Tardis clause 9.2).
+- Hosted demo shows synthetic data only (docs/OPEN_SOURCE_RESEARCH.md, Tardis clause 9.2).

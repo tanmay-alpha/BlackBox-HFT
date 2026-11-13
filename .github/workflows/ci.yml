@@ -5,41 +5,73 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # Third-party actions are pinned to full commit SHAs (tag in the comment).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build
         run: cargo build --workspace --all-targets --locked
       - name: Test
         # Includes the determinism tests and the pinned upstream-engine defect tests.
         run: cargo test --workspace --locked
       - name: Determinism across processes
-        # Same preset twice in separate processes must give the same result hash.
+        # The same preset simulated in two separate processes must give the same result hash.
         run: |
           set -euo pipefail
           tmp=$(mktemp -d)
           cargo run --release --locked --bin blackbox -- --data-dir "$tmp" synth
-          a=$(cargo run --release --locked --bin blackbox -- --data-dir "$tmp" run --preset maker_baseline | grep -i 'result' | head -1)
+          a=$(cargo run --release --locked --bin blackbox -- --data-dir "$tmp" run --preset maker_baseline | grep '^result sha256')
           rm -rf "$tmp/runs"
-          b=$(cargo run --release --locked --bin blackbox -- --data-dir "$tmp" run --preset maker_baseline | grep -i 'result' | head -1)
+          b=$(cargo run --release --locked --bin blackbox -- --data-dir "$tmp" run --preset maker_baseline | grep '^result sha256')
           echo "$a"; echo "$b"
-          test "$a" = "$b"
+          test -n "$a" && test "$a" = "$b"
 
   web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  audit:
+    # RustSec advisory database check of Cargo.lock.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  docker:
+    # The image must build: it is the documented way to run the full simulator.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build image
+        run: docker build -t blackbox-hft:ci .
+      - name: Serve and answer
+        run: |
+          set -euo pipefail
+          docker run -d --name bb -p 127.0.0.1:8787:8787 blackbox-hft:ci
+          for i in $(seq 60); do curl -sf http://127.0.0.1:8787/api/health && break; sleep 2; done
+          curl -sf http://127.0.0.1:8787/api/datasets | grep -q synthetic-demo
+          docker logs bb | tail -5

@@ -71,17 +71,19 @@ page lists those assumptions and the things the simulation cannot know.
 - P&L uses average-cost accounting and is marked at the locally known mid price. Marking at mid
   ignores the cost of actually closing the position.
 - The engine's own local account under-counts under `PartialFill`; BlackBox reports its own
-  ledger and shows the engine's figures only as a cross-check (docs/ENGINE_NOTES.md).
+  ledger and shows the engine's figures only as a cross-check (docs/EXECUTION_MODEL.md).
 
 ## Strategies and risk
 
 - One instrument per run. No order modification: quotes are replaced by cancel and new order,
   which loses queue position, as it would on most venues.
+- Market orders are not supported: the pinned engine mishandles them (docs/EXECUTION_MODEL.md,
+  defect 5), so the harness blocks them. A marketable IOC limit order is the equivalent.
 - Strategies are evaluated on a fixed time grid, not on every market event. A shorter interval
   reacts faster and costs more compute.
 - The bundled strategies are deliberately simple and exist to exercise the execution model. They
   are not trading advice and their simulated P&L is not a forecast.
-- The drawdown rule is checked on the strategy grid using the locally known mid.
+- The drawdown rule is checked on the strategy grid using the locally known position and mid.
 
 ## Comparisons
 
@@ -99,7 +101,7 @@ page lists those assumptions and the things the simulation cannot know.
 - The same dataset hash, engine version, configuration and seed give the same result hash on the
   same binary and platform. The seed only affects jittered latency; nothing else is random.
 - The engine iterates hash maps internally; BlackBox canonicalizes the order of simultaneous
-  events so this does not leak into results (docs/ENGINE_NOTES.md).
+  events so this does not leak into results (docs/EXECUTION_MODEL.md).
 - Bit-identical results across different platforms are expected but not guaranteed for strategies
   that use transcendental functions (docs/BUILDING.md).
 
