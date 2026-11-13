@@ -1,0 +1,18 @@
+# Build output
+/target/
+/web/node_modules/
+/web/dist/
+
+# Machine-local toolchain workaround (see docs/BUILDING.md)
+/.toolchain/
+/.cargo/config.toml
+/rust-toolchain.toml
+
+# All datasets, runs and downloads are generated locally. Vendor market data must never be
+# committed: its terms forbid redistribution, including converted files (docs/RESEARCH_AND_SOURCES.md).
+/data/
+
+# Scratch
+/.research/
+*.log
+*.tmp
