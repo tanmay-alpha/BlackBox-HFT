@@ -1,0 +1,10 @@
+[package]
+name = "bb-strategies"
+description = "BlackBox HFT deterministic strategies: pure state machines from a LocalView to order intents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bb-core.workspace = true
