@@ -1,0 +1,18 @@
+[package]
+name = "bb-data"
+description = "BlackBox HFT data pipelines: deterministic synthetic L2 generator, Tardis CSV ingestion, normalization, quality checks and the dataset store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+hftbacktest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+flate2.workspace = true
+zip.workspace = true
