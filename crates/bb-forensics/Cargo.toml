@@ -1,0 +1,17 @@
+[package]
+name = "bb-forensics"
+description = "BlackBox HFT execution forensics: order records, metrics, rule-based explanations and scenario comparison over the flight tape."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+bb-sim.workspace = true
+bb-strategies.workspace = true
+bb-data.workspace = true
