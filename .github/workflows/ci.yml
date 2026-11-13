@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+      - name: Test
+        # Includes the determinism tests and the pinned upstream-engine defect tests.
+        run: cargo test --workspace --locked
+      - name: Determinism across processes
+        # Same preset twice in separate processes must give the same result hash.
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          cargo run --release --locked --bin blackbox -- --data-dir "$tmp" synth
+          a=$(cargo run --release --locked --bin blackbox -- --data-dir "$tmp" run --preset maker_baseline | grep -i 'result' | head -1)
+          rm -rf "$tmp/runs"
+          b=$(cargo run --release --locked --bin blackbox -- --data-dir "$tmp" run --preset maker_baseline | grep -i 'result' | head -1)
+          echo "$a"; echo "$b"
+          test "$a" = "$b"
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
