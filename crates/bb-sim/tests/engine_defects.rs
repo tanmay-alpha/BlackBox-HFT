@@ -1,0 +1,227 @@
+//! Defects in the pinned engine (hftbacktest 0.9.4) that BlackBox works around or avoids.
+//!
+//! Each `upstream_*` test drives the *unwrapped* engine through its public builder and asserts the
+//! defective behaviour. They exist so the workarounds rest on evidence, and so that a future
+//! engine upgrade which fixes a defect fails here and prompts removal of the workaround. Each is
+//! paired with a test showing the adapter's behaviour for the same situation.
+
+mod common;
+
+use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
+
+use bb_core::{config::ExchangeModel, strategy::order_id, Side, Tif};
+use common::*;
+use hftbacktest::{
+    backtest::{
+        assettype::LinearAsset,
+        data::{Data, DataSource},
+        models::{
+            CommonFees, ConstantLatency, FeeModel, RiskAdverseQueueModel, TradingValueFeeModel,
+        },
+        Backtest, BacktestError, ExchangeKind, L2AssetBuilder,
+    },
+    depth::HashMapMarketDepth,
+    types::{Bot, ElapseResult, OrdType, Order, OrderRequest, Side as HSide, Status, TimeInForce},
+};
+
+type Depth = HashMapMarketDepth;
+
+/// The stock engine, assembled with its own builder exactly as its documentation shows, with no
+/// BlackBox wrapper anywhere.
+fn raw_engine_with<F>(m: &Mkt, exchange: ExchangeKind, fee_model: F) -> Backtest<Depth>
+where
+    F: FeeModel + Clone + 'static,
+{
+    let asset = L2AssetBuilder::new()
+        .data(vec![DataSource::Data(Data::from_data(&m.rows))])
+        .latency_model(ConstantLatency::new(ENTRY, RESPONSE))
+        .asset_type(LinearAsset::new(INST.contract_size))
+        .fee_model(fee_model)
+        .exchange(exchange)
+        .queue_model(RiskAdverseQueueModel::<Depth>::new())
+        .depth(|| Depth::new(INST.tick_size, INST.lot_size))
+        .build()
+        .expect("asset builds");
+    Backtest::builder()
+        .add_asset(asset)
+        .build()
+        .expect("backtest builds")
+}
+
+fn stock_fees() -> TradingValueFeeModel<CommonFees> {
+    TradingValueFeeModel::new(CommonFees::new(MAKER_FEE, TAKER_FEE))
+}
+
+fn raw_engine(m: &Mkt, exchange: ExchangeKind) -> Backtest<Depth> {
+    raw_engine_with(m, exchange, stock_fees())
+}
+
+/// Runs the raw engine to the end of data, returning the first error if any.
+fn drain(hbt: &mut Backtest<Depth>) -> Result<(), BacktestError> {
+    loop {
+        if hbt.elapse(INTERVAL)? == ElapseResult::EndOfData {
+            return Ok(());
+        }
+    }
+}
+
+/// Queue of 5 ahead of a 3-lot buy at 100.0. A trade of 6 fills 1, a trade of 2 fills exactly the
+/// remaining 2, then one more trade prints at 100.0.
+fn exact_completion_market() -> Mkt {
+    let mut m = Mkt::standard();
+    m.trade(20 * MS, Side::Sell, 100.0, 6.0)
+        .bid(20 * MS, 100.0, 4.0)
+        .trade(30 * MS, Side::Sell, 100.0, 2.0)
+        .bid(30 * MS, 100.0, 2.0)
+        .trade(40 * MS, Side::Sell, 100.0, 1.0)
+        .bid(40 * MS, 100.0, 1.0)
+        .keepalive(80 * MS);
+    m
+}
+
+#[test]
+fn upstream_partial_fill_exchange_aborts_after_an_exact_completion() {
+    let m = exact_completion_market();
+    let mut hbt = raw_engine(&m, ExchangeKind::PartialFillExchange);
+    assert_eq!(hbt.elapse(INTERVAL).unwrap(), ElapseResult::Ok);
+    hbt.submit_buy_order(0, 1, 100.0, 3.0, TimeInForce::GTC, OrdType::Limit, false)
+        .unwrap();
+    let err = drain(&mut hbt).expect_err("0.9.4 aborts on the trade after an exact completion");
+    assert!(matches!(err, BacktestError::InvalidOrderStatus), "{err:?}");
+}
+
+#[test]
+fn adapter_survives_an_exact_completion() {
+    let m = exact_completion_market();
+    let mut cfg = config();
+    cfg.execution.exchange_model = ExchangeModel::PartialFill;
+    let out = try_run(&m, &cfg, vec![(0, buy(0, 100.0, 3.0, Tif::Gtc))])
+        .expect("the adapter's queue wrapper routes the exchange through its removal branch");
+    let fills: Vec<(i64, f64)> = out.fills.iter().map(|f| (f.ts, f.qty)).collect();
+    // The same two executions; the third trade finds no order left to fill.
+    assert_eq!(fills, [(20 * MS, 1.0), (30 * MS, 2.0)]);
+    assert_eq!(out.equity.last().unwrap().position, 3.0);
+    let ev = of(&out, order_id(0, 0));
+    assert_eq!(ev.last().unwrap().body.type_name(), "local_response");
+}
+
+/// The workaround must not change what gets executed when a trade overshoots the remainder or
+/// falls short of it.
+#[test]
+fn adapter_completion_workaround_leaves_other_cases_unchanged() {
+    let mut cfg = config();
+    cfg.execution.exchange_model = ExchangeModel::PartialFill;
+
+    // Overshoot: 5 ahead, trade of 9 -> 4 executable against a 3-lot order -> fills 3.
+    let mut m = Mkt::standard();
+    m.trade(20 * MS, Side::Sell, 100.0, 9.0)
+        .bid(20 * MS, 100.0, 1.0)
+        .keepalive(80 * MS);
+    let out = run(&m, &cfg, vec![(0, buy(0, 100.0, 3.0, Tif::Gtc))]);
+    assert_eq!(out.fills.iter().map(|f| f.qty).collect::<Vec<_>>(), [3.0]);
+
+    // Shortfall: trade of 7 -> 2 executable -> fills 2, 1 keeps resting.
+    let mut m = Mkt::standard();
+    m.trade(20 * MS, Side::Sell, 100.0, 7.0)
+        .bid(20 * MS, 100.0, 3.0)
+        .keepalive(80 * MS);
+    let out = run(&m, &cfg, vec![(0, buy(0, 100.0, 3.0, Tif::Gtc))]);
+    assert_eq!(out.fills.iter().map(|f| f.qty).collect::<Vec<_>>(), [2.0]);
+    assert_eq!(out.equity.last().unwrap().open_orders, 1);
+}
+
+#[test]
+fn upstream_submit_order_ignores_the_requested_side() {
+    let mut m = Mkt::standard();
+    m.keepalive(80 * MS);
+    let mut hbt = raw_engine(&m, ExchangeKind::NoPartialFillExchange);
+    hbt.elapse(INTERVAL).unwrap();
+    hbt.submit_order(
+        0,
+        OrderRequest {
+            order_id: 7,
+            price: 100.0,
+            qty: 1.0,
+            side: HSide::Buy,
+            time_in_force: TimeInForce::GTC,
+            order_type: OrdType::Limit,
+        },
+        false,
+    )
+    .unwrap();
+    // A buy was requested; 0.9.4 records a sell. The adapter never calls this method.
+    assert_eq!(hbt.orders(0)[&7].side, HSide::Sell);
+}
+
+#[test]
+fn upstream_local_account_undercounts_partial_fills() {
+    let mut m = Mkt::standard();
+    m.trade(20 * MS, Side::Sell, 100.0, 6.0)
+        .bid(20 * MS, 100.0, 4.0)
+        .trade(30 * MS, Side::Sell, 100.0, 3.0)
+        .bid(30 * MS, 100.0, 1.0)
+        .keepalive(80 * MS);
+    let mut hbt = raw_engine(&m, ExchangeKind::PartialFillExchange);
+    hbt.elapse(INTERVAL).unwrap();
+    hbt.submit_buy_order(0, 1, 100.0, 3.0, TimeInForce::GTC, OrdType::Limit, false)
+        .unwrap();
+    drain(&mut hbt).unwrap();
+    // The order is completely filled (1 then 2) ...
+    assert_eq!(hbt.orders(0)[&1].status, Status::Filled);
+    // ... but the engine's local account only applied the final response's 2.
+    assert_eq!(hbt.position(0), 2.0);
+    assert_eq!(hbt.state_values(0).num_trades, 1);
+}
+
+/// A fee model that notes which order each execution belongs to, in the order the engine reports
+/// them.
+#[derive(Clone)]
+struct NotingFee {
+    inner: TradingValueFeeModel<CommonFees>,
+    seen: Rc<RefCell<Vec<u64>>>,
+}
+
+impl FeeModel for NotingFee {
+    fn amount(&self, order: &Order, amount: f64) -> f64 {
+        self.seen.borrow_mut().push(order.order_id);
+        self.inner.amount(order, amount)
+    }
+}
+
+/// One market event fills eight resting orders. The unwrapped engine walks a randomly seeded
+/// `HashMap` to find them, so the order in which it executes them changes from run to run. This
+/// is why the recorder commits each engine step sorted by order id (see `tests/determinism.rs`).
+#[test]
+fn upstream_simultaneous_fill_order_is_not_reproducible() {
+    let mut m = Mkt::standard();
+    m.trade(40 * MS, Side::Sell, 90.0, 1.0).keepalive(120 * MS);
+    let mut sequences: BTreeSet<Vec<u64>> = BTreeSet::new();
+    for _ in 0..40 {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut hbt = raw_engine_with(
+            &m,
+            ExchangeKind::NoPartialFillExchange,
+            NotingFee {
+                inner: stock_fees(),
+                seen: seen.clone(),
+            },
+        );
+        hbt.elapse(INTERVAL).unwrap();
+        for id in 1..=8u64 {
+            let px = [100.0, 99.5, 99.0][id as usize % 3];
+            hbt.submit_buy_order(0, id, px, 1.0, TimeInForce::GTC, OrdType::Limit, false)
+                .unwrap();
+        }
+        drain(&mut hbt).unwrap();
+        // The exchange side reports its eight executions first, in its iteration order.
+        let exchange_order: Vec<u64> = seen.borrow()[..8].to_vec();
+        let mut sorted = exchange_order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (1..=8).collect::<Vec<u64>>());
+        sequences.insert(exchange_order);
+    }
+    assert!(
+        sequences.len() > 1,
+        "expected run-to-run variation in execution order, saw only {sequences:?}"
+    );
+}

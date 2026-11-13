@@ -1,0 +1,18 @@
+[package]
+name = "bb-sim"
+description = "BlackBox HFT simulation adapter and flight recorder around the pinned hftbacktest engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+hftbacktest.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The real bundled strategies, for end-to-end invariant tests of the adapter.
+bb-strategies.workspace = true
+# Dataset generation and loading for `examples/bench.rs`.
+bb-data.workspace = true
