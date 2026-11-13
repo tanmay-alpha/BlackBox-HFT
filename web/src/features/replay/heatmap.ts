@@ -76,6 +76,23 @@ export interface HeatmapOptions {
   onView?: (v0: number, v1: number) => void;
   /** The user clicked the plot to place the playback cursor at `t`. */
   onCursor?: (t: number) => void;
+  /**
+   * Extra marks drawn inside the clipped plot after trades (part of the cached scene, so it is
+   * repainted with the data and view, not with the cursor). Coordinates are device pixels.
+   */
+  paintExtra?: (ctx: CanvasRenderingContext2D, xf: HeatmapTransform) => void;
+}
+
+/** Coordinate mapping handed to `paintExtra`, valid only for the duration of the call. */
+export interface HeatmapTransform {
+  /** Device-pixel x of a time (exchange clock, relative ns). */
+  xOf: (t: number) => number;
+  /** Device-pixel y of a price tick. */
+  yOf: (tick: number) => number;
+  dpr: number;
+  /** Visible time range. */
+  v0: number;
+  v1: number;
 }
 
 type Rgb = [number, number, number];
@@ -298,6 +315,8 @@ export class HeatmapRenderer {
 
   private sceneDirty = true;
   private raf = 0;
+  /** Scratch bitmap for `paintHeatDense`, reused between paints. */
+  private dense: HTMLCanvasElement | null = null;
   private destroyed = false;
   private dprQuery: MediaQueryList | null = null;
 
@@ -376,6 +395,12 @@ export class HeatmapRenderer {
 
   setFormatPrice(formatPrice: (tick: number) => string): void {
     this.opts = { ...this.opts, formatPrice };
+    this.invalidate(true);
+  }
+
+  /** Replaces the `paintExtra` callback (or removes it with `undefined`) and repaints. */
+  setPaintExtra(paintExtra: HeatmapOptions['paintExtra']): void {
+    this.opts = { ...this.opts, paintExtra };
     this.invalidate(true);
   }
 
@@ -708,6 +733,15 @@ export class HeatmapRenderer {
     this.paintHeat(ctx, win);
     this.paintBbo(ctx, win);
     this.paintTrades(ctx, win);
+    if (this.opts.paintExtra) {
+      this.opts.paintExtra(ctx, {
+        xOf: (t) => this.xOf(t),
+        yOf: (tick) => this.yOf(tick),
+        dpr: this.dpr,
+        v0: this.v0,
+        v1: this.v1,
+      });
+    }
 
     ctx.restore();
     this.paintAxes(ctx);
@@ -737,9 +771,13 @@ export class HeatmapRenderer {
     if (r1 <= r0) return;
     const dy0 = this.yOf(topEdge - r0 * heat.ticksPerRow);
     const dy1 = this.yOf(topEdge - r1 * heat.ticksPerRow);
-    // Nearest-neighbour keeps cells crisp; smoothing is only used when several ticks share one
-    // device pixel, where it averages instead of dropping rows.
-    ctx.imageSmoothingEnabled = r1 - r0 > dy1 - dy0;
+    if (r1 - r0 > dy1 - dy0) {
+      // More price rows than device pixels: scaling the per-tick bitmap down would average
+      // sparse levels with the background until they vanish. Rasterise per view instead.
+      this.paintHeatDense(ctx, win);
+      return;
+    }
+    ctx.imageSmoothingEnabled = false;
     const i0 = Math.max(0, frameIndexAt(depth, this.v0));
     for (let i = i0; i < depth.length; i += 1) {
       const ts = depth[i].ts;
@@ -749,6 +787,81 @@ export class HeatmapRenderer {
       const x1 = Math.round(this.xOf(te));
       if (x1 <= x0) continue;
       ctx.drawImage(heat.canvas, i, r0, 1, r1 - r0, x0, dy0, x1 - x0, dy1 - dy0);
+    }
+    ctx.imageSmoothingEnabled = true;
+  }
+
+  /**
+   * Heat layer for views where several ticks share a device pixel: every level covers at least
+   * one device row, and a row shared by several levels shows the largest of them (per side).
+   */
+  private paintHeatDense(ctx: CanvasRenderingContext2D, win: ReplayWindow): void {
+    const depth = win.depth;
+    const { plotY } = this;
+    const H = Math.max(1, Math.round(this.plotH));
+    const i0 = Math.max(0, frameIndexAt(depth, this.v0));
+    let i1 = i0;
+    while (i1 < depth.length && depth[i1].ts < this.v1) i1 += 1;
+    const n = i1 - i0;
+    if (n <= 0) return;
+
+    const bidQty = new Float32Array(n * H);
+    const askQty = new Float32Array(n * H);
+    const fill = (table: Float32Array, col: number, levels: [number, number][]) => {
+      for (let k = 0; k < levels.length; k += 1) {
+        const [tick, qty] = levels[k];
+        if (!(qty > 0)) continue;
+        const py0 = Math.max(0, Math.floor(this.yOf(tick + 0.5) - plotY));
+        const py1 = Math.min(H, Math.max(py0 + 1, Math.ceil(this.yOf(tick - 0.5) - plotY)));
+        for (let row = py0; row < py1; row += 1) {
+          const c = row * n + col;
+          if (qty > table[c]) table[c] = qty;
+        }
+      }
+    };
+    for (let j = 0; j < n; j += 1) {
+      const f = depth[i0 + j];
+      fill(bidQty, j, f.bids);
+      fill(askQty, j, f.asks);
+    }
+
+    const { theme, scale } = this.opts;
+    const bg = cssToRgb(theme.bg);
+    const bid = cssToRgb(theme.buy);
+    const ask = cssToRgb(theme.sell);
+    const qRef = this.stats.qRef;
+    const dense = this.dense ?? document.createElement('canvas');
+    this.dense = dense;
+    dense.width = n;
+    dense.height = H;
+    const dctx = dense.getContext('2d');
+    if (!dctx) return;
+    const img = dctx.createImageData(n, H);
+    const px = img.data;
+    for (let c = 0; c < n * H; c += 1) {
+      const b = bidQty[c];
+      const a = askQty[c];
+      let rgb = bg;
+      if (a > 0 || b > 0) {
+        rgb = a > b ? mix(bg, ask, intensity(a, qRef, scale)) : mix(bg, bid, intensity(b, qRef, scale));
+      }
+      const o = c * 4;
+      px[o] = rgb[0];
+      px[o + 1] = rgb[1];
+      px[o + 2] = rgb[2];
+      px[o + 3] = 255;
+    }
+    dctx.putImageData(img, 0, 0);
+
+    ctx.imageSmoothingEnabled = false;
+    for (let j = 0; j < n; j += 1) {
+      const i = i0 + j;
+      const ts = depth[i].ts;
+      const te = i + 1 < depth.length ? depth[i + 1].ts : Math.max(win.t1, ts);
+      const x0 = Math.round(this.xOf(ts));
+      const x1 = Math.round(this.xOf(te));
+      if (x1 <= x0) continue;
+      ctx.drawImage(dense, j, 0, 1, H, x0, plotY, x1 - x0, H);
     }
     ctx.imageSmoothingEnabled = true;
   }

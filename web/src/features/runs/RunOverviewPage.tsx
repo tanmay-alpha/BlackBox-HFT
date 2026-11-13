@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import { api } from '../../api/client';
+import { api, exportUrl, reportUrl } from '../../api/client';
 import type { InstrumentMeta, Metrics, OrderOutcome, RunSummary, Side } from '../../api/types';
 import { JsonBlock, Pager, QuantileTable } from '../../components/data';
 import { ORDER_OUTCOMES, OUTCOME_MEANING } from '../../components/describe';
@@ -59,6 +59,9 @@ function RunOverview({ runId }: { runId: string }) {
           <>
             <Link className="btn" to="/runs">All runs</Link>
             <Link className="btn" to={`/compare?a=${encodeURIComponent(runId)}`}>Compare with…</Link>
+            <Link className="btn" to={`/runs/${encodeURIComponent(runId)}/replay`}>Open in Replay Terminal</Link>
+            <a className="btn" href={reportUrl(runId)} download>Download report (.md)</a>
+            <a className="btn" href={exportUrl(runId)} download>Download run (.json)</a>
             <Link className="btn btn-primary" to={`/lab?from=${encodeURIComponent(runId)}`}>Open in Lab</Link>
             <button type="button" onClick={run.reload} disabled={run.loading}>Reload run</button>
           </>

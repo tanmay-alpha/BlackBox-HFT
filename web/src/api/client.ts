@@ -6,6 +6,7 @@ import type {
   CompareRequest,
   Comparison,
   DatasetManifest,
+  Demo,
   EngineStateCheck,
   EquitySample,
   FillRecord,
@@ -20,8 +21,10 @@ import type {
   ReplayWindow,
   RunRequest,
   RunSummary,
+  RunTimeline,
   TapePage,
   TapeQuery,
+  TimelineQuery,
 } from './types';
 
 /**
@@ -206,6 +209,29 @@ export const api = {
   grid(spec: GridSpec): Promise<GridResult> {
     return request<GridResult>('POST', '/grids', { body: spec });
   },
+
+  /**
+   * Tape events, fills, account samples and live orders of a run for one time window. Callers
+   * keep windows short (the server defaults to 60 s) and page as the cursor moves.
+   */
+  timeline(runId: string, query: TimelineQuery = {}): Promise<RunTimeline> {
+    return request<RunTimeline>('GET', `/runs/${enc(runId)}/timeline`, { query });
+  },
+
+  /** The canonical experiments for a dataset (default: the server's first dataset). */
+  demos(datasetId?: string): Promise<Demo[]> {
+    return request<Demo[]>('GET', '/demos', { query: { dataset_id: datasetId } });
+  },
 };
 
 export type Api = typeof api;
+
+/** Download address of a run's research report (Markdown attachment). */
+export function reportUrl(runId: string): string {
+  return `${BASE}/runs/${enc(runId)}/report`;
+}
+
+/** Download address of a complete run (`RunResult` JSON attachment). */
+export function exportUrl(runId: string): string {
+  return `${BASE}/runs/${enc(runId)}/export`;
+}

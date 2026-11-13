@@ -18,6 +18,7 @@ import {
   fmtNum,
   fmtOriginUtc,
   fmtPct,
+  humanizeNsText,
   stepDecimals,
 } from '../../components/fmt';
 import { PageHeader, usePageTitle } from '../../components/page';
@@ -117,7 +118,7 @@ function CheckRow({ check }: { check: QualityCheck }) {
       <td className="wrap">{check.title}</td>
       <td className="num">{fmtInt(check.count)}</td>
       <td className="wrap">
-        {check.detail}
+        {humanizeNsText(check.detail)}
         {check.examples.length > 0 ? (
           <details className="check-examples">
             <summary>
@@ -126,7 +127,7 @@ function CheckRow({ check }: { check: QualityCheck }) {
             <ul className="mono small">
               {check.examples.map((ex, i) => (
                 <li key={i} className="wrap-anywhere">
-                  {ex}
+                  {humanizeNsText(ex)}
                 </li>
               ))}
             </ul>
@@ -297,7 +298,9 @@ function DatasetCard({ ds }: { ds: DatasetManifest }) {
                 ) : null}
               </dd>
               <dt>Note</dt>
-              <dd className="prose">{ds.timestamps.note || <span className="dim">none</span>}</dd>
+              <dd className="prose">
+                {ds.timestamps.note ? humanizeNsText(ds.timestamps.note) : <span className="dim">none</span>}
+              </dd>
             </dl>
           </section>
 

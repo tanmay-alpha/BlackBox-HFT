@@ -974,6 +974,60 @@ export interface CompareRequest {
   b: string;
 }
 
+export interface TimelineQuery {
+  /** Default: run start (first equity sample ts, else 0). */
+  t0?: number | null;
+  /** Default: min(run end, t0 + 60 s). */
+  t1?: number | null;
+  /** Default 5000, max 50000. */
+  max_events?: number | null;
+}
+
+/** Everything the run-level replay terminal overlays on the dataset's `ReplayWindow` for [t0, t1]. */
+export interface RunTimeline {
+  run_id: string;
+  dataset_id: string;
+  t0: RelNs;
+  t1: RelNs;
+  /** Tape events whose `ts` is in [t0, t1] on either clock, in `seq` order, capped (earliest kept). */
+  events: FlightEvent[];
+  /** In the window before capping. */
+  events_total: number;
+  events_truncated: boolean;
+  /** Fills with exchange ts in [t0, t1]. */
+  fills: FillRecord[];
+  /** Samples with ts in [t0, t1], plus the last sample before t0 when one exists. */
+  equity: EquitySample[];
+  /** Orders alive at some point in [t0, t1]. Ascending `order_id`. */
+  orders: OrderRecord[];
+  /** Run span: first and last equity sample ts. */
+  run_start: RelNs;
+  run_end: RelNs;
+}
+
+/** A canonical, reproducible experiment: run configurations that differ only in `varied`. */
+export interface Demo {
+  /** `"cost_of_latency"`, `"queue_position"` or `"gross_vs_net"`. */
+  id: string;
+  title: string;
+  /** The research question in one sentence. */
+  question: string;
+  /** Dotted `RunConfig` paths that differ between the runs. */
+  varied: string[];
+  /** Plain-language list of what is held identical. */
+  controlled: string[];
+  /** How to read the result, without asserting what it will be. */
+  how_to_read: string;
+  runs: DemoRun[];
+  /** CLI commands that reproduce every run of the demo. */
+  reproduce: string[];
+}
+
+export interface DemoRun {
+  label: string;
+  config: RunConfig;
+}
+
 /** Body of every non-2xx response. */
 export interface ApiErrorBody {
   error: { code: string; message: string };

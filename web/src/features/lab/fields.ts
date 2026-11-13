@@ -33,6 +33,7 @@ import {
   queueModelHasExponent,
 } from '../../components/describe';
 import type { QueueModelType } from '../../components/describe';
+import { MAX_INTERVAL_NS, MAX_LATENCY_NS, MIN_INTERVAL_NS } from './validate';
 
 // ----- descriptor types -------------------------------------------------------------------
 
@@ -82,6 +83,8 @@ export interface SelectOption {
   label: string;
   /** One line: what this choice models. */
   help?: string;
+  /** Shown but not selectable; `help` says why. */
+  disabled?: boolean;
 }
 
 export interface SelectField<T> extends FieldCommon {
@@ -140,8 +143,10 @@ export function fieldProblem<T>(field: Field<T>, obj: T): string | null {
   if (v === null) return null;
   if (!Number.isFinite(v)) return 'Enter a number.';
   if (field.integer && !Number.isInteger(v)) return 'Must be a whole number.';
-  const shown = (stored: number) =>
-    field.kind === 'number' && field.convert ? field.convert.toDisplay(stored) : stored;
+  const shown = (stored: number) => {
+    const display = field.kind === 'number' && field.convert ? field.convert.toDisplay(stored) : stored;
+    return field.unit ? `${display} ${field.unit}` : String(display);
+  };
   if (field.min !== undefined && v < field.min) return `Must be at least ${shown(field.min)}.`;
   if (field.max !== undefined && v > field.max) return `Must be at most ${shown(field.max)}.`;
   if (field.integer && Math.abs(v) > SAFE_MAX) return 'Too large to be sent exactly.';
@@ -317,11 +322,12 @@ function strategyFields(c: RunConfig, ctx: SectionContext): Field<RunConfig>[] {
       kind: 'number',
       id: 'strategy.interval_ns',
       label: 'Evaluation interval',
-      help: 'Local-clock time between strategy evaluations. Every strategy runs on this fixed grid, which is what lets two scenarios be aligned decision by decision.',
+      help: 'Local-clock time between strategy evaluations, from 1 ms to 1 h. Every strategy runs on this fixed grid, which is what lets two scenarios be aligned decision by decision.',
       integer: true,
       unit: 'ms',
       convert: MS_TO_NS,
-      max: SAFE_MAX,
+      min: MIN_INTERVAL_NS,
+      max: MAX_INTERVAL_NS,
       get: (x) => x.strategy.interval_ns,
       set: (x, v) => ({ ...x, strategy: { ...x.strategy, interval_ns: v } }),
     },
@@ -615,11 +621,12 @@ function latencyFields(c: RunConfig): Field<RunConfig>[] {
       kind: 'number',
       id: 'execution.order_latency.entry_ns',
       label: 'Entry latency',
-      help: 'Time for a request to travel from the strategy host to the exchange. Applies to new orders and cancels alike.',
+      help: 'Time for a request to travel from the strategy host to the exchange, at most 60 s. Applies to new orders and cancels alike.',
       integer: true,
       unit: 'ms',
       convert: MS_TO_NS,
-      max: SAFE_MAX,
+      min: 0,
+      max: MAX_LATENCY_NS,
       get: (x) => x.execution.order_latency.entry_ns,
       set: (x, v) => withLatency(x, { entry_ns: v }),
     },
@@ -627,11 +634,12 @@ function latencyFields(c: RunConfig): Field<RunConfig>[] {
       kind: 'number',
       id: 'execution.order_latency.response_ns',
       label: 'Response latency',
-      help: 'Time for the exchange\u2019s response (acknowledgement, fill, cancel) to reach the strategy host.',
+      help: 'Time for the exchange\u2019s response (acknowledgement, fill, cancel) to reach the strategy host, at most 60 s.',
       integer: true,
       unit: 'ms',
       convert: MS_TO_NS,
-      max: SAFE_MAX,
+      min: 0,
+      max: MAX_LATENCY_NS,
       get: (x) => x.execution.order_latency.response_ns,
       set: (x, v) => withLatency(x, { response_ns: v }),
     },
@@ -641,11 +649,12 @@ function latencyFields(c: RunConfig): Field<RunConfig>[] {
       kind: 'number',
       id: 'execution.order_latency.jitter_ns',
       label: 'Jitter range',
-      help: 'Upper end of the uniform draw added to each request\u2019s latency. Draws are seeded, so a run is reproducible.',
+      help: 'Upper end of the uniform draw added to each request\u2019s latency, at most 60 s. Draws are seeded, so a run is reproducible.',
       integer: true,
       unit: 'ms',
       convert: MS_TO_NS,
-      max: SAFE_MAX,
+      min: 0,
+      max: MAX_LATENCY_NS,
       get: (x) =>
         x.execution.order_latency.type === 'jitter'
           ? x.execution.order_latency.jitter_ns
@@ -713,11 +722,12 @@ export function buildSections(c: RunConfig, ctx: SectionContext): Section[] {
           kind: 'number',
           id: 'execution.feed_latency_offset_ns',
           label: 'Feed latency offset',
-          help: 'Added to every feed event\u2019s local receipt time. Zero keeps the dataset\u2019s own exchange-to-local latency. Cannot be negative: the strategy must never see an event before the dataset says it was received.',
+          help: 'Added to every feed event\u2019s local receipt time, at most 60 s. Zero keeps the dataset\u2019s own exchange-to-local latency. Cannot be negative: the strategy must never see an event before the dataset says it was received.',
           integer: true,
           unit: 'ms',
           convert: MS_TO_NS,
-          max: SAFE_MAX,
+          min: 0,
+          max: MAX_LATENCY_NS,
           get: (x) => x.execution.feed_latency_offset_ns,
           set: (x, v) => withExecution(x, { feed_latency_offset_ns: v }),
         },
@@ -959,11 +969,20 @@ export const SCRIPTED_ORDER_FIELDS: Field<ScriptedOrder>[] = [
     kind: 'select',
     id: 'ord_type',
     label: 'Type',
-    help: 'Limit or market order.',
-    options: ORD_TYPES.map((t) => ({ value: t, label: t })),
+    help: 'Limit order. Market orders are listed but not available: hftbacktest 0.9.4 mishandles them (docs/EXECUTION_MODEL.md, defect 5); an immediate-or-cancel limit order priced through the touch takes liquidity instead.',
+    options: ORD_TYPES.map((t) =>
+      t === 'market'
+        ? {
+            value: t,
+            label: 'market (not supported)',
+            help: 'Rejected by the server: market orders are not supported on hftbacktest 0.9.4 (defect 5). Use an IOC limit order.',
+            disabled: true,
+          }
+        : { value: t, label: t },
+    ),
     get: (o) => o.ord_type,
     set: (o, v) => {
-      const ord_type = ORD_TYPES.find((t) => t === v);
+      const ord_type = ORD_TYPES.find((t) => t === v && t !== 'market');
       return ord_type ? { ...o, ord_type } : o;
     },
   },

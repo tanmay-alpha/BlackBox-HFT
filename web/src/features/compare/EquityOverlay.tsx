@@ -203,9 +203,11 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
           <li>
             <span className="cmp-line cmp-line-b" aria-hidden="true" /> B
           </li>
-          <li>
-            <span className="cmp-line cmp-line-div" aria-hidden="true" /> first divergence
-          </li>
+          {divergenceTs !== null ? (
+            <li>
+              <span className="cmp-line cmp-line-div" aria-hidden="true" /> first divergence
+            </li>
+          ) : null}
         </ul>
         <span className="cmp-equity-read mono" aria-hidden="true">
           {cursorTs === null ? (

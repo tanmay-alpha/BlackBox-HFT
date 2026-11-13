@@ -239,7 +239,7 @@ export function LatencyTable({
             <td>
               <Badge kind={row.kind}>{row.nature}</Badge>
             </td>
-            <td className="dim">{row.note}</td>
+            <td className="dim wrap">{row.note}</td>
           </tr>
         ))}
       </tbody>
@@ -375,7 +375,7 @@ export function DecisionContext({
           </tr>
           <tr>
             <th scope="row">Strategy's stated reason</th>
-            <td>{reason}</td>
+            <td className="wrap">{reason}</td>
           </tr>
         </tbody>
       </table>

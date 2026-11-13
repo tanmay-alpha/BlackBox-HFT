@@ -659,7 +659,8 @@ details[open] > summary {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   gap: 1px;
-  background: var(--border);
+  /* Cell rules come from each stat's shadow, so the unused end of a short last row stays plain. */
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -672,6 +673,9 @@ details[open] > summary {
   padding: 7px 9px;
   background: var(--surface);
   min-width: 0;
+  box-shadow:
+    1px 0 0 var(--border),
+    0 1px 0 var(--border);
 }
 
 .stat-label {

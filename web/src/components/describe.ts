@@ -118,9 +118,12 @@ export function fractionToBps(fraction: number): number {
   return Number((fraction * 10_000).toPrecision(12));
 }
 
-/** Basis points to a fraction of traded value. Division keeps `7 bp` exactly `0.0007`. */
+/**
+ * Basis points to a fraction of traded value. Division keeps `7 bp` exactly `0.0007`; the
+ * precision round trims results such as `0.3 / 10000 = 0.000029999999999999997` to `0.00003`.
+ */
 export function bpsToFraction(bps: number): number {
-  return bps / 10_000;
+  return Number((bps / 10_000).toPrecision(12));
 }
 
 export function feeLabel(f: FeeConfig): string {

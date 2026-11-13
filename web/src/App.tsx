@@ -11,9 +11,12 @@ import DatasetsPage from './features/datasets/DatasetsPage';
 import OrderForensicsPage from './features/forensics/OrderForensicsPage';
 import GridPage from './features/grid/GridPage';
 import LabPage from './features/lab/LabPage';
+import LatencyLabPage from './features/latency/LatencyLabPage';
+import MissionControlPage from './features/mission/MissionControlPage';
 import ReplayPage from './features/replay/ReplayPage';
 import RunOverviewPage from './features/runs/RunOverviewPage';
 import RunsPage from './features/runs/RunsPage';
+import ReplayTerminalPage from './features/terminal/ReplayTerminalPage';
 
 /** Shown on every page. The wording is fixed by the product's honesty rules. */
 const RESEARCH_BANNER =
@@ -28,9 +31,11 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { to: '/', label: 'Datasets', end: true, also: ['/replay'] },
+  { to: '/', label: 'Mission Control', end: true },
+  { to: '/datasets', label: 'Datasets', also: ['/replay'] },
   { to: '/lab', label: 'Strategy Lab' },
   { to: '/runs', label: 'Runs' },
+  { to: '/latency', label: 'Latency Lab' },
   { to: '/compare', label: 'Compare' },
   { to: '/grid', label: 'Sensitivity Grid' },
 ];
@@ -55,7 +60,7 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { error: Erro
           <ErrorBox error={this.state.error} />
           <p className="note">
             Nothing was simulated or changed by this failure. Reload the page or go back to{' '}
-            <a href="/">Datasets</a>.
+            <a href="/">Mission Control</a>.
           </p>
         </div>
       );
@@ -110,10 +115,10 @@ function Shell() {
         Skip to content
       </a>
       <header className="shell-header">
-        <Link to="/" className="brand" aria-label="BlackBox HFT, datasets">
+        <Link to="/" className="brand" aria-label="BlackBox HFT, mission control">
           <span className="brand-mark" aria-hidden="true" />
           <span className="brand-name">BlackBox HFT</span>
-          <span className="brand-sub">execution forensics</span>
+          <span className="brand-sub">execution forensics laboratory</span>
         </Link>
         <nav className="shell-nav" aria-label="Primary">
           {NAV.map((item) => (
@@ -165,7 +170,7 @@ function NotFoundPage() {
         No page at <span className="mono">{location.pathname}</span>.
       </p>
       <p>
-        <Link to="/">Go to Datasets</Link>
+        <Link to="/">Go to Mission Control</Link>
       </p>
     </Empty>
   );
@@ -176,12 +181,15 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route element={<Shell />}>
-          <Route index element={<DatasetsPage />} />
+          <Route index element={<MissionControlPage />} />
+          <Route path="datasets" element={<DatasetsPage />} />
           <Route path="replay/:datasetId" element={<ReplayPage />} />
           <Route path="lab" element={<LabPage />} />
           <Route path="runs" element={<RunsPage />} />
           <Route path="runs/:runId" element={<RunOverviewPage />} />
+          <Route path="runs/:runId/replay" element={<ReplayTerminalPage />} />
           <Route path="runs/:runId/orders/:orderId" element={<OrderForensicsPage />} />
+          <Route path="latency" element={<LatencyLabPage />} />
           <Route path="compare" element={<ComparePage />} />
           <Route path="grid" element={<GridPage />} />
           <Route path="*" element={<NotFoundPage />} />

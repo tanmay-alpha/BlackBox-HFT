@@ -37,6 +37,36 @@ export function fmtDuration(ns: number | null): string {
 }
 
 /**
+ * Exact duration in the largest unit not above the value, trailing zeros trimmed
+ * (`1227000000` -> `1.227 s`, `1790156000` -> `1.790156 s`). For prose where three
+ * significant digits would merge distinct values.
+ */
+export function fmtDurationExact(ns: number): string {
+  const a = Math.abs(ns);
+  const [div, unit, places]: [number, string, number] =
+    a >= NS_PER_S
+      ? [NS_PER_S, 's', 9]
+      : a >= NS_PER_MS
+        ? [NS_PER_MS, 'ms', 6]
+        : a >= NS_PER_US
+          ? [NS_PER_US, '\u00b5s', 3]
+          : [1, 'ns', 0];
+  let text = (ns / div).toFixed(places);
+  if (places > 0) text = text.replace(/0+$/, '').replace(/\.$/, '');
+  return `${text} ${unit}`;
+}
+
+/** Rewrites raw nanosecond counts inside server-written prose (`5000000000 ns` -> `5 s`). */
+export function humanizeNsText(text: string): string {
+  return text
+    .replace(
+      /\[(\d+), (\d+)\] ns\b/g,
+      (_, lo: string, hi: string) => `[${fmtDurationExact(Number(lo))}, ${fmtDurationExact(Number(hi))}]`,
+    )
+    .replace(/\b(\d{4,}) ns\b/g, (_, digits: string) => fmtDurationExact(Number(digits)));
+}
+
+/**
  * Time relative to the dataset origin as `mm:ss.mmmuuu` (minutes are not wrapped at 60, so a
  * long dataset reads `125:03.120045`). Callers dim the trailing three microsecond digits.
  */
@@ -73,7 +103,10 @@ export function fmtPrice(tick: number | null, inst: InstrumentMeta): string {
   if (!Number.isFinite(tick)) return String(tick);
   const base = stepDecimals(inst.tick_size);
   const decimals = Number.isInteger(tick) ? base : Math.min(base + 2, 14);
-  return (tick * inst.tick_size).toFixed(decimals);
+  const text = (tick * inst.tick_size).toFixed(decimals);
+  // Extra decimals of a fractional tick are only kept where they carry a digit (9366.6250 -> 9366.625).
+  if (decimals === base) return text;
+  return text.replace(new RegExp(`(\\.\\d{${base}}\\d*?)0+$`), '$1').replace(/\.$/, '');
 }
 
 /** Quantity in base units. Decimals come from `lot_size`. */

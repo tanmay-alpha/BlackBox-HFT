@@ -19,18 +19,17 @@ type SubmitMode = 'run' | 'scenario_b';
 /** Where the values currently in the form came from. Shown so nothing looks like a preset by accident. */
 type Origin =
   | { type: 'defaults' }
-  | { type: 'preset'; title: string }
-  | { type: 'run'; runId: string };
+  | { type: 'preset'; title: string; loaded: RunConfig }
+  | { type: 'run'; runId: string; loaded: RunConfig };
 
-function originText(o: Origin): string {
-  switch (o.type) {
-    case 'defaults':
-      return 'Starting values: smallest valid sizes for the instrument and conservative execution assumptions. They are form defaults to edit, not a preset.';
-    case 'preset':
-      return `Values loaded from preset "${o.title}", then edited by you.`;
-    case 'run':
-      return `Values loaded from run ${o.runId}, then edited by you.`;
+function originText(o: Origin, current: RunConfig | null): string {
+  if (o.type === 'defaults') {
+    return 'Starting values: smallest valid sizes for the instrument and conservative execution assumptions. They are form defaults to edit, not a preset.';
   }
+  const source = o.type === 'preset' ? `preset "${o.title}"` : `run ${o.runId}`;
+  const edits = current ? diffConfigs(o.loaded, current).length : 0;
+  if (edits === 0) return `Values loaded from ${source}, unchanged.`;
+  return `Values loaded from ${source}, then edited by you (${edits} field${edits === 1 ? ' differs' : 's differ'}).`;
 }
 
 function runOptionLabel(r: RunSummary): string {
@@ -172,7 +171,7 @@ export default function LabPage() {
       const run = fromRun.data;
       setDatasetId(run.manifest.config.dataset_id);
       setConfig(run.manifest.config);
-      setOrigin({ type: 'run', runId: run.manifest.run_id });
+      setOrigin({ type: 'run', runId: run.manifest.run_id, loaded: run.manifest.config });
       setBaseRunId(run.manifest.run_id);
       return;
     }
@@ -231,14 +230,14 @@ export default function LabPage() {
   const applyPreset = (p: Preset) => {
     // `api.presets(datasetId)` already rebound the preset to the selected dataset.
     edit(p.config);
-    setOrigin({ type: 'preset', title: p.title });
+    setOrigin({ type: 'preset', title: p.title, loaded: p.config });
   };
 
   const loadBaseRun = () => {
     if (!baseRun) return;
     setDatasetId(baseRun.manifest.config.dataset_id);
     edit(baseRun.manifest.config);
-    setOrigin({ type: 'run', runId: baseRun.manifest.run_id });
+    setOrigin({ type: 'run', runId: baseRun.manifest.run_id, loaded: baseRun.manifest.config });
   };
 
   const blocked = fieldProblems.length > 0 || ruleProblems.length > 0;
@@ -285,7 +284,7 @@ export default function LabPage() {
           <p>No datasets are installed, so there is nothing to replay.</p>
           <p>
             Create one with <code>blackbox synth</code> or <code>blackbox ingest-tardis</code>; see{' '}
-            <Link to="/">Datasets</Link>.
+            <Link to="/datasets">Datasets</Link>.
           </p>
         </Empty>
       ) : null}
@@ -366,7 +365,7 @@ export default function LabPage() {
               {presets.error ? <ErrorBox error={presets.error} /> : null}
               {presets.loading ? <Spinner label="Loading presets" /> : null}
               {presets.data ? <PresetList presets={presets.data} onApply={applyPreset} /> : null}
-              <p className="note">{originText(origin)}</p>
+              <p className="note">{originText(origin, config)}</p>
             </div>
           </Panel>
 
@@ -488,7 +487,8 @@ export default function LabPage() {
               ) : null}
               {advisories.length > 0 ? (
                 <div className="notice" role="note">
-                  <Badge kind="warn">check</Badge> The configuration is valid, but:
+                  <Badge kind="warn">check</Badge>{' '}
+                  {blocked ? 'Also worth checking:' : 'The configuration is valid, but:'}
                   <ul>
                     {advisories.map((a, i) => (
                       <li key={i}>{a}</li>

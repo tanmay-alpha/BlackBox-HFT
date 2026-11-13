@@ -180,7 +180,7 @@ export function FieldControl<T>({
           onChange={(e) => onChange(field.set(obj, e.target.value))}
         >
           {field.options.map((o) => (
-            <option key={o.value} value={o.value} title={o.help}>
+            <option key={o.value} value={o.value} title={o.help} disabled={o.disabled}>
               {o.label}
             </option>
           ))}

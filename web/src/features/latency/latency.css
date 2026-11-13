@@ -1,0 +1,49 @@
+/* Latency Lab. */
+.lat-editor {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.lat-editor > .col { margin-top: 8px; }
+.lat-set { margin: 0; padding-left: 18px; }
+.lat-set > li { gap: 8px; padding: 2px 0; }
+.lat-select { flex: 1 1 320px; max-width: 640px; }
+.lat-question { font-size: 13px; }
+.lat-list { margin: 0; padding-left: 16px; }
+.lat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: var(--gap);
+}
+.lat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.lat-card h3 { font-size: 13px; }
+.lat-metrics td.num, .lat-metrics th.num { white-space: nowrap; }
+.lat-pair { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.lat-pair:last-child { border-bottom: 0; }
+.lat-classes { gap: 4px 16px; margin: 0; padding: 0; list-style: none; }
+.lat-divergence { gap: 4px; padding: 8px 10px; border-left: 3px solid var(--modeled); background: var(--bg); }
+.lat-notes { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.lat-notes > li { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.lat-waterfall { gap: 4px; }
+.lat-wf-row { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) minmax(90px, 120px); align-items: center; gap: 10px; }
+.lat-wf-label { color: var(--muted); }
+.lat-wf-value { text-align: right; }
+.lat-wf-track { position: relative; height: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.lat-wf-zero { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--muted); }
+.lat-wf-bar { position: absolute; top: 2px; bottom: 2px; }
+.lat-wf-up { background: var(--accent); }
+.lat-wf-down { background: var(--warn); }
+.lat-wf-total { background: var(--derived); }
+.lat-wf-refbar { background: transparent; border: 1px dashed var(--muted); }
+.lat-wf-ref { opacity: 0.85; }

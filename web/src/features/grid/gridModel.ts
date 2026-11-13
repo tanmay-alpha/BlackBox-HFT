@@ -3,6 +3,7 @@
 
 import type { GridAxis, Metrics, QueueModelConfig } from "../../api/types";
 import { MARKOUT_HORIZONS_NS, MAX_GRID_CELLS } from "../../api/types";
+import { bpsToFraction } from "../../components/describe";
 import { fmtDuration, fmtNum, fmtSigned } from "../../components/fmt";
 import { queueModelLabel } from "../forensics/labels";
 
@@ -156,8 +157,8 @@ export function parseAxis(draft: AxisDraft, name: "X" | "Y"): ParsedAxis {
   if (draft.param === "maker_fee" || draft.param === "taker_fee") {
     const values: number[] = [];
     for (const [token, bps] of numbers) {
-      // Basis points to a fraction of traded value: 1 bps = 0.0001.
-      const fraction = bps / BPS_PER_UNIT;
+      // Basis points to a fraction of traded value: 1 bps = 0.0001 (same conversion as the Lab).
+      const fraction = bpsToFraction(bps);
       values.push(fraction);
       conversions.push(`${token} bps = ${fraction} of traded value`);
     }
@@ -179,7 +180,7 @@ export function parseAxis(draft: AxisDraft, name: "X" | "Y"): ParsedAxis {
       );
     } else {
       values.push(ns);
-      conversions.push(`${token} ms = ${ns} ns`);
+      conversions.push(`${token} ms = ${fmtNum(ns, 0)} ns`);
     }
   }
   return { axis: { type: draft.param, values }, conversions, problems };

@@ -107,7 +107,8 @@ function buildGeometry(
   });
   if (n > 0) stepPath += `H${xEnd.toFixed(1)}`;
 
-  const yStep = niceStep((yMax - yMin) / 4);
+  // Labels print in lot decimals, so a finer step would print the same label twice.
+  const yStep = Math.max(niceStep((yMax - yMin) / 4), instrument.lot_size > 0 ? instrument.lot_size : 0);
   const yTicks = ticksBetween(yMin, yMax, yStep).map((v) => ({
     y: yOf(v),
     label: fmtQty(v, instrument),

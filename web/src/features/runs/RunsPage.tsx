@@ -9,6 +9,22 @@ import { PageHeader, usePageTitle } from '../../components/page';
 import { Badge, Empty, ErrorBox, HashText, Panel, Spinner, useAsync } from '../../components/ui';
 import { fmtQuoteSigned } from './format';
 
+/** Creation time with the date over the time, so the table fits a 1440 px viewport with its actions. */
+function CreatedCell({ ms }: { ms: number | null }) {
+  const [date, ...rest] = fmtUnixMs(ms).split(' ');
+  return (
+    <td className="mono">
+      {date}
+      {rest.length > 0 ? (
+        <>
+          <br />
+          <span className="dim">{rest.join(' ')}</span>
+        </>
+      ) : null}
+    </td>
+  );
+}
+
 function RunRow({
   run,
   slot,
@@ -57,7 +73,7 @@ function RunRow({
         <br />
         <span className="dim">every {fmtDuration(m.config.strategy.interval_ns)}</span>
       </td>
-      <td className="mono">{m.dataset.id}</td>
+      <td className="mono wrap wrap-anywhere">{m.dataset.id}</td>
       <td className="mono wrap">{assumptionsLabel(m.config)}</td>
       <td className="num">{fmtInt(run.order_count)}</td>
       <td className="num">{fmtInt(run.fill_count)}</td>
@@ -65,7 +81,7 @@ function RunRow({
       <td>
         <HashText hash={m.result_sha256} chars={12} />
       </td>
-      <td className="mono">{fmtUnixMs(m.created_unix_ms)}</td>
+      <CreatedCell ms={m.created_unix_ms} />
       <td>
         {confirming ? (
           <span className="row run-actions" role="group" aria-label={`Confirm deleting ${m.run_id}`}>

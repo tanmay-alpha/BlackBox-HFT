@@ -8,28 +8,40 @@ function finitePos(v: number): boolean {
   return Number.isFinite(v) && v > 0;
 }
 
+/** `MIN_INTERVAL_NS` in bb-core: shortest strategy evaluation interval (1 ms). */
+export const MIN_INTERVAL_NS = 1_000_000;
+/** `MAX_INTERVAL_NS` in bb-core: longest strategy evaluation interval (1 h). */
+export const MAX_INTERVAL_NS = 3_600_000_000_000;
+/** `MAX_LATENCY_NS` in bb-core: bound on any single modeled latency, jitter or feed offset (60 s). */
+export const MAX_LATENCY_NS = 60_000_000_000;
+
 /** Human-readable problems; empty means valid. */
 export function validateRunConfig(c: RunConfig): string[] {
   const e: string[] = [];
   if (c.dataset_id.length === 0) {
     e.push('dataset_id is empty');
   }
-  // `!(x > 0)` also rejects NaN, which a blank numeric input produces.
-  if (!(c.strategy.interval_ns > 0)) {
-    e.push('strategy.interval_ns must be positive');
+  // Range checks are written as `!(lo <= x && x <= hi)` so NaN from a blank input also fails.
+  if (!(c.strategy.interval_ns >= MIN_INTERVAL_NS && c.strategy.interval_ns <= MAX_INTERVAL_NS)) {
+    e.push(
+      `strategy.interval_ns must be between ${MIN_INTERVAL_NS} (1 ms) and ${MAX_INTERVAL_NS} (1 h)`,
+    );
   }
+  const latencyOk = (v: number) => v >= 0 && v <= MAX_LATENCY_NS;
   const l = c.execution.order_latency;
   if (l.type === 'constant') {
-    if (!(l.entry_ns >= 0) || !(l.response_ns >= 0)) {
-      e.push('order latency must be non-negative');
+    if (!latencyOk(l.entry_ns) || !latencyOk(l.response_ns)) {
+      e.push(`order latency must be between 0 and ${MAX_LATENCY_NS} ns (60 s)`);
     }
-  } else if (!(l.entry_ns >= 0) || !(l.response_ns >= 0) || !(l.jitter_ns >= 0)) {
-    e.push('order latency and jitter must be non-negative');
+  } else if (!latencyOk(l.entry_ns) || !latencyOk(l.response_ns) || !latencyOk(l.jitter_ns)) {
+    e.push(`order latency and jitter must each be between 0 and ${MAX_LATENCY_NS} ns (60 s)`);
   }
   if (!(c.execution.feed_latency_offset_ns >= 0)) {
     e.push(
       'feed_latency_offset_ns must be non-negative: a negative offset would let the strategy see events before the dataset says they were received',
     );
+  } else if (c.execution.feed_latency_offset_ns > MAX_LATENCY_NS) {
+    e.push(`feed_latency_offset_ns must be at most ${MAX_LATENCY_NS} ns (60 s)`);
   }
   const q = c.execution.queue_model;
   if (q.type === 'power_prob' || q.type === 'power_prob2' || q.type === 'power_prob3') {
@@ -100,6 +112,11 @@ export function validateRunConfig(c: RunConfig): string[] {
         seen.add(key);
         if (!finitePos(o.qty)) {
           e.push(`scripted: order '${o.label}' qty must be positive`);
+        }
+        if (o.ord_type === 'market') {
+          e.push(
+            `scripted: order '${o.label}' is a market order; market orders are not supported on hftbacktest 0.9.4 (see docs/EXECUTION_MODEL.md, defect 5); use an immediate-or-cancel limit order`,
+          );
         }
       }
       break;

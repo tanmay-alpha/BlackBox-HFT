@@ -486,7 +486,7 @@ export default function ReplayPage() {
         lead="The historical book as the data shows it, before any strategy is simulated. Times are on the exchange clock, relative to the dataset origin."
         actions={
           <>
-            <Link className="btn" to="/">
+            <Link className="btn" to="/datasets">
               All datasets
             </Link>
             <Link className="btn btn-primary" to={`/lab?dataset=${encodeURIComponent(datasetId)}`}>

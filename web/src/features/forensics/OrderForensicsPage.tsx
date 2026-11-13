@@ -70,6 +70,9 @@ function OrderForensics({ runId, orderId }: { runId: string; orderId: number }) 
           Order <span className="mono">{orderId}</span>
         </span>
         <OrderNav runId={runId} neighbours={neighbours.data} loading={neighbours.loading} />
+        <Link className="fx-btn" to={`/runs/${encodeURIComponent(runId)}/replay?order=${orderId}`}>
+          Open in Replay Terminal at this order
+        </Link>
       </nav>
 
       {data ? (

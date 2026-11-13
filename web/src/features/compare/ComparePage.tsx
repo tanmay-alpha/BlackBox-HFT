@@ -12,8 +12,9 @@ import type {
   PairClass,
   RunSummary,
 } from "../../api/types";
-import { fmtDuration, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
+import { fmtDuration, fmtDurationExact, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
 import { Badge, Empty, ErrorBox, Panel, Spinner, useAsync } from "../../components/ui";
+import { fractionToBps } from "../../components/describe";
 import { ClockText, EvidenceLegend } from "../forensics/evidence";
 import {
   EM_DASH,
@@ -299,7 +300,7 @@ function CompareView({
             {cmp.interpretation.map((note, i) => (
               <li key={i}>
                 <Badge kind={note.basis}>{note.basis}</Badge>
-                <span>{note.statement}</span>
+                <span>{readableNote(note.statement, instA !== null && instB !== null && instA.tick_size === instB.tick_size ? instA : null)}</span>
               </li>
             ))}
           </ul>
@@ -387,13 +388,42 @@ function ConfigDiffTable({ cmp }: { cmp: Comparison }) {
             <th scope="row" className="mono">
               {diff.path}
             </th>
-            <td className="mono cmp-json">{JSON.stringify(diff.a)}</td>
-            <td className="mono cmp-json">{JSON.stringify(diff.b)}</td>
+            <ConfigValue path={diff.path} value={diff.a} />
+            <ConfigValue path={diff.path} value={diff.b} />
           </tr>
         ))}
       </tbody>
     </table>
   );
+}
+
+/**
+ * A differing config value. Nanosecond fields also read as a duration and fee fractions as basis
+ * points; the stored value is always shown.
+ */
+function ConfigValue({ path, value }: { path: string; value: unknown }) {
+  const raw = JSON.stringify(value);
+  if (path.endsWith("_ns") && typeof value === "number" && Number.isFinite(value)) {
+    return (
+      <td className="mono cmp-json" title={`${raw} ns as stored`}>
+        {fmtDurationExact(value)} <span className="dim">({fmtNum(value, 0)} ns)</span>
+      </td>
+    );
+  }
+  if (path.startsWith("execution.fees.") && typeof value === "number" && Number.isFinite(value)) {
+    return (
+      <td className="mono cmp-json">
+        {raw} <span className="dim">({fractionToBps(value)} bp)</span>
+      </td>
+    );
+  }
+  return <td className="mono cmp-json">{raw}</td>;
+}
+
+/** Server labels markout horizons in raw milliseconds (`Markout 30000 ms`); show them as durations. */
+function metricLabel(row: MetricRow): string {
+  const m = /^markout_(\d+)ms$/.exec(row.key);
+  return m ? `Markout ${fmtDuration(Number(m[1]) * 1_000_000)}` : row.label;
 }
 
 const UNIT_LABEL: Record<string, string> = {
@@ -473,7 +503,7 @@ function MetricsTable({ rows }: { rows: MetricRow[] }) {
         {rows.map((row) => (
           <tr key={row.key}>
             <th scope="row" title={row.key}>
-              {row.label}
+              {metricLabel(row)}
             </th>
             <td className={`mono cmp-num${signClass(row, row.a)}`}>{fmtMetric(row.a, row.unit)}</td>
             <td className={`mono cmp-num${signClass(row, row.b)}`}>{fmtMetric(row.b, row.unit)}</td>
@@ -545,6 +575,17 @@ function price(tick: number | null, inst: InstrumentMeta | null): string {
   if (tick === null) return EM_DASH;
   if (inst === null) return `tick ${Number.isInteger(tick) ? tick : fmtNum(tick, 2)}`;
   return fmtPrice(tick, inst);
+}
+
+/**
+ * Server notes quote prices as raw ticks (`price tick 937160`, `average fill tick 937160`).
+ * With one shared tick size they read as prices; otherwise the ticks stay.
+ */
+function readableNote(text: string, inst: InstrumentMeta | null): string {
+  if (inst === null) return text;
+  return text
+    .replace(/\baverage fill tick (\d+(?:\.\d+)?)/g, (_, t: string) => `average fill price ${fmtPrice(Number(t), inst)}`)
+    .replace(/\bprice tick (\d+(?:\.\d+)?)/g, (_, t: string) => fmtPrice(Number(t), inst));
 }
 
 function quantity(qty: number | null, inst: InstrumentMeta | null): string {
