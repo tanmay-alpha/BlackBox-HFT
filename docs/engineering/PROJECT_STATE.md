@@ -31,22 +31,30 @@ green: rust, web, e2e, audit, docker).
 | Vercel Blob wire protocol | Verified 2026-11-14 from Python with raw HTTP (protocol read from the official `vercel-blob` 0.6 SDK source) | `PUT https://vercel.com/api/blob?pathname=<p>` with `authorization: Bearer <BLOB_READ_WRITE_TOKEN>`, `x-api-version: 12`, `x-vercel-blob-access: private`, `x-add-random-suffix: 0`, `x-allow-overwrite: 0|1`, `x-content-type` → 200 JSON `{url, pathname, etag, …}`. Read: `GET https://<storeid lowercase>.private.blob.vercel-storage.com/<path>` with the same bearer + `x-api-version` → 200 bytes; missing → 404; **anonymous → 403**. Delete: `POST https://vercel.com/api/blob/delete` JSON `{"urls":[…]}` → 200. Store id is embedded in the token (`vercel_blob_rw_<storeId>_<secret>`). |
 | Vercel Git integration | **Disconnected** 2026-11-14 | Incident: the project was connected to the GitHub repo, so the push of `5fce27d` (2026-11-13 21:15 UTC) built the repo root (nothing to build) and promoted an empty production deployment two minutes after the verified prebuilt one; https://blackbox-hft.vercel.app served 404 until the lead re-promoted `dpl_6t3iTPaE3EgcmZR6BpA1S93AUBT6` and ran `vercel git disconnect`. Reconnect only once `web/` builds the production frontend from Git (root directory `web`). |
 
-## Phase 0 work in flight
+## Work log
 
-| Agent | Model | Output |
-|---|---|---|
-| BaselineAudit2 | claude-opus-5-5 | `docs/engineering/BASELINE_AUDIT.md` |
-| QuantResearch2 | claude-opus-5-5 | `docs/research/MARKET_MICROSTRUCTURE.md` |
-| OSSEval | claude-opus-5-5 | `docs/research/OSS_TECHNOLOGY_EVALUATION.md` |
-| UIDesign | claude-opus-5-5 | `docs/engineering/UI_DESIGN_SPEC.md` |
+| Agent | Model | Branch / worktree | Output | Status |
+|---|---|---|---|---|
+| BaselineAudit2 | claude-opus-5-5 | main | `docs/engineering/BASELINE_AUDIT.md` | done (`4ac54f3`) |
+| UIDesign | claude-opus-5-5 | main | `docs/engineering/UI_DESIGN_SPEC.md` | done (`4ac54f3`) |
+| OSSEval | claude-opus-5-5 | main | `docs/research/OSS_TECHNOLOGY_EVALUATION.md` | done, uncommitted |
+| QuantResearch2 | claude-opus-5-5 | main | `docs/research/MARKET_MICROSTRUCTURE.md` | running |
+| Architect | claude-opus-5-5 | main | `TARGET_ARCHITECTURE.md`, `DATABASE_DESIGN.md`, `API_CONTRACT.md`, `engineering/DEPLOYMENT.md`, `schema_draft.sql` | running |
+| CompareFix | claude-opus-5-5 | `p1-compare` @ `D:/bbwt/compare` | comparison eligibility + timing-aware classes (AT-1, AT-2) | running |
+| SimCore | claude-opus-5-5 | `p1-simcore` @ `D:/bbwt/simcore` | RunControl/budgets, platform policy, precision guards, golden coverage (AT-5, AT-7, AT-9, AT-13) | running |
+| UIShell | claude-opus-5-5 | `p4-ui-shell` @ `D:/bbwt/ui` | design system, workstation shell, DataTable, BigInt ns module | running |
 
 `openai-codex/gpt-6.1-sol` returned `usage_limit_reached` on 2026-11-14 for both tasks assigned to
 it (audit, quant research); they were rerun on Opus 5.5. Sol will be retried for the final
 independent audit.
 
+Simulation-control contract (fixed by the lead; SimCore implements, the job worker consumes):
+`bb_sim::{RunControl {on_progress, should_cancel}, Progress, NoControl, RunBudget}`,
+`SimError::{Cancelled, BudgetExceeded}`, `RunConfig::estimate_work`, `ExecutionLimits::{local, hosted}`.
+
 ## Next actions
 
-1. Collect Phase 0 documents; write `TARGET_ARCHITECTURE.md`, `DATABASE_DESIGN.md`, `API_CONTRACT.md`.
-2. Phase 1 correctness fixes from the audit (comparison eligibility, result integrity on load,
-   single-flight execution, timestamp precision, resource budget).
-3. Phase 2: Postgres schema + migrations, job queue, artefact store, versioned API.
+1. Merge Phase 1 branches into `main` after review; fill Linux golden pins from CI.
+2. Phase 2 (after the architecture docs): `bb-db` + `bb-artifacts` crates, job queue, `/api/v1`,
+   auth, integrity on read, single-flight via the experiment fingerprint unique key.
+3. Phase 3: GHCR image + Render deploy; Phase 4: wire the new shell to `/api/v1`.
