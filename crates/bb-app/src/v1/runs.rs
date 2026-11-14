@@ -273,7 +273,7 @@ pub async fn list_runs(
         .unwrap_or(&state.cfg.result_platform)
         .to_string();
     let limit = p.limit(50, 100)?;
-    let filters = p.filters();
+    let filters = p.filters("/api/v1/runs");
     let after: Option<bb_db::RunKey> = p
         .get("cursor")
         .map(|c| decode_cursor(c, &filters))

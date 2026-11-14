@@ -52,12 +52,15 @@ impl Params {
             .map(|(_, v)| v.clone())
             .collect()
     }
-    /// Canonical filter string for cursors (everything except `cursor`/`limit`).
-    pub fn filters(&self) -> String {
+    /// Canonical filter string for cursors: the documented query parameters of `route` (as
+    /// the anonymous cache keys them), except `cursor`/`limit`. Unknown parameters are ignored,
+    /// so a cached page's cursor stays valid for every client sharing that entry.
+    pub fn filters(&self, route: &str) -> String {
+        let known = super::edge::known_query_params(route).unwrap_or_default();
         let mut pairs: Vec<String> = self
             .0
             .iter()
-            .filter(|(k, _)| k != "cursor" && k != "limit")
+            .filter(|(k, _)| k != "cursor" && k != "limit" && known.contains(&k.as_str()))
             .map(|(k, v)| format!("{k}={v}"))
             .collect();
         pairs.sort();
@@ -378,7 +381,7 @@ pub async fn list_experiments(
     let workspace = caller.read_workspace(p.get("workspace"))?.clone();
     let q = experiment_query(&p, &caller)?;
     let limit = p.limit(50, 100)?;
-    let filters = p.filters();
+    let filters = p.filters("/api/v1/experiments");
     let cursor: Option<Cursor> = p
         .get("cursor")
         .map(|c| decode_cursor(c, &filters))
@@ -542,4 +545,25 @@ pub async fn delete_experiment(
     let mut response = Response::new(axum::body::Body::empty());
     *response.status_mut() = StatusCode::NO_CONTENT;
     Ok(response)
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::Params;
+
+    #[test]
+    fn unknown_query_params_do_not_change_the_cursor_filters() {
+        let p = |q: &[(&str, &str)]| {
+            Params(
+                q.iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            )
+        };
+        let plain = p(&[("status", "completed"), ("limit", "5")]).filters("/api/v1/experiments");
+        let padded = p(&[("_", "1"), ("status", "completed"), ("limit", "5")])
+            .filters("/api/v1/experiments");
+        assert_eq!(plain, "status=completed");
+        assert_eq!(plain, padded);
+    }
 }
