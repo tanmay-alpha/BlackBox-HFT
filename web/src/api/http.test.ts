@@ -100,6 +100,14 @@ describe('error envelope mapping', () => {
     expect(describeError(e).facts).toContain('retry after 7 s');
   });
 
+  it('shows the byte limit and the hint of response_too_large', () => {
+    const body = JSON.stringify(envelope('response_too_large', 'too big', { limit_bytes: 1048576, hint: 'request less' }));
+    const view = describeError(errorFromResponse(json(422, JSON.parse(body)), body, 'GET x'));
+    expect(view.state).toBe('response_too_large');
+    expect(view.facts).toContain('limit: 1,048,576 bytes for this caller');
+    expect(view.action).toBe('request less');
+  });
+
   it('lists every invalid_config problem', () => {
     const body = JSON.stringify(envelope('invalid_config', 'invalid', { problems: ['a must be > 0', 'b too large'] }));
     expect(describeError(errorFromResponse(json(422, JSON.parse(body)), body, 'POST x')).facts).toEqual(

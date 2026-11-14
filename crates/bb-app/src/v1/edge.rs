@@ -286,7 +286,10 @@ struct ClassCounter {
     total: AtomicI64,
     /// Bytes not yet flushed.
     pending: AtomicI64,
+    /// Today's persisted value has been added to `total`.
     loaded: AtomicBool,
+    /// A flush that also loads today's persisted value is in flight.
+    loading: AtomicBool,
     day: Mutex<Option<chrono::NaiveDate>>,
 }
 
@@ -299,6 +302,7 @@ impl ClassCounter {
             self.total.store(0, Ordering::SeqCst);
             self.pending.store(0, Ordering::SeqCst);
             self.loaded.store(false, Ordering::SeqCst);
+            self.loading.store(false, Ordering::SeqCst);
         }
     }
 }
@@ -318,24 +322,34 @@ impl Egress {
     }
 }
 
-/// The refusal of a response body above the caller's cap (API_CONTRACT §7): 500 `internal`
-/// with `details.reason = "response_too_large"`. Handlers bound their output (pages, downsampled
-/// series), so this is a server defect, never silently truncated JSON.
-pub fn response_too_large(cap: usize) -> ApiError {
-    tracing::error!(request_id = %super::error::request_id(), cap, "response body above the cap refused");
+/// The refusal of a response body above the caller's cap (API_CONTRACT §2, §7): 422
+/// `response_too_large` with `details = {limit_bytes, hint}`. Handlers bound their output first
+/// (pages, analytics series downsampled to fit the cap), so a client sees it only when even the
+/// smallest representation does not fit; never silently truncated JSON.
+pub fn response_too_large(cap: usize, anonymous: bool) -> ApiError {
+    tracing::warn!(request_id = %super::error::request_id(), cap, anonymous, "response body above the cap refused");
+    let hint = if anonymous {
+        "request less (a page, a narrower window, or one series via its /analytics/series path), \
+         or send an API key for the larger keyed limit"
+    } else {
+        "request less (a page, a narrower window, or one series via its /analytics/series path)"
+    };
     ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "internal",
-        "the response would exceed the size limit for this caller; quote the request id when \
-         reporting it",
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "response_too_large",
+        format!("the response would exceed the {cap}-byte limit for this caller"),
     )
-    .with_details(json!({ "reason": "response_too_large", "limit_bytes": cap }))
+    .with_details(json!({ "limit_bytes": cap, "hint": hint }))
 }
 
 /// Buffers `response` (every handler builds its body in memory) and returns it with its exact
 /// body length; `Err` when the body is longer than `cap`. Bundle exports
 /// (`application/gzip`, keyed only, bounded by the output limit) are measured but not capped.
-async fn measured(response: Response, cap: usize) -> Result<(Response, usize), ApiError> {
+async fn measured(
+    response: Response,
+    cap: usize,
+    anonymous: bool,
+) -> Result<(Response, usize), ApiError> {
     let (parts, body) = response.into_parts();
     let export = parts
         .headers
@@ -344,7 +358,7 @@ async fn measured(response: Response, cap: usize) -> Result<(Response, usize), A
     let limit = if export { usize::MAX } else { cap };
     let bytes = axum::body::to_bytes(body, limit)
         .await
-        .map_err(|_| response_too_large(cap))?;
+        .map_err(|_| response_too_large(cap, anonymous))?;
     let size = bytes.len();
     Ok((Response::from_parts(parts, Body::from(bytes)), size))
 }
@@ -353,6 +367,13 @@ async fn measured(response: Response, cap: usize) -> Result<(Response, usize), A
 /// 1 MiB, keyed `BB_MAX_RESPONSE_BYTES`) on the serialized body itself, and adds the exact number
 /// of body bytes sent to the daily egress counter of the class (cached bodies included; it sits
 /// outside [`anon_cache`]).
+///
+/// Today's persisted counter is added to the in-memory total once per class and day: read before
+/// the first response above 64 KiB, or taken from the first flush (`add_egress` returns the new
+/// stored total). Until then only that one loading flush may run, so the persisted value is
+/// added exactly once and the total stays exact across restarts. A response above 64 KiB is
+/// refused (503 `unavailable`) while the stored value cannot be read (fail closed), and reserves
+/// its bytes atomically against the budget, so concurrent large responses cannot overshoot it.
 pub async fn egress(State(state): State<Shared>, request: Request, next: Next) -> Response {
     let anonymous = !request.headers().contains_key(header::AUTHORIZATION);
     let head = request.method() == Method::HEAD;
@@ -370,41 +391,67 @@ pub async fn egress(State(state): State<Shared>, request: Request, next: Next) -
         )
     };
     let response = next.run(request).await;
-    let (response, size) = match measured(response, cap).await {
+    let (response, size) = match measured(response, cap, anonymous).await {
         Ok(measured) => measured,
-        Err(refusal) => measured(refusal.into_response(), cap)
+        Err(refusal) => measured(refusal.into_response(), cap, anonymous)
             .await
             .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR.into_response(), 0)),
     };
     // A HEAD response carries no body on the wire.
     let size = if head { 0 } else { size as i64 };
-    if size as usize > EGRESS_SMALL_RESPONSE {
-        // First heavy response after start: load today's persisted value once.
-        if !counter.loaded.swap(true, Ordering::SeqCst)
-            && let Ok(stored) = state.db.egress_today(class).await
-        {
-            counter.total.fetch_max(stored, Ordering::SeqCst);
-        }
-        if counter.total.load(Ordering::SeqCst) + size > budget {
-            return ApiError::unavailable("busy", seconds_to_utc_midnight())
-                .with_details(json!({ "reason": "busy", "budget": "egress" }))
-                .into_response();
-        }
-    }
-    counter.total.fetch_add(size, Ordering::SeqCst);
-    let pending = counter.pending.fetch_add(size, Ordering::SeqCst) + size;
-    if pending >= EGRESS_FLUSH_BYTES {
-        let flush = counter.pending.swap(0, Ordering::SeqCst);
-        if flush > 0 {
-            crate::metrics::Metrics::inc(&state.metrics.egress_flushes_total);
-            let db = state.db.clone();
-            tokio::spawn(async move {
-                if let Err(e) = db.add_egress(class, flush).await {
-                    tracing::warn!(error = %e, "egress counter not persisted");
+    let large = size as usize > EGRESS_SMALL_RESPONSE;
+    if large && !counter.loaded.load(Ordering::SeqCst) {
+        match state.db.egress_today(class).await {
+            Ok(stored) => {
+                if !counter.loaded.swap(true, Ordering::SeqCst) {
+                    counter.total.fetch_add(stored, Ordering::SeqCst);
                 }
-            });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, class, "egress counter not loaded; large response refused");
+                return ApiError::unavailable("database", 5).into_response();
+            }
         }
     }
+    let total = counter.total.fetch_add(size, Ordering::SeqCst) + size;
+    if large && total > budget {
+        counter.total.fetch_sub(size, Ordering::SeqCst);
+        return ApiError::unavailable("busy", seconds_to_utc_midnight())
+            .with_details(json!({ "reason": "busy", "budget": "egress" }))
+            .into_response();
+    }
+    let pending = counter.pending.fetch_add(size, Ordering::SeqCst) + size;
+    if pending < EGRESS_FLUSH_BYTES {
+        return response;
+    }
+    let loads = !counter.loaded.load(Ordering::SeqCst);
+    if loads && counter.loading.swap(true, Ordering::SeqCst) {
+        return response;
+    }
+    let flush = counter.pending.swap(0, Ordering::SeqCst);
+    if flush == 0 {
+        counter.loading.store(false, Ordering::SeqCst);
+        return response;
+    }
+    crate::metrics::Metrics::inc(&state.metrics.egress_flushes_total);
+    let state = state.clone();
+    tokio::spawn(async move {
+        let (counter, class) = state.egress.class(anonymous);
+        match state.db.add_egress(class, flush).await {
+            Ok(stored) => {
+                if loads && !counter.loaded.swap(true, Ordering::SeqCst) {
+                    counter.total.fetch_add(stored - flush, Ordering::SeqCst);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "egress counter not persisted");
+                counter.pending.fetch_add(flush, Ordering::SeqCst);
+            }
+        }
+        if loads {
+            counter.loading.store(false, Ordering::SeqCst);
+        }
+    });
     response
 }
 

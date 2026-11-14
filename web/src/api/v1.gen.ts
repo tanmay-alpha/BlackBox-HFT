@@ -113,7 +113,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Market analytics of the current version. */
+        /** Market analytics of the current version, bounded as the versioned route. */
         get: operations["current_analytics"];
         put?: never;
         post?: never;
@@ -181,7 +181,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Market microstructure analytics (M1–M10) of one version, computed once and cached. */
+        /**
+         * Market microstructure analytics (M1–M10) of one version, computed once and cached.
+         *     Aggregates are complete; series are downsampled to fit the caller's byte cap exactly as for
+         *     `/runs/{run_id}/analytics` (≤ 100 points, halved down to 2, listed in `downsampled`; complete
+         *     points via `/analytics/series`); 422 `response_too_large` only when even 2 points do not fit.
+         */
         get: operations["version_analytics"];
         put?: never;
         post?: never;
@@ -484,8 +489,12 @@ export interface paths {
         };
         /**
          * Execution (E1–E10) and risk analytics of a run, with units, unavailability reasons and
-         *     caveats; verified against the stored digest. Aggregates are complete; series longer than
-         *     100 points are downsampled and listed in `downsampled` (page them with `/analytics/series`).
+         *     caveats; verified against the stored digest. Aggregates are complete. Series longer than
+         *     100 points are downsampled (evenly spaced by index, first and last kept) and listed in
+         *     `downsampled` with `total` and `returned`; the points per series halve (50, 25, …, 2) until
+         *     the body fits the caller's byte cap (anonymous 1 MiB, keyed `BB_MAX_RESPONSE_BYTES`). Page
+         *     the complete points with `/analytics/series`. 422 `response_too_large` (`details.limit_bytes`,
+         *     `details.hint`) only when even 2 points per series do not fit.
          */
         get: operations["run_analytics"];
         put?: never;
@@ -4547,6 +4556,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            /** @description `response_too_large` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     current_replay: {
@@ -4671,6 +4689,15 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `response_too_large` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5501,6 +5528,15 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `response_too_large` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

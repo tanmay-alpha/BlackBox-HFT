@@ -40,7 +40,12 @@ pub fn json<T: Serialize>(
 
 /// Like [`json`] for an already wire-encoded value.
 pub fn json_value(status: StatusCode, v: &Value, cache: Cache) -> Result<Response, ApiError> {
-    let bytes = serde_json::to_vec(v)?;
+    Ok(json_bytes(status, serde_json::to_vec(v)?, cache))
+}
+
+/// Like [`json`] for an already serialized wire-encoded body. The body has an exact length,
+/// which `edge::egress` measures and counts.
+pub fn json_bytes(status: StatusCode, bytes: Vec<u8>, cache: Cache) -> Response {
     let etag = format!("\"{}\"", &hex::encode(Sha256::digest(&bytes))[..32]);
     let mut response = Response::new(Body::from(bytes));
     *response.status_mut() = status;
@@ -50,7 +55,7 @@ pub fn json_value(status: StatusCode, v: &Value, cache: Cache) -> Result<Respons
         HeaderValue::from_static("application/json"),
     );
     apply_cache(h, cache, Some(&etag));
-    Ok(response)
+    response
 }
 
 pub fn apply_cache(h: &mut HeaderMap, cache: Cache, etag: Option<&str>) {
