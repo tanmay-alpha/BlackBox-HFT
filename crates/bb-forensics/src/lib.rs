@@ -8,6 +8,7 @@
 //! things that cannot be known from a replay are never blended into one claim.
 
 mod compare;
+mod ensemble;
 mod explain;
 mod metrics;
 mod orders;
@@ -23,6 +24,10 @@ use bb_core::{
 };
 
 pub use compare::{CompareInput, compare_runs, config_diffs};
+pub use ensemble::{
+    ENSEMBLE_ANALYSIS_VERSION, EnsembleMember, EnsembleReport, EnsembleRunOutcome, EnsembleSegment,
+    MetricSpread, analyze_ensemble,
+};
 pub use explain::explain_order;
 pub use metrics::{compute_metrics, enrich_fills};
 pub use orders::build_orders;

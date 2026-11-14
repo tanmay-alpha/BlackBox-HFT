@@ -759,10 +759,10 @@ async fn research_and_operations(
         .create_sweep(
             &NewSweep {
                 workspace_id: a,
-                spec: json!({"x":{"type":"order_latency_ns"},"y":{"type":"queue_model"}}),
+                spec: json!({"design":{"type":"grid","axes":[]}}),
                 spec_fingerprint: vec![9; 32],
-                x_len: 1,
-                y_len: 1,
+                cell_count: 1,
+                run_count: 1,
                 label: "grid".into(),
                 created_by_key_id: None,
             },
@@ -772,7 +772,7 @@ async fn research_and_operations(
         .unwrap();
     let c = config(db, v, 30).await;
     let mut s = submission(&c, a);
-    s.sweep = Some((sweep.id, 0, 0));
+    s.sweep = Some((sweep.id, 0, "full"));
     let cell = db.submit(&s).await.unwrap();
     assert_eq!(db.sweep_cells(a, sweep.id).await.unwrap().len(), 1);
     assert_eq!(db.sweeps(a, None, 10).await.unwrap().len(), 1);

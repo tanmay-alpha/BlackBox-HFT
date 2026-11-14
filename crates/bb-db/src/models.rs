@@ -199,10 +199,10 @@ pub struct Sweep {
     pub workspace_id: Uuid,
     pub spec: Value,
     pub spec_fingerprint: Vec<u8>,
-    pub x_axis: Option<String>,
-    pub y_axis: Option<String>,
-    pub x_len: i16,
-    pub y_len: i16,
+    pub cell_count: i16,
+    pub run_count: i16,
+    /// `spec.design.type`: `grid`, `random` or `seeds`.
+    pub design: Option<String>,
     pub label: String,
     pub created_by_key_id: Option<Uuid>,
     pub cancel_requested_at: Option<DateTime<Utc>>,
@@ -269,8 +269,10 @@ pub struct Experiment {
     pub platform: String,
     pub label: String,
     pub sweep_id: Option<Uuid>,
-    pub sweep_x: Option<i16>,
-    pub sweep_y: Option<i16>,
+    /// Cell index in the sweep spec's cell order.
+    pub sweep_cell: Option<i16>,
+    /// `full`, `in_sample` or `out_of_sample`.
+    pub sweep_segment: Option<String>,
     pub job_id: Option<Uuid>,
     pub created_by_key_id: Option<Uuid>,
     pub pinned: bool,

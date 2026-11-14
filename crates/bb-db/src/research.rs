@@ -9,8 +9,10 @@ pub struct NewSweep {
     pub workspace_id: Uuid,
     pub spec: Value,
     pub spec_fingerprint: Vec<u8>,
-    pub x_len: i16,
-    pub y_len: i16,
+    /// Configurations declared by the spec.
+    pub cell_count: i16,
+    /// Runs queued: one per cell, or two (in-sample, out-of-sample) with a partition.
+    pub run_count: i16,
     pub label: String,
     pub created_by_key_id: Option<Uuid>,
 }
@@ -85,8 +87,8 @@ impl Database {
                 return Err(Error::Quota("sweeps_per_day"));
             }
         }
-        let row=sqlx::query_as("INSERT INTO bb.sweeps (workspace_id,spec,spec_fingerprint,x_len,y_len,label,created_by_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *")
-            .bind(w.id).bind(&s.spec).bind(&s.spec_fingerprint).bind(s.x_len).bind(s.y_len).bind(&s.label).bind(s.created_by_key_id).fetch_one(&mut *tx).await?;
+        let row=sqlx::query_as("INSERT INTO bb.sweeps (workspace_id,spec,spec_fingerprint,cell_count,run_count,label,created_by_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *")
+            .bind(w.id).bind(&s.spec).bind(&s.spec_fingerprint).bind(s.cell_count).bind(s.run_count).bind(&s.label).bind(s.created_by_key_id).fetch_one(&mut *tx).await?;
         tx.commit().await?;
         Ok(row)
     }
@@ -105,7 +107,7 @@ impl Database {
     pub async fn sweep_cells(&self, workspace: Uuid, id: Uuid) -> Result<Vec<Experiment>> {
         self.sweep(workspace, id).await?;
         Ok(sqlx::query_as(
-            "SELECT * FROM bb.experiments WHERE sweep_id=$1 ORDER BY sweep_y,sweep_x",
+            "SELECT * FROM bb.experiments WHERE sweep_id=$1 ORDER BY sweep_cell,sweep_segment",
         )
         .bind(id)
         .fetch_all(&self.pool)

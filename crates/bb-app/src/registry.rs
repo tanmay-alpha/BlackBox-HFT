@@ -3,8 +3,10 @@
 //!
 //! A synthetic version (`storage = 'regenerate'`) is rebuilt deterministically from
 //! `manifest.generator` on first use and verified against `events_sha256` (no object storage, no
-//! Blob operations). A local version (`storage = 'fs'`) is loaded from `<data-dir>/datasets` and
-//! verified the same way. A version whose bytes do not match is never used.
+//! Blob operations). A sweep's time-window slice (`generator.slice`, `bb_data::slice`) is
+//! `regenerate` too: its parent is rebuilt (or loaded) and verified first, then sliced. A local
+//! version (`storage = 'fs'`) is loaded from `<data-dir>/datasets` and verified the same way. A
+//! version whose bytes do not match is never used.
 
 use std::{
     collections::HashMap,
@@ -12,8 +14,11 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-use bb_core::dataset::{DatasetKind, DatasetManifest};
-use bb_data::synthetic::SyntheticConfig;
+use bb_core::{
+    dataset::{DatasetKind, DatasetManifest},
+    sweep::TimeWindow,
+};
+use bb_data::{LoadedDataset, slice::SliceProvenance, synthetic::SyntheticConfig};
 use bb_db::{Database, DatasetVersion, NewDataSource, NewDataset, NewDatasetVersion};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
@@ -67,11 +72,22 @@ impl DatasetRegistry {
         }
         let id = version.id;
         let version = version.clone();
-        let root = self.version_root(&version);
+        let root = self.root.clone();
         let local = self.local_datasets.clone();
-        let ctx = tokio::task::spawn_blocking(move || materialise(&root, &local, &version))
-            .await
-            .map_err(|e| AppError::Internal(format!("dataset loader panicked: {e}")))??;
+        let ctx = tokio::task::spawn_blocking(move || {
+            let manifest = manifest_of(&version)?;
+            let loaded = build_or_load(
+                &root,
+                &local,
+                &version.dataset_id,
+                &hex::encode(&version.events_sha256),
+                &version.storage,
+                manifest.generator.as_ref(),
+            )?;
+            Ok::<_, AppError>(DatasetCtx::new(loaded))
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("dataset loader panicked: {e}")))??;
         let ctx = Arc::new(ctx);
         self.remember(id, ctx.clone());
         Ok(ctx)
@@ -85,8 +101,9 @@ impl DatasetRegistry {
             .cloned()
     }
 
-    fn version_root(&self, version: &DatasetVersion) -> PathBuf {
-        self.root.join(&hex::encode(&version.events_sha256)[..16])
+    /// Where the event file of a version hashing to `events_sha256` (hex) lives.
+    fn version_root(root: &Path, events_sha256: &str) -> PathBuf {
+        root.join(&events_sha256[..16.min(events_sha256.len())])
     }
 
     /// Stores an already loaded dataset under its version (registration path).
@@ -98,15 +115,19 @@ impl DatasetRegistry {
     }
 }
 
-fn materialise(
+/// The verified dataset `id` whose events hash to `expected` (hex): loaded from disk, or rebuilt
+/// from `generator` when `storage` is `regenerate` and it is not on disk yet. A slice rebuilds
+/// its parent the same way first (recursively, so a slice of a slice works).
+fn build_or_load(
     root: &Path,
     local_datasets: &Path,
-    version: &DatasetVersion,
-) -> Result<DatasetCtx, AppError> {
-    let expected = hex::encode(&version.events_sha256);
-    let id = &version.dataset_id;
-    let (dir, regenerate) = match version.storage.as_str() {
-        "regenerate" => (root.to_path_buf(), true),
+    id: &str,
+    expected: &str,
+    storage: &str,
+    generator: Option<&serde_json::Value>,
+) -> Result<LoadedDataset, AppError> {
+    let (dir, regenerate) = match storage {
+        "regenerate" => (DatasetRegistry::version_root(root, expected), true),
         "fs" => (local_datasets.to_path_buf(), false),
         other => {
             return Err(AppError::Internal(format!(
@@ -117,17 +138,41 @@ fn materialise(
     if !dir.join(id).join("dataset.json").is_file() {
         if !regenerate {
             return Err(AppError::NotFound(format!(
-                "dataset '{id}' version {} is not available on this server",
-                version.version_no
+                "dataset '{id}' (events sha256 {expected}) is not available on this server"
             )));
         }
-        let manifest = manifest_of(version)?;
-        let generator = manifest.generator.clone().ok_or_else(|| {
+        let generator = generator.ok_or_else(|| {
             AppError::Internal(format!("dataset '{id}' has no generator parameters"))
         })?;
-        let config: SyntheticConfig = serde_json::from_value(generator)
-            .map_err(|e| AppError::Internal(format!("dataset '{id}' generator parameters: {e}")))?;
-        let built = bb_data::synthetic::generate(&config)?;
+        let built = match generator.get("slice") {
+            Some(slice) => {
+                let p: SliceProvenance = serde_json::from_value(slice.clone()).map_err(|e| {
+                    AppError::Internal(format!("dataset '{id}' slice provenance: {e}"))
+                })?;
+                // A parent without generator parameters is a local (`fs`) dataset.
+                let parent_storage = if p.parent_generator.is_some() {
+                    "regenerate"
+                } else {
+                    "fs"
+                };
+                let parent = build_or_load(
+                    root,
+                    local_datasets,
+                    &p.parent_id,
+                    &p.parent_events_sha256,
+                    parent_storage,
+                    p.parent_generator.as_ref(),
+                )?;
+                bb_data::slice::slice(&parent, p.window)?
+            }
+            None => {
+                let config: SyntheticConfig =
+                    serde_json::from_value(generator.clone()).map_err(|e| {
+                        AppError::Internal(format!("dataset '{id}' generator parameters: {e}"))
+                    })?;
+                bb_data::synthetic::generate(&config)?
+            }
+        };
         std::fs::create_dir_all(&dir)?;
         bb_data::store::save(&dir, &built)?;
     }
@@ -140,7 +185,66 @@ fn materialise(
             loaded.manifest.events_sha256
         )));
     }
-    Ok(DatasetCtx::new(loaded))
+    Ok(loaded)
+}
+
+/// Registers (or finds) the slice of `parent` covering `window`: a derived global dataset with
+/// `storage = 'regenerate'` whose manifest carries its provenance (`generator.slice`), so any
+/// worker can rebuild it from the parent. Its id is `TimeWindow::slice_dataset_id`, a pure
+/// function of the parent and the window, and so is its content.
+pub async fn register_slice(
+    db: &Database,
+    registry: &DatasetRegistry,
+    parent: &DatasetVersion,
+    window: TimeWindow,
+    hosted: bool,
+) -> Result<DatasetVersion, AppError> {
+    let parent_sha = hex::encode(&parent.events_sha256);
+    let id = window.slice_dataset_id(&parent.dataset_id, &parent_sha);
+    match db.current_version(&id).await {
+        Ok(existing) => {
+            let same = SliceProvenance::of(&manifest_of(&existing)?).is_some_and(|p| {
+                p.parent_id == parent.dataset_id
+                    && p.parent_events_sha256 == parent_sha
+                    && p.window == window
+            });
+            if same {
+                return Ok(existing);
+            }
+            return Err(AppError::Internal(format!(
+                "dataset '{id}' exists but is not the slice {window:?} of '{}'",
+                parent.dataset_id
+            )));
+        }
+        Err(bb_db::Error::NotFound) => {}
+        Err(e) => return Err(db_error(e)),
+    }
+    let parent_ctx = registry.load(parent).await?;
+    let root = registry.root.clone();
+    let built = tokio::task::spawn_blocking(move || -> Result<DatasetCtx, AppError> {
+        let built = bb_data::slice::slice(&parent_ctx.dataset, window)?;
+        let staging = root
+            .join("staging")
+            .join(Uuid::new_v4().simple().to_string());
+        let manifest = bb_data::store::save(&staging, &built)?;
+        // Move the saved slice to where `build_or_load` looks for it; a concurrent
+        // registration of the same slice may have put identical bytes there first.
+        let target = DatasetRegistry::version_root(&root, &manifest.events_sha256);
+        if !target.join(&manifest.id).join("dataset.json").is_file() {
+            std::fs::create_dir_all(&target)?;
+            let _ = std::fs::rename(staging.join(&manifest.id), target.join(&manifest.id));
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+        Ok(DatasetCtx::new(bb_data::store::load(
+            &target,
+            &manifest.id,
+        )?))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("dataset slicer panicked: {e}")))??;
+    let version = register(db, built.manifest(), "regenerate", hosted).await?;
+    registry.remember(version.id, Arc::new(built));
+    Ok(version)
 }
 
 /// Everything needed to register one dataset version.

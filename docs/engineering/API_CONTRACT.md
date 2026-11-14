@@ -274,38 +274,70 @@ summaries `{count, min_ns, median_ns, max_ns}` for `exch_arrival_ts` and `first_
 
 ### 8.7 Sweeps
 
-`POST /api/v1/sweeps` — scope `run`; body `{ "spec": GridSpec, "label"?: string }` (GridSpec = bb-core, ns as
-strings). Admission covers every cell (§5). The response is `202 { "created": bool, "sweep": Sweep }`. Idempotent per
-`(workspace, spec fingerprint)`.
+`POST /api/v1/sweeps` — scope `run`; body `{ "spec": SweepSpec | GridSpec, "label"?: string }` (bb-core types, ns and
+seeds as strings). A `SweepSpec` declares `base`, `design` (`grid` of 1–2 axes, `random` `{samples, seed, params}`
+drawn without replacement, or `seeds` `{seeds: [..]}` / `{count, base_seed?}` — a seed ensemble of `base`, AT-12),
+an optional `partition` `{in_sample, out_of_sample}` of `[start, end)` windows, `objective` `{metric, direction}`
+(default net P&L, maximise) and optional `cscv_blocks` (even, 4–16, time-additive objective). A legacy `GridSpec`
+(`{base, x, y}`) is converted to a grid `SweepSpec` ranked by net P&L. `SweepSpec::admit` checks the whole sweep against
+the deployment's limits (§5: configurations, every run's work, the summed work) before anything is stored; refusals are
+`422 invalid_config` or `422 budget_exceeded` (`details.what` e.g. `sweep_cells`, `sweep_total_ticks`). A partition
+registers each window as a derived global dataset (`<parent>-w-<hash>`, `storage='regenerate'`, provenance in
+`manifest.generator.slice`; any worker rebuilds it from the parent). Every run (one per cell, or in-sample and
+out-of-sample per cell) then passes the common admission and quotas and is queued as an ordinary experiment keyed by
+`(sweep, cell, segment)`. The response is `202 { "created": bool, "sweep": Sweep }`. Idempotent per
+`(workspace, spec fingerprint, dataset version, platform)`: a resubmission returns the same sweep and queues only runs an
+interrupted submission left out.
 
 ```json
 {
-  "id": "01a1…", "label": "latency × queue", "version": 1,
-  "x": { "axis": "order_latency_ns", "labels": ["1 ms", "5 ms", "20 ms"] },
-  "y": { "axis": "queue_model", "labels": ["risk_adverse", "log_prob"] },
-  "state": "running",
-  "progress": { "cells_total": 6, "completed": 3, "running": 1, "queued": 2, "failed": 0, "cancelled": 0, "expired": 0 },
-  "cells": [ { "x": 0, "y": 0, "experiment_id": "01a1…", "job_id": "01a1…", "state": "completed", "run_id": "136d41410c6b23f1",
-              "metrics": { "net_pnl": -1.23, "fill_count": 61, "fees": 0.06, "max_drawdown": 2.5 } } ],
+  "id": "01a1…", "label": "order_latency_ns × maker_fee (IS/OOS)", "version": 1, "design": "grid",
+  "fingerprint": "9c1e…", "axes": [ { "axis": "order_latency_ns", "labels": ["1 ms", "20 ms"] },
+                                    { "axis": "maker_fee", "labels": ["0 bp", "2 bp"] } ],
+  "partition": { "in_sample": { "start": "0", "end": "12000000000" },
+                 "out_of_sample": { "start": "12000000000", "end": "20000000000" } },
+  "objective": { "metric": "net_pnl", "direction": "maximize" },
+  "state": "running", "report_ready": false,
+  "progress": { "cells_total": 4, "runs_total": 8, "completed": 3, "running": 1, "queued": 4, "failed": 0,
+                "cancelled": 0, "expired": 0 },
+  "cells": [ { "index": 0, "coords": [0, 0],
+               "params": [ { "param": "order_latency_ns", "label": "1 ms", "value": 1000000 }, … ],
+               "runs": [ { "segment": "in_sample", "experiment_id": "01a1…", "job_id": "01a1…", "state": "completed",
+                           "run_id": "136d41410c6b23f1", "error": null,
+                           "metrics": { "net_pnl": -1.23, "fill_count": 61, "fees": 0.06, "max_drawdown": 2.5 } },
+                         { "segment": "out_of_sample", … } ] } ],
+  "spec": { … SweepSpec … },
   "created_at_ns": "1763095313707237000"
 }
 ```
 
-`state` is derived: `queued` (nothing started), `running`, `completed` (all cells completed), `partial` (terminal
-with ≥ 1 failed/expired cell), `cancelled`.
+`state` is derived over the runs: `queued` (nothing started), `running`, `completed` (all runs completed), `partial`
+(terminal with ≥ 1 failed/expired run), `cancelled`. A run never queued (interrupted submission) is `not_submitted`.
+`report_ready` is true once every run is terminal.
 
 | Method & path | Scope | Response |
 |---|---|---|
-| `GET /sweeps` | read | page of `Sweep` (without `cells`) |
+| `GET /sweeps` | read | page of `Sweep` (without `cells`, `spec`) |
 | `GET /sweeps/{id}` | read | `Sweep` |
-| `POST /sweeps/{id}/cancel` | run | `202 Sweep` (cancels each live cell under §8.5 rules) |
-| `PATCH /sweeps/{id}`, `DELETE /sweeps/{id}` | run | label / `204` (cells detach) |
+| `GET /sweeps/{id}/report` | read | `SweepReportResponse` once `report_ready` (409 `conflict`, reason `sweep_not_finished`, before); `?format=markdown` → `text/markdown` |
+| `POST /sweeps/{id}/cancel` | run | `202 Sweep` (cancels each live run under §8.5 rules) |
+| `PATCH /sweeps/{id}`, `DELETE /sweeps/{id}` | run | label / `204` (runs detach) |
+
+`SweepReportResponse` = `{ sweep_id, label, design, state, objective, partition, cells: [{ index, params, in_sample,
+out_of_sample, in_sample_run_id, out_of_sample_run_id, error }], analysis, ensemble }`. Grid and random designs carry
+`analysis` = bb-forensics `SweepReport` (configurations tried, the in-sample `selected` cell with its out-of-sample
+value, rank and `degradation`, `rank_correlation` (Spearman) and `pbo` (CSCV, from per-block objective values of each
+selection run's verified equity samples) each `{status: "available", …}` or `{status: "unavailable", reason}`,
+dispersion, selection bias, caveats). A seeds design carries `ensemble` = bb-forensics `EnsembleReport` instead: per
+segment the mean, sample standard deviation, min and max of every objective metric over the completed seeds and each
+seed's run id; `seed_affects_result: false` (constant latency, or jitter of zero) and `collapsed` with an explicit
+`collapse_reason` when every seed replays the same simulation.
 
 ### 8.8 Reports
 
 | Method & path | Scope | Response |
 |---|---|---|
-| `GET /runs/{run_id}/report`, `GET /comparisons/{id}/report`, `GET /sweeps/{id}/report` | read | `text/markdown`, generated on demand (deterministic for runs) |
+| `GET /runs/{run_id}/report`, `GET /comparisons/{id}/report` | read | `text/markdown`, generated on demand (deterministic for runs); sweeps: §8.7 |
 | `POST /reports` | run | `{ "kind": "run" \| "comparison" \| "sweep", "subject_id": string, "title": string }` → `201 Report` (immutable snapshot, body sha256) |
 | `GET /reports` | read | page of `Report` (metadata) |
 | `GET /reports/{id}` | read | `Report` metadata |
@@ -517,5 +549,5 @@ above, and why:
 | API keys | `bbk_` + base64url(24 random bytes ‖ 8-byte HMAC-SHA256 tag with `BB_API_KEY_PEPPER`); forged keys fail before any DB access | SECURITY_REVIEW §9.1, SEC-31 |
 | Rate limits | `governor` keyed limiters in the auth layer (per IP for anonymous, per key, plus a global anonymous cap; client IP = last `X-Forwarded-For` entry) instead of a `tower_governor` layer | one layer must apply different quotas to anonymous and keyed callers |
 | Quotas | hosted `quota_active_jobs` stays 50 (not 5) | a 25-cell sweep needs 25 live jobs |
-| Sweeps | v1 sweeps still take `GridSpec`; switch to `bb_core::sweep::SweepSpec` (p5-sweeps) is pending | merged after this branch's scope was fixed |
+| Sweeps | v1 sweeps take `bb_core::sweep::SweepSpec` (grid, random, seeds; IS/OOS partition; CSCV); a `GridSpec` body is still accepted and converted | AT-12 and the sweep registry exposed through the API |
 | `demo seed` | Runs against the database directly (`DATABASE_URL`), not against the hosted API; `--platform linux-x86_64` seeds canonical jobs for the hosted worker | no admin-API seeding path is needed for a queue-based seed |

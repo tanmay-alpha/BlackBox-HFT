@@ -22,7 +22,7 @@ use super::{
         decode_cursor, encode_cursor, json, json_value, uuid_param,
     },
     runs::{markdown_response, resolve_run, run_markdown, verified_summary},
-    sweeps::sweep_markdown,
+    sweeps::{build_report, report_markdown},
 };
 use crate::{artifacts::open_run, wire::at_ns};
 
@@ -105,8 +105,8 @@ pub async fn create_report(
                 .sweep(workspace.id, id)
                 .await
                 .map_err(|_| ApiError::not_found("sweep"))?;
-            let cells = state.db.sweep_cell_views(id).await?;
-            (sweep_markdown(&row, &cells)?, None, None, Some(id))
+            let report = build_report(&state, &viewer, &row).await?;
+            (report_markdown(&report), None, None, Some(id))
         }
         other => {
             return Err(ApiError::invalid_field(

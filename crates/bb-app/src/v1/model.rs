@@ -5,8 +5,10 @@ use bb_core::{
     compare::{Comparison as CoreComparison, GridSpec},
     config::RunConfig,
     result::{EngineInfo, EngineStateCheck, Metrics},
+    sweep::{Objective, ParamValue, Partition, Segment, SweepSpec},
 };
 use bb_db::{ExperimentView, JobView, RunView};
+use bb_forensics::{EnsembleReport, SweepReport};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -573,24 +575,65 @@ pub struct Comparison {
     pub comparison: CoreComparison,
 }
 
+/// The sweep to run: a `SweepSpec` (has `design`), or a legacy two-axis `GridSpec` (has `x` and
+/// `y`), which is converted to a grid sweep on the whole dataset ranked by net P&L.
+#[derive(Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum SweepRequestSpec {
+    Sweep(SweepSpec),
+    Grid(GridSpec),
+}
+
+impl SweepRequestSpec {
+    pub fn into_spec(self) -> SweepSpec {
+        match self {
+            SweepRequestSpec::Sweep(spec) => spec,
+            SweepRequestSpec::Grid(grid) => grid.into(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SweepRequestSpec {
+    /// Chooses the shape by the `design` key, so a malformed spec gets the precise error of the
+    /// shape it was meant to be instead of serde's "no variant matched".
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(d)?;
+        if value.get("design").is_some() {
+            serde_json::from_value(value)
+                .map(SweepRequestSpec::Sweep)
+                .map_err(D::Error::custom)
+        } else {
+            serde_json::from_value(value)
+                .map(SweepRequestSpec::Grid)
+                .map_err(|e| D::Error::custom(format!("{e} (a SweepSpec needs `design`)")))
+        }
+    }
+}
+
 /// Body of `POST /api/v1/sweeps`.
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSweep {
-    pub spec: GridSpec,
+    pub spec: SweepRequestSpec,
     #[serde(default)]
     pub label: Option<String>,
 }
 
+/// One axis of a grid design.
 #[derive(Serialize, ToSchema)]
 pub struct SweepAxis {
     pub axis: String,
     pub labels: Vec<String>,
 }
 
+/// Counts over the sweep's runs (a partitioned cell has two).
 #[derive(Serialize, ToSchema, Default)]
 pub struct SweepProgress {
+    /// Configurations declared by the spec.
     pub cells_total: usize,
+    /// Runs planned: one per cell, or in-sample and out-of-sample per cell.
+    pub runs_total: usize,
     pub completed: usize,
     pub running: usize,
     pub queued: usize,
@@ -607,15 +650,30 @@ pub struct CellMetrics {
     pub max_drawdown: Option<f64>,
 }
 
+/// One run of a cell: its job state and, once completed, its run.
 #[derive(Serialize, ToSchema)]
-pub struct SweepCell {
-    pub x: i16,
-    pub y: i16,
-    pub experiment_id: String,
+pub struct SweepCellRun {
+    pub segment: Segment,
+    /// `None` until the run was submitted (an interrupted submission; resubmit the spec).
+    pub experiment_id: Option<String>,
     pub job_id: Option<String>,
+    /// `queued`, `running`, `completed`, `failed`, `cancelled`, `expired`, `detached` or
+    /// `not_submitted`.
     pub state: String,
     pub run_id: Option<String>,
+    pub error: Option<String>,
     pub metrics: Option<CellMetrics>,
+}
+
+/// One configuration of a sweep and the state of its runs.
+#[derive(Serialize, ToSchema)]
+pub struct SweepCell {
+    /// Position in the spec's cell order, from 0.
+    pub index: u32,
+    /// Grid coordinates, one per axis; empty for random and seeds designs.
+    pub coords: Vec<u32>,
+    pub params: Vec<ParamValue>,
+    pub runs: Vec<SweepCellRun>,
 }
 
 /// API_CONTRACT §8.7 `Sweep`.
@@ -624,21 +682,60 @@ pub struct Sweep {
     pub id: String,
     pub label: String,
     pub version: i64,
-    pub x: SweepAxis,
-    pub y: SweepAxis,
+    /// `grid`, `random` or `seeds`.
+    pub design: String,
+    /// `SweepSpec::fingerprint`.
+    pub fingerprint: String,
+    /// The axes of a grid design (first axis varies fastest); empty otherwise.
+    pub axes: Vec<SweepAxis>,
+    pub partition: Option<Partition>,
+    pub objective: Objective,
     /// `queued`, `running`, `completed`, `partial` or `cancelled`.
     pub state: String,
+    /// Every run is terminal: `GET /sweeps/{id}/report` is available.
+    pub report_ready: bool,
     pub progress: SweepProgress,
     /// Omitted (`null`) in list responses.
     pub cells: Option<Vec<SweepCell>>,
-    pub spec: Option<GridSpec>,
+    pub spec: Option<SweepSpec>,
     pub created_at_ns: String,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct SweepSubmitted {
+    /// `false` when the same spec was already submitted in this workspace (idempotent; any
+    /// run missing from an interrupted submission is submitted now).
     pub created: bool,
     pub sweep: Sweep,
+}
+
+/// A configuration as analysed: its parameters and objective values.
+#[derive(Serialize, ToSchema)]
+pub struct SweepReportCell {
+    pub index: u32,
+    pub params: Vec<ParamValue>,
+    /// Objective on the selection data: the in-sample window, or the whole dataset.
+    pub in_sample: Option<f64>,
+    pub out_of_sample: Option<f64>,
+    pub in_sample_run_id: Option<String>,
+    pub out_of_sample_run_id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// `GET /sweeps/{id}/report`: the analysis of a finished sweep. Grid and random designs carry
+/// `analysis` (selection, IS→OOS degradation, Spearman, PBO, caveats); a seeds design carries
+/// `ensemble` (per-metric dispersion over seeds) instead.
+#[derive(Serialize, ToSchema)]
+pub struct SweepReportResponse {
+    pub sweep_id: String,
+    pub label: String,
+    pub design: String,
+    pub state: String,
+    pub objective: Objective,
+    pub partition: Option<Partition>,
+    pub cells: Vec<SweepReportCell>,
+    pub analysis: Option<SweepReport>,
+    pub ensemble: Option<EnsembleReport>,
 }
 
 /// Body of `POST /api/v1/reports`.

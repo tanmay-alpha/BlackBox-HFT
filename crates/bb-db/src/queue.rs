@@ -98,7 +98,8 @@ pub struct Submit {
     pub deadline_ms: i32,
     pub max_attempts: i16,
     pub prerequisites_ready: bool,
-    pub sweep: Option<(Uuid, i16, i16)>,
+    /// `(sweep, cell index, segment)`; segment is `full`, `in_sample` or `out_of_sample`.
+    pub sweep: Option<(Uuid, i16, &'static str)>,
     /// Privileged seeding is an explicit caller decision, never inferred from an absent key.
     pub bypass_quotas: bool,
     pub storage_backend: String,
@@ -285,12 +286,12 @@ impl Database {
                 }
             }
         }
-        let (x, y) = s
+        let (cell, segment) = s
             .sweep
-            .map(|(_, x, y)| (Some(x), Some(y)))
+            .map(|(_, cell, segment)| (Some(cell), Some(segment)))
             .unwrap_or((None, None));
-        let experiment:Experiment=sqlx::query_as("INSERT INTO bb.experiments (workspace_id,experiment_config_id,dataset_id,strategy_kind,platform,label,job_id,created_by_key_id,sweep_id,sweep_x,sweep_y) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT ON CONSTRAINT experiments_idempotency DO UPDATE SET job_id=excluded.job_id,cancel_requested_at=NULL RETURNING *")
-            .bind(w.id).bind(c.id).bind(&c.dataset_id).bind(&c.strategy_kind).bind(&s.platform).bind(&s.label).bind(job_id).bind(s.api_key_id).bind(sweep_id).bind(x).bind(y).fetch_one(&mut *tx).await?;
+        let experiment:Experiment=sqlx::query_as("INSERT INTO bb.experiments (workspace_id,experiment_config_id,dataset_id,strategy_kind,platform,label,job_id,created_by_key_id,sweep_id,sweep_cell,sweep_segment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT ON CONSTRAINT experiments_idempotency DO UPDATE SET job_id=excluded.job_id,cancel_requested_at=NULL RETURNING *")
+            .bind(w.id).bind(c.id).bind(&c.dataset_id).bind(&c.strategy_kind).bind(&s.platform).bind(&s.label).bind(job_id).bind(s.api_key_id).bind(sweep_id).bind(cell).bind(segment).fetch_one(&mut *tx).await?;
         tx.commit().await?;
         Ok(Submission {
             created: !exists,

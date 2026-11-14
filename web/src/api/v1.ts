@@ -137,12 +137,23 @@ export type Demo = Omit<S['Demo'], 'runs'> & { runs: DemoRun[] };
 export type Comparison = Omit<Present<S['Page_Comparison']['items'][number]>, 'status'> & { status: 'aligned' | 'metrics_only' };
 
 export type SweepState = 'queued' | 'running' | 'completed' | 'partial' | 'cancelled';
-export type SweepCell = Omit<Present<S['SweepCell']>, 'state' | 'metrics'> & {
-  state: ExperimentStatus;
+/** Which part of the data a sweep run covers. */
+export type Segment = S['Segment'];
+/** A run's state; `not_submitted` when an interrupted submission left it out (resubmit the spec). */
+export type SweepRunState = ExperimentStatus | 'not_submitted';
+export type SweepCellRun = Omit<Present<S['SweepCellRun']>, 'state' | 'metrics'> & {
+  state: SweepRunState;
   metrics: Present<S['CellMetrics']> | null;
 };
-export type Sweep = Omit<Present<S['Sweep']>, 'state' | 'cells'> & { state: SweepState; cells: SweepCell[] | null };
+export type SweepCell = Omit<Present<S['SweepCell']>, 'runs'> & { runs: SweepCellRun[] };
+export type Sweep = Omit<Present<S['Sweep']>, 'state' | 'cells' | 'design'> & {
+  state: SweepState;
+  design: 'grid' | 'random' | 'seeds';
+  cells: SweepCell[] | null;
+};
 export type SubmitSweepResponse = Omit<S['SweepSubmitted'], 'sweep'> & { sweep: Sweep };
+/** `GET /sweeps/{id}/report`: `analysis` for grid and random designs, `ensemble` for seeds. */
+export type SweepReport = Present<S['SweepReportResponse']>;
 
 export type ReportKind = 'run' | 'comparison' | 'sweep';
 export type Report = Omit<Present<S['Report']>, 'kind'> & { kind: ReportKind };

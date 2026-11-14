@@ -138,7 +138,8 @@ pub struct SubmitOptions<'a> {
     pub platform: &'a str,
     pub priority: i16,
     pub deadline_ms: i32,
-    pub sweep: Option<(Uuid, i16, i16)>,
+    /// `(sweep, cell index, segment)` of a sweep run.
+    pub sweep: Option<(Uuid, i16, &'static str)>,
     pub bypass_quotas: bool,
     pub storage_backend: &'a str,
 }

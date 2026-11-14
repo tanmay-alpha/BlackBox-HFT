@@ -391,6 +391,7 @@ dependencies = [
  "bb-strategies",
  "serde",
  "serde_json",
+ "utoipa",
 ]
 
 [[package]]

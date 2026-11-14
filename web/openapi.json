@@ -3000,7 +3000,7 @@
         "tags": [
           "sweeps"
         ],
-        "summary": "Admit a grid (every cell) and queue its cells as experiments. Idempotent per spec.",
+        "summary": "Admit a `SweepSpec` (or a legacy `GridSpec`) under the deployment's sweep limits, register\nthe slice datasets of a partition, and queue every run through the common admission path.\nIdempotent per spec, dataset version and platform: a resubmission returns the same sweep and\nsubmits only runs an interrupted submission left out.",
         "operationId": "create_sweep",
         "parameters": [
           {
@@ -3029,6 +3029,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SweepSubmitted"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -3064,6 +3073,7 @@
         "tags": [
           "sweeps"
         ],
+        "summary": "A sweep with every cell, each with the job state of its runs (per segment).",
         "operationId": "get_sweep",
         "parameters": [
           {
@@ -3209,7 +3219,7 @@
         "tags": [
           "sweeps"
         ],
-        "summary": "Cancel every live cell (cells another workspace still wants keep running).",
+        "summary": "Cancel every live run (runs another workspace still wants keep running).",
         "operationId": "cancel_sweep",
         "parameters": [
           {
@@ -3263,6 +3273,7 @@
         "tags": [
           "sweeps"
         ],
+        "summary": "The analysis of a finished sweep: configurations tried, the in-sample selection and its\nout-of-sample degradation, Spearman, PBO (or why it is unavailable) and caveats; for a seeds\ndesign the per-metric ensemble dispersion and an explicit collapse statement.",
         "operationId": "sweep_report",
         "parameters": [
           {
@@ -3272,11 +3283,28 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "format",
+            "in": "path",
+            "description": "`json` (default) or `markdown`.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
           "200": {
             "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SweepReportResponse"
+                }
+              },
               "text/markdown": {
                 "schema": {
                   "type": "string"
@@ -3285,6 +3313,16 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not every run is terminal yet",
             "content": {
               "application/json": {
                 "schema": {
@@ -3819,6 +3857,154 @@
           }
         }
       },
+      "Availability_Pbo": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "type": "object",
+                "description": "Probability of Backtest Overfitting by CSCV.",
+                "required": [
+                  "pbo",
+                  "blocks",
+                  "combinations",
+                  "cells",
+                  "logits_at_or_below_zero",
+                  "median_logit"
+                ],
+                "properties": {
+                  "blocks": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "`S`: equal time blocks of the selection window.",
+                    "minimum": 0
+                  },
+                  "cells": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "`N`: configurations in the matrix (all declared cells).",
+                    "minimum": 0
+                  },
+                  "combinations": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "`C(S, S/2)` train/test splits evaluated.",
+                    "minimum": 0
+                  },
+                  "logits_at_or_below_zero": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "median_logit": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "pbo": {
+                    "type": "number",
+                    "format": "double",
+                    "description": "Fraction of the train/test splits in which the in-sample best ranks at or below the\nout-of-sample median (logit ≤ 0)."
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "available"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "status"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A statistic, or the reason it is not reported."
+      },
+      "Availability_RankCorrelation": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "type": "object",
+                "required": [
+                  "spearman_rho",
+                  "cells"
+                ],
+                "properties": {
+                  "cells": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "Cells with both values.",
+                    "minimum": 0
+                  },
+                  "spearman_rho": {
+                    "type": "number",
+                    "format": "double",
+                    "description": "Spearman's rho between in-sample and out-of-sample values (average ranks for ties)."
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "available"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "status"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A statistic, or the reason it is not reported."
+      },
       "AvellanedaStoikovParams": {
         "type": "object",
         "required": [
@@ -4062,6 +4248,23 @@
           }
         }
       },
+      "Caveat": {
+        "type": "object",
+        "description": "A plain-language warning that belongs next to the numbers.",
+        "required": [
+          "code",
+          "text"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable key: `selection_bias`, `incomplete_cells`, `window_lengths`, `few_cells`,\n`not_a_significance_test`, `cscv_assumptions`, `no_annualised_sharpe`."
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
       "CellMetrics": {
         "type": "object",
         "properties": {
@@ -4200,6 +4403,46 @@
           }
         }
       },
+      "ConfigurationCounts": {
+        "type": "object",
+        "required": [
+          "tried",
+          "completed_in_sample",
+          "completed_out_of_sample",
+          "failed",
+          "missing"
+        ],
+        "properties": {
+          "completed_in_sample": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "completed_out_of_sample": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Cells with an error.",
+            "minimum": 0
+          },
+          "missing": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Cells with neither an in-sample value nor an error (not run, cancelled, or the objective\nundefined for them).",
+            "minimum": 0
+          },
+          "tried": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Every configuration the spec declares. All of them count as trials for selection bias,\nwhether they completed, failed or never ran.",
+            "minimum": 0
+          }
+        }
+      },
       "CreateComparison": {
         "type": "object",
         "description": "Body of `POST /api/v1/comparisons`.",
@@ -4266,7 +4509,7 @@
             ]
           },
           "spec": {
-            "$ref": "#/components/schemas/GridSpec"
+            "$ref": "#/components/schemas/SweepRequestSpec"
           }
         },
         "additionalProperties": false
@@ -4916,6 +5159,91 @@
           }
         }
       },
+      "Direction": {
+        "type": "string",
+        "enum": [
+          "maximize",
+          "minimize"
+        ]
+      },
+      "Dispersion": {
+        "type": "object",
+        "description": "Spread of one set of cell values (raw metric values, not oriented).",
+        "required": [
+          "n",
+          "min",
+          "p25",
+          "median",
+          "p75",
+          "max",
+          "mean"
+        ],
+        "properties": {
+          "max": {
+            "type": "number",
+            "format": "double"
+          },
+          "mean": {
+            "type": "number",
+            "format": "double"
+          },
+          "median": {
+            "type": "number",
+            "format": "double"
+          },
+          "min": {
+            "type": "number",
+            "format": "double"
+          },
+          "n": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "p25": {
+            "type": "number",
+            "format": "double",
+            "description": "Quantiles by linear interpolation between order statistics (Hyndman & Fan type 7)."
+          },
+          "p75": {
+            "type": "number",
+            "format": "double"
+          },
+          "std_dev": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Sample standard deviation (n − 1); `None` for one value."
+          }
+        }
+      },
+      "DispersionReport": {
+        "type": "object",
+        "properties": {
+          "in_sample": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Dispersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "out_of_sample": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Dispersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "Distribution": {
         "type": "object",
         "required": [
@@ -5082,6 +5410,133 @@
           "note": {
             "type": "string",
             "description": "Explains an expected disagreement (see docs/EXECUTION_MODEL.md), or is empty."
+          }
+        }
+      },
+      "EnsembleMember": {
+        "type": "object",
+        "description": "One seed of a segment and the run it produced.",
+        "required": [
+          "cell",
+          "seed"
+        ],
+        "properties": {
+          "cell": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The run's 16-hex id; `None` until it completed."
+          },
+          "seed": {
+            "type": "string"
+          }
+        }
+      },
+      "EnsembleReport": {
+        "type": "object",
+        "description": "The report of one seed ensemble.",
+        "required": [
+          "analysis_version",
+          "fingerprint",
+          "seed_count",
+          "seed_affects_result",
+          "collapsed",
+          "segments",
+          "caveats"
+        ],
+        "properties": {
+          "analysis_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "caveats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Caveat"
+            }
+          },
+          "collapse_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The explicit statement of a collapse; `None` when the seeds differ."
+          },
+          "collapsed": {
+            "type": "boolean",
+            "description": "Every seed produced the same result: by construction when `seed_affects_result` is\n`false`, or observed (every segment `identical`)."
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "[`SweepSpec::fingerprint`] of the analysed spec."
+          },
+          "seed_affects_result": {
+            "type": "boolean",
+            "description": "Whether the configuration's order-latency model uses the seed at all. `false` (constant\nlatency, or jitter of zero) means every seed replays the same simulation."
+          },
+          "seed_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleSegment"
+            }
+          }
+        }
+      },
+      "EnsembleSegment": {
+        "type": "object",
+        "description": "The ensemble on one part of the data: the whole dataset, in sample or out of sample.",
+        "required": [
+          "segment",
+          "completed",
+          "members",
+          "metrics",
+          "identical"
+        ],
+        "properties": {
+          "completed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seeds whose run completed.",
+            "minimum": 0
+          },
+          "identical": {
+            "type": "boolean",
+            "description": "At least two runs completed and all of them have exactly the same metrics."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnsembleMember"
+            },
+            "description": "Every seed, in the spec's order."
+          },
+          "metrics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricSpread"
+            },
+            "description": "Every [`ObjectiveMetric`] defined for at least one completed run."
+          },
+          "segment": {
+            "$ref": "#/components/schemas/Segment"
           }
         }
       },
@@ -6294,6 +6749,58 @@
           }
         }
       },
+      "FloatDomain": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Continuous uniform on `[min, max)`.",
+            "required": [
+              "min",
+              "max",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "uniform"
+                ]
+              },
+              "max": {
+                "type": "number",
+                "format": "double"
+              },
+              "min": {
+                "type": "number",
+                "format": "double"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "values",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "set"
+                ]
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "format": "double"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Fee values (fractions of traded value)."
+      },
       "FlowInterval": {
         "type": "object",
         "required": [
@@ -6694,6 +7201,63 @@
             "format": "double"
           }
         }
+      },
+      "IntDomain": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "`min, min + step, …` up to and including `max` when it lies on the grid.",
+            "required": [
+              "min",
+              "max",
+              "step",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "range"
+                ]
+              },
+              "max": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "min": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "step": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "values",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "set"
+                ]
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Integer parameter values (nanoseconds)."
       },
       "InterpretationNote": {
         "type": "object",
@@ -7822,6 +8386,54 @@
           }
         }
       },
+      "MetricSpread": {
+        "type": "object",
+        "description": "Spread of one metric over the completed seeds of a segment.",
+        "required": [
+          "metric",
+          "unit",
+          "n",
+          "mean",
+          "min",
+          "max"
+        ],
+        "properties": {
+          "max": {
+            "type": "number",
+            "format": "double"
+          },
+          "mean": {
+            "type": "number",
+            "format": "double"
+          },
+          "metric": {
+            "type": "string",
+            "description": "[`ObjectiveMetric::key`], e.g. `net_pnl`."
+          },
+          "min": {
+            "type": "number",
+            "format": "double"
+          },
+          "n": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seeds with a defined value.",
+            "minimum": 0
+          },
+          "std_dev": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Sample standard deviation (n − 1); `None` below two values."
+          },
+          "unit": {
+            "type": "string",
+            "description": "[`ObjectiveMetric::unit`]."
+          }
+        }
+      },
       "MetricSummary": {
         "type": "object",
         "required": [
@@ -8109,6 +8721,38 @@
             "description": "Total filled quantity."
           }
         }
+      },
+      "Objective": {
+        "type": "object",
+        "description": "The one quantity, declared up front, that ranks the cells.",
+        "required": [
+          "metric",
+          "direction"
+        ],
+        "properties": {
+          "direction": {
+            "$ref": "#/components/schemas/Direction"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/ObjectiveMetric"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ObjectiveMetric": {
+        "type": "string",
+        "description": "Which quantity of a run the sweep optimises. Annualised Sharpe-type ratios are deliberately\nabsent (`docs/research/MARKET_MICROSTRUCTURE.md` §5).",
+        "enum": [
+          "net_pnl",
+          "realized_pnl",
+          "fees",
+          "spread_capture",
+          "pnl_per_turnover_bps",
+          "max_drawdown",
+          "fill_count",
+          "fill_ratio_orders",
+          "mean_abs_position"
+        ]
       },
       "OpportunityCost": {
         "type": "object",
@@ -9799,13 +10443,23 @@
                 "id",
                 "label",
                 "version",
-                "x",
-                "y",
+                "design",
+                "fingerprint",
+                "axes",
+                "objective",
                 "state",
+                "report_ready",
                 "progress",
                 "created_at_ns"
               ],
               "properties": {
+                "axes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SweepAxis"
+                  },
+                  "description": "The axes of a grid design (first axis varies fastest); empty otherwise."
+                },
                 "cells": {
                   "type": [
                     "array",
@@ -9819,19 +10473,44 @@
                 "created_at_ns": {
                   "type": "string"
                 },
+                "design": {
+                  "type": "string",
+                  "description": "`grid`, `random` or `seeds`."
+                },
+                "fingerprint": {
+                  "type": "string",
+                  "description": "`SweepSpec::fingerprint`."
+                },
                 "id": {
                   "type": "string"
                 },
                 "label": {
                   "type": "string"
                 },
+                "objective": {
+                  "$ref": "#/components/schemas/Objective"
+                },
+                "partition": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Partition"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "progress": {
                   "$ref": "#/components/schemas/SweepProgress"
+                },
+                "report_ready": {
+                  "type": "boolean",
+                  "description": "Every run is terminal: `GET /sweeps/{id}/report` is available."
                 },
                 "spec": {
                   "oneOf": [
                     {
-                      "$ref": "#/components/schemas/GridSpec"
+                      "$ref": "#/components/schemas/SweepSpec"
                     },
                     {
                       "type": "null"
@@ -9845,12 +10524,6 @@
                 "version": {
                   "type": "integer",
                   "format": "int64"
-                },
-                "x": {
-                  "$ref": "#/components/schemas/SweepAxis"
-                },
-                "y": {
-                  "$ref": "#/components/schemas/SweepAxis"
                 }
               }
             }
@@ -9924,6 +10597,43 @@
             ]
           }
         }
+      },
+      "ParamValue": {
+        "type": "object",
+        "description": "One parameter value of a cell.",
+        "required": [
+          "param",
+          "label",
+          "value"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "[`GridAxis::value_label`], e.g. `1.5 ms`."
+          },
+          "param": {
+            "type": "string",
+            "description": "[`GridAxis::name`], e.g. `order_latency_ns`."
+          },
+          "value": {}
+        }
+      },
+      "Partition": {
+        "type": "object",
+        "description": "Contiguous, non-overlapping in-sample and out-of-sample windows. Out-of-sample lies entirely\nafter in-sample (a gap between them is allowed), so nothing chosen in sample can depend on\ndata from the out-of-sample period.",
+        "required": [
+          "in_sample",
+          "out_of_sample"
+        ],
+        "properties": {
+          "in_sample": {
+            "$ref": "#/components/schemas/TimeWindow"
+          },
+          "out_of_sample": {
+            "$ref": "#/components/schemas/TimeWindow"
+          }
+        },
+        "additionalProperties": false
       },
       "Preset": {
         "type": "object",
@@ -10548,6 +11258,122 @@
             "$ref": "#/components/schemas/QuotaUse"
           }
         }
+      },
+      "RandomParam": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "domain",
+              "type"
+            ],
+            "properties": {
+              "domain": {
+                "$ref": "#/components/schemas/IntDomain"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "order_latency_ns"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "domain",
+              "type"
+            ],
+            "properties": {
+              "domain": {
+                "$ref": "#/components/schemas/IntDomain"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "entry_latency_ns"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "domain",
+              "type"
+            ],
+            "properties": {
+              "domain": {
+                "$ref": "#/components/schemas/IntDomain"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "feed_latency_offset_ns"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "values",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "queue_model"
+                ]
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/QueueModelConfig"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "domain",
+              "type"
+            ],
+            "properties": {
+              "domain": {
+                "$ref": "#/components/schemas/FloatDomain"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "maker_fee"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "domain",
+              "type"
+            ],
+            "properties": {
+              "domain": {
+                "$ref": "#/components/schemas/FloatDomain"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "taker_fee"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A parameter of a random design and the values it may take. Same parameters and semantics as\n[`GridAxis`]; a drawn value is applied through a one-value `GridAxis`."
       },
       "Ready": {
         "type": "object",
@@ -11293,6 +12119,131 @@
           }
         ]
       },
+      "Segment": {
+        "type": "string",
+        "description": "Which part of the data a run covers.",
+        "enum": [
+          "full",
+          "in_sample",
+          "out_of_sample"
+        ]
+      },
+      "SelectedCell": {
+        "type": "object",
+        "description": "The cell the objective selected in sample, and what happened to it out of sample.",
+        "required": [
+          "cell",
+          "in_sample",
+          "tied_with",
+          "out_of_sample_of"
+        ],
+        "properties": {
+          "cell": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "degradation": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "In-sample minus out-of-sample in the objective's direction: positive means the selected\ncell did worse out of sample."
+          },
+          "degradation_per_second": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "in_sample": {
+            "type": "number",
+            "format": "double"
+          },
+          "in_sample_per_second": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Time-additive objectives only: each value divided by its window's length in seconds, so\nwindows of different length compare."
+          },
+          "out_of_sample": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "out_of_sample_of": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "out_of_sample_per_second": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "out_of_sample_rank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1 is best, in the objective's direction, among the `out_of_sample_of` cells with an\nout-of-sample value: one plus the number of cells strictly better.",
+            "minimum": 0
+          },
+          "relative_degradation": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`degradation / |in_sample|`; `None` when the in-sample value is zero."
+          },
+          "tied_with": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Other cells with exactly the same in-sample value; the lowest index is selected.",
+            "minimum": 0
+          }
+        }
+      },
+      "SelectionBias": {
+        "type": "object",
+        "required": [
+          "trials"
+        ],
+        "properties": {
+          "expected_max_z_under_noise": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Approximate expected maximum of `trials` independent standard normals (Bailey et al.\n2014): what `selected_z` would be on average if every cell were noise. `None` below two\ntrials."
+          },
+          "selected_z": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "How many in-sample standard deviations the selected value lies above the in-sample mean\nof the completed cells, in the objective's direction."
+          },
+          "trials": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of trials: every declared configuration.",
+            "minimum": 0
+          }
+        }
+      },
       "Severity": {
         "type": "string",
         "description": "Severity of a data-quality finding.",
@@ -11900,13 +12851,23 @@
           "id",
           "label",
           "version",
-          "x",
-          "y",
+          "design",
+          "fingerprint",
+          "axes",
+          "objective",
           "state",
+          "report_ready",
           "progress",
           "created_at_ns"
         ],
         "properties": {
+          "axes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SweepAxis"
+            },
+            "description": "The axes of a grid design (first axis varies fastest); empty otherwise."
+          },
           "cells": {
             "type": [
               "array",
@@ -11920,19 +12881,44 @@
           "created_at_ns": {
             "type": "string"
           },
+          "design": {
+            "type": "string",
+            "description": "`grid`, `random` or `seeds`."
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "`SweepSpec::fingerprint`."
+          },
           "id": {
             "type": "string"
           },
           "label": {
             "type": "string"
           },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "partition": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Partition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "progress": {
             "$ref": "#/components/schemas/SweepProgress"
+          },
+          "report_ready": {
+            "type": "boolean",
+            "description": "Every run is terminal: `GET /sweeps/{id}/report` is available."
           },
           "spec": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/GridSpec"
+                "$ref": "#/components/schemas/SweepSpec"
               },
               {
                 "type": "null"
@@ -11946,17 +12932,12 @@
           "version": {
             "type": "integer",
             "format": "int64"
-          },
-          "x": {
-            "$ref": "#/components/schemas/SweepAxis"
-          },
-          "y": {
-            "$ref": "#/components/schemas/SweepAxis"
           }
         }
       },
       "SweepAxis": {
         "type": "object",
+        "description": "One axis of a grid design.",
         "required": [
           "axis",
           "labels"
@@ -11975,15 +12956,63 @@
       },
       "SweepCell": {
         "type": "object",
+        "description": "One configuration of a sweep and the state of its runs.",
         "required": [
-          "x",
-          "y",
-          "experiment_id",
+          "index",
+          "coords",
+          "params",
+          "runs"
+        ],
+        "properties": {
+          "coords": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Grid coordinates, one per axis; empty for random and seeds designs."
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Position in the spec's cell order, from 0.",
+            "minimum": 0
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParamValue"
+            }
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SweepCellRun"
+            }
+          }
+        }
+      },
+      "SweepCellRun": {
+        "type": "object",
+        "description": "One run of a cell: its job state and, once completed, its run.",
+        "required": [
+          "segment",
           "state"
         ],
         "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "experiment_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`None` until the run was submitted (an interrupted submission; resubmit the spec)."
           },
           "job_id": {
             "type": [
@@ -12007,23 +13036,115 @@
               "null"
             ]
           },
+          "segment": {
+            "$ref": "#/components/schemas/Segment"
+          },
           "state": {
-            "type": "string"
-          },
-          "x": {
-            "type": "integer",
-            "format": "int32"
-          },
-          "y": {
-            "type": "integer",
-            "format": "int32"
+            "type": "string",
+            "description": "`queued`, `running`, `completed`, `failed`, `cancelled`, `expired`, `detached` or\n`not_submitted`."
           }
         }
       },
+      "SweepDesign": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Every combination of one or two axes. Cells are ordered row-major, the first axis\nvarying fastest: cell `yi * x_len + xi` (as in `GridResult`).",
+            "required": [
+              "axes",
+              "type"
+            ],
+            "properties": {
+              "axes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/GridAxis"
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "grid"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "`samples` configurations drawn from the declared parameter domains with `seed`.\n\nCombinations of the discrete parameters are drawn uniformly **without replacement**. When\n`samples` exceeds the number of discrete combinations (possible only with a continuous\nparameter), every combination is used once before any is used again. Continuous\nparameters are drawn uniformly, each from its own seeded stream, so adding a parameter\nnever changes the values another one receives.",
+            "required": [
+              "samples",
+              "seed",
+              "params",
+              "type"
+            ],
+            "properties": {
+              "params": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RandomParam"
+                }
+              },
+              "samples": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "seed": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "random"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One configuration (`base`) replayed under several seeds: an ensemble that measures how\nmuch of a result is the seeded draw. Either `seeds` lists them, or `count` seeds\n`base_seed, base_seed + 1, …` are used (`base_seed` defaults to `base.seed`). The seed\ndrives only the stochastic order-latency models (`jitter`, `log_normal`, `heavy_tail`);\nunder `constant` latency every seed gives the same result. Nothing is selected, so\n`cscv_blocks` does not apply.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "base_seed": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "count": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "seeds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "seeds"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "How the configurations of a sweep are chosen."
+      },
       "SweepProgress": {
         "type": "object",
+        "description": "Counts over the sweep's runs (a partitioned cell has two).",
         "required": [
           "cells_total",
+          "runs_total",
           "completed",
           "running",
           "queued",
@@ -12038,6 +13159,7 @@
           },
           "cells_total": {
             "type": "integer",
+            "description": "Configurations declared by the spec.",
             "minimum": 0
           },
           "completed": {
@@ -12059,8 +13181,254 @@
           "running": {
             "type": "integer",
             "minimum": 0
+          },
+          "runs_total": {
+            "type": "integer",
+            "description": "Runs planned: one per cell, or in-sample and out-of-sample per cell.",
+            "minimum": 0
           }
         }
+      },
+      "SweepReport": {
+        "type": "object",
+        "description": "The registry report of one sweep.",
+        "required": [
+          "analysis_version",
+          "fingerprint",
+          "objective",
+          "unit",
+          "has_out_of_sample",
+          "configurations",
+          "rank_correlation",
+          "dispersion",
+          "selection_bias",
+          "pbo",
+          "caveats"
+        ],
+        "properties": {
+          "analysis_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "caveats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Caveat"
+            }
+          },
+          "configurations": {
+            "$ref": "#/components/schemas/ConfigurationCounts"
+          },
+          "dispersion": {
+            "$ref": "#/components/schemas/DispersionReport"
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "[`SweepSpec::fingerprint`] of the analysed spec."
+          },
+          "has_out_of_sample": {
+            "type": "boolean"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "pbo": {
+            "$ref": "#/components/schemas/Availability_Pbo"
+          },
+          "rank_correlation": {
+            "$ref": "#/components/schemas/Availability_RankCorrelation"
+          },
+          "selected": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SelectedCell",
+                "description": "`None` when no cell has an in-sample value."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_bias": {
+            "$ref": "#/components/schemas/SelectionBias"
+          },
+          "unit": {
+            "type": "string",
+            "description": "[`ObjectiveMetric::unit`] of the objective."
+          }
+        }
+      },
+      "SweepReportCell": {
+        "type": "object",
+        "description": "A configuration as analysed: its parameters and objective values.",
+        "required": [
+          "index",
+          "params"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_sample": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Objective on the selection data: the in-sample window, or the whole dataset."
+          },
+          "in_sample_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "out_of_sample": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "out_of_sample_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParamValue"
+            }
+          }
+        }
+      },
+      "SweepReportResponse": {
+        "type": "object",
+        "description": "`GET /sweeps/{id}/report`: the analysis of a finished sweep. Grid and random designs carry\n`analysis` (selection, IS→OOS degradation, Spearman, PBO, caveats); a seeds design carries\n`ensemble` (per-metric dispersion over seeds) instead.",
+        "required": [
+          "sweep_id",
+          "label",
+          "design",
+          "state",
+          "objective",
+          "cells"
+        ],
+        "properties": {
+          "analysis": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SweepReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SweepReportCell"
+            }
+          },
+          "design": {
+            "type": "string"
+          },
+          "ensemble": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EnsembleReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "partition": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Partition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "sweep_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SweepRequestSpec": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SweepSpec"
+          },
+          {
+            "$ref": "#/components/schemas/GridSpec"
+          }
+        ],
+        "description": "The sweep to run: a `SweepSpec` (has `design`), or a legacy two-axis `GridSpec` (has `x` and\n`y`), which is converted to a grid sweep on the whole dataset ranked by net P&L."
+      },
+      "SweepSpec": {
+        "type": "object",
+        "description": "A declared, bounded parameter sweep.",
+        "required": [
+          "base",
+          "design"
+        ],
+        "properties": {
+          "base": {
+            "$ref": "#/components/schemas/RunConfig"
+          },
+          "cscv_blocks": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Number of equal time blocks of the selection window (in-sample, or the whole dataset) for\nthe CSCV probability of backtest overfitting. `None` skips it.",
+            "minimum": 0
+          },
+          "design": {
+            "$ref": "#/components/schemas/SweepDesign"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective",
+            "description": "Ranks the cells; defaults to maximising net P&L. A seeds ensemble ranks nothing."
+          },
+          "partition": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Partition",
+                "description": "Without a partition every cell runs once on the whole dataset and no out-of-sample value\nexists."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "SweepSubmitted": {
         "type": "object",
@@ -12070,7 +13438,8 @@
         ],
         "properties": {
           "created": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "`false` when the same spec was already submitted in this workspace (idempotent; any\nrun missing from an interrupted submission is submitted now)."
           },
           "sweep": {
             "$ref": "#/components/schemas/Sweep"
@@ -12095,6 +13464,23 @@
           "micros",
           "nanos"
         ]
+      },
+      "TimeWindow": {
+        "type": "object",
+        "description": "Half-open exchange-clock interval `[start, end)`, nanoseconds relative to the dataset origin.",
+        "required": [
+          "start",
+          "end"
+        ],
+        "properties": {
+          "end": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "TimestampInfo": {
         "type": "object",

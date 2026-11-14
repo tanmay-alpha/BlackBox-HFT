@@ -10,6 +10,11 @@ license.workspace = true
 bb-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[features]
+# `ToSchema` derives for the sweep and ensemble reports served by `/api/v1` (attribute-only).
+openapi = ["dep:utoipa", "bb-core/openapi"]
 
 [dev-dependencies]
 bb-sim.workspace = true

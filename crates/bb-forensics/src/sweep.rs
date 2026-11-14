@@ -57,6 +57,7 @@ pub struct SweepCellOutcome {
 
 /// A statistic, or the reason it is not reported.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Availability<T> {
     Available(T),
@@ -79,6 +80,7 @@ impl<T> Availability<T> {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ConfigurationCounts {
     /// Every configuration the spec declares. All of them count as trials for selection bias,
     /// whether they completed, failed or never ran.
@@ -94,6 +96,7 @@ pub struct ConfigurationCounts {
 
 /// The cell the objective selected in sample, and what happened to it out of sample.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SelectedCell {
     pub cell: u32,
     pub in_sample: f64,
@@ -117,6 +120,7 @@ pub struct SelectedCell {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RankCorrelation {
     /// Spearman's rho between in-sample and out-of-sample values (average ranks for ties).
     pub spearman_rho: f64,
@@ -126,6 +130,7 @@ pub struct RankCorrelation {
 
 /// Spread of one set of cell values (raw metric values, not oriented).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Dispersion {
     pub n: u32,
     pub min: f64,
@@ -140,12 +145,14 @@ pub struct Dispersion {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DispersionReport {
     pub in_sample: Option<Dispersion>,
     pub out_of_sample: Option<Dispersion>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SelectionBias {
     /// Number of trials: every declared configuration.
     pub trials: u32,
@@ -160,6 +167,7 @@ pub struct SelectionBias {
 
 /// Probability of Backtest Overfitting by CSCV.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Pbo {
     /// Fraction of the train/test splits in which the in-sample best ranks at or below the
     /// out-of-sample median (logit ≤ 0).
@@ -176,6 +184,7 @@ pub struct Pbo {
 
 /// A plain-language warning that belongs next to the numbers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Caveat {
     /// Stable key: `selection_bias`, `incomplete_cells`, `window_lengths`, `few_cells`,
     /// `not_a_significance_test`, `cscv_assumptions`, `no_annualised_sharpe`.
@@ -185,6 +194,7 @@ pub struct Caveat {
 
 /// The registry report of one sweep.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SweepReport {
     pub analysis_version: u32,
     /// [`SweepSpec::fingerprint`] of the analysed spec.

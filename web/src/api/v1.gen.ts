@@ -656,7 +656,12 @@ export interface paths {
         /** Sweeps of a workspace, newest first (without cells). */
         get: operations["list_sweeps"];
         put?: never;
-        /** Admit a grid (every cell) and queue its cells as experiments. Idempotent per spec. */
+        /**
+         * Admit a `SweepSpec` (or a legacy `GridSpec`) under the deployment's sweep limits, register
+         *     the slice datasets of a partition, and queue every run through the common admission path.
+         *     Idempotent per spec, dataset version and platform: a resubmission returns the same sweep and
+         *     submits only runs an interrupted submission left out.
+         */
         post: operations["create_sweep"];
         delete?: never;
         options?: never;
@@ -671,6 +676,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** A sweep with every cell, each with the job state of its runs (per segment). */
         get: operations["get_sweep"];
         put?: never;
         post?: never;
@@ -689,7 +695,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancel every live cell (cells another workspace still wants keep running). */
+        /** Cancel every live run (runs another workspace still wants keep running). */
         post: operations["cancel_sweep"];
         delete?: never;
         options?: never;
@@ -704,6 +710,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * The analysis of a finished sweep: configurations tried, the in-sample selection and its
+         *     out-of-sample degradation, Spearman, PBO (or why it is unavailable) and caveats; for a seeds
+         *     design the per-metric ensemble dispersion and an explicit collapse statement.
+         */
         get: operations["sweep_report"];
         put?: never;
         post?: never;
@@ -910,6 +921,61 @@ export interface components {
             same_outcome_different_timing: number;
             timing: components["schemas"]["TimingSummary"];
         };
+        /** @description A statistic, or the reason it is not reported. */
+        Availability_Pbo: ({
+            /**
+             * Format: int32
+             * @description `S`: equal time blocks of the selection window.
+             */
+            blocks: number;
+            /**
+             * Format: int32
+             * @description `N`: configurations in the matrix (all declared cells).
+             */
+            cells: number;
+            /**
+             * Format: int32
+             * @description `C(S, S/2)` train/test splits evaluated.
+             */
+            combinations: number;
+            /** Format: int32 */
+            logits_at_or_below_zero: number;
+            /** Format: double */
+            median_logit: number;
+            /**
+             * Format: double
+             * @description Fraction of the train/test splits in which the in-sample best ranks at or below the
+             *     out-of-sample median (logit ≤ 0).
+             */
+            pbo: number;
+        } & {
+            /** @enum {string} */
+            status: "available";
+        }) | {
+            reason: string;
+            /** @enum {string} */
+            status: "unavailable";
+        };
+        /** @description A statistic, or the reason it is not reported. */
+        Availability_RankCorrelation: ({
+            /**
+             * Format: int32
+             * @description Cells with both values.
+             */
+            cells: number;
+            /**
+             * Format: double
+             * @description Spearman's rho between in-sample and out-of-sample values (average ranks for ties).
+             */
+            spearman_rho: number;
+        } & {
+            /** @enum {string} */
+            status: "available";
+        }) | {
+            reason: string;
+            /** @enum {string} */
+            status: "unavailable";
+        };
         AvellanedaStoikovParams: {
             /**
              * Format: double
@@ -991,6 +1057,15 @@ export interface components {
             round_trip_ns: components["schemas"]["Distribution"];
             to_exchange_ns: components["schemas"]["Distribution"];
         };
+        /** @description A plain-language warning that belongs next to the numbers. */
+        Caveat: {
+            /**
+             * @description Stable key: `selection_bias`, `incomplete_cells`, `window_lengths`, `few_cells`,
+             *     `not_a_significance_test`, `cscv_assumptions`, `no_annualised_sharpe`.
+             */
+            code: string;
+            text: string;
+        };
         CellMetrics: {
             /** Format: double */
             fees?: number | null;
@@ -1031,6 +1106,29 @@ export interface components {
             /** @description Dotted path into the serialized [`RunConfig`], e.g. `execution.order_latency.entry_ns`. */
             path: string;
         };
+        ConfigurationCounts: {
+            /** Format: int32 */
+            completed_in_sample: number;
+            /** Format: int32 */
+            completed_out_of_sample: number;
+            /**
+             * Format: int32
+             * @description Cells with an error.
+             */
+            failed: number;
+            /**
+             * Format: int32
+             * @description Cells with neither an in-sample value nor an error (not run, cancelled, or the objective
+             *     undefined for them).
+             */
+            missing: number;
+            /**
+             * Format: int32
+             * @description Every configuration the spec declares. All of them count as trials for selection bias,
+             *     whether they completed, failed or never ran.
+             */
+            tried: number;
+        };
         /** @description Body of `POST /api/v1/comparisons`. */
         CreateComparison: {
             label?: string | null;
@@ -1049,7 +1147,7 @@ export interface components {
         /** @description Body of `POST /api/v1/sweeps`. */
         CreateSweep: {
             label?: string | null;
-            spec: components["schemas"]["GridSpec"];
+            spec: components["schemas"]["SweepRequestSpec"];
         };
         CreatedBy: {
             display_prefix: string;
@@ -1264,6 +1362,37 @@ export interface components {
             ][];
             ts: string;
         };
+        /** @enum {string} */
+        Direction: "maximize" | "minimize";
+        /** @description Spread of one set of cell values (raw metric values, not oriented). */
+        Dispersion: {
+            /** Format: double */
+            max: number;
+            /** Format: double */
+            mean: number;
+            /** Format: double */
+            median: number;
+            /** Format: double */
+            min: number;
+            /** Format: int32 */
+            n: number;
+            /**
+             * Format: double
+             * @description Quantiles by linear interpolation between order statistics (Hyndman & Fan type 7).
+             */
+            p25: number;
+            /** Format: double */
+            p75: number;
+            /**
+             * Format: double
+             * @description Sample standard deviation (n − 1); `None` for one value.
+             */
+            std_dev?: number | null;
+        };
+        DispersionReport: {
+            in_sample?: components["schemas"]["Dispersion"] | null;
+            out_of_sample?: components["schemas"]["Dispersion"] | null;
+        };
         Distribution: {
             median: components["schemas"]["Value"];
             p05: components["schemas"]["Value"];
@@ -1328,6 +1457,53 @@ export interface components {
             ledger_position: number;
             /** @description Explains an expected disagreement (see docs/EXECUTION_MODEL.md), or is empty. */
             note: string;
+        };
+        /** @description One seed of a segment and the run it produced. */
+        EnsembleMember: {
+            /** Format: int32 */
+            cell: number;
+            error?: string | null;
+            /** @description The run's 16-hex id; `None` until it completed. */
+            run_id?: string | null;
+            seed: string;
+        };
+        /** @description The report of one seed ensemble. */
+        EnsembleReport: {
+            /** Format: int32 */
+            analysis_version: number;
+            caveats: components["schemas"]["Caveat"][];
+            /** @description The explicit statement of a collapse; `None` when the seeds differ. */
+            collapse_reason?: string | null;
+            /**
+             * @description Every seed produced the same result: by construction when `seed_affects_result` is
+             *     `false`, or observed (every segment `identical`).
+             */
+            collapsed: boolean;
+            /** @description [`SweepSpec::fingerprint`] of the analysed spec. */
+            fingerprint: string;
+            /**
+             * @description Whether the configuration's order-latency model uses the seed at all. `false` (constant
+             *     latency, or jitter of zero) means every seed replays the same simulation.
+             */
+            seed_affects_result: boolean;
+            /** Format: int32 */
+            seed_count: number;
+            segments: components["schemas"]["EnsembleSegment"][];
+        };
+        /** @description The ensemble on one part of the data: the whole dataset, in sample or out of sample. */
+        EnsembleSegment: {
+            /**
+             * Format: int32
+             * @description Seeds whose run completed.
+             */
+            completed: number;
+            /** @description At least two runs completed and all of them have exactly the same metrics. */
+            identical: boolean;
+            /** @description Every seed, in the spec's order. */
+            members: components["schemas"]["EnsembleMember"][];
+            /** @description Every [`ObjectiveMetric`] defined for at least one completed run. */
+            metrics: components["schemas"]["MetricSpread"][];
+            segment: components["schemas"]["Segment"];
         };
         EquityPage: {
             bucket_ns?: string | null;
@@ -1761,6 +1937,19 @@ export interface components {
             /** @description When the event happened, in `clock`'s domain. */
             ts: string;
         };
+        /** @description Fee values (fractions of traded value). */
+        FloatDomain: {
+            /** @enum {string} */
+            kind: "uniform";
+            /** Format: double */
+            max: number;
+            /** Format: double */
+            min: number;
+        } | {
+            /** @enum {string} */
+            kind: "set";
+            values: number[];
+        };
         FlowInterval: {
             end_ns: string;
             flagged_invalid: boolean;
@@ -1912,6 +2101,21 @@ export interface components {
             symbol: string;
             /** Format: double */
             tick_size: number;
+        };
+        /** @description Integer parameter values (nanoseconds). */
+        IntDomain: {
+            /** @enum {string} */
+            kind: "range";
+            /** Format: int64 */
+            max: number;
+            /** Format: int64 */
+            min: number;
+            /** Format: int64 */
+            step: number;
+        } | {
+            /** @enum {string} */
+            kind: "set";
+            values: number[];
         };
         /** @description A statement about the comparison and how well it is supported. */
         InterpretationNote: {
@@ -2246,6 +2450,29 @@ export interface components {
             /** @description `"quote"`, `"qty"`, `"count"`, `"ratio"`, `"ns"` or `"ticks"`. */
             unit: string;
         };
+        /** @description Spread of one metric over the completed seeds of a segment. */
+        MetricSpread: {
+            /** Format: double */
+            max: number;
+            /** Format: double */
+            mean: number;
+            /** @description [`ObjectiveMetric::key`], e.g. `net_pnl`. */
+            metric: string;
+            /** Format: double */
+            min: number;
+            /**
+             * Format: int32
+             * @description Seeds with a defined value.
+             */
+            n: number;
+            /**
+             * Format: double
+             * @description Sample standard deviation (n − 1); `None` below two values.
+             */
+            std_dev?: number | null;
+            /** @description [`ObjectiveMetric::unit`]. */
+            unit: string;
+        };
         MetricSummary: {
             clock_mean: components["schemas"]["Value"];
             event_max: components["schemas"]["Value"];
@@ -2354,6 +2581,17 @@ export interface components {
              */
             volume: number;
         };
+        /** @description The one quantity, declared up front, that ranks the cells. */
+        Objective: {
+            direction: components["schemas"]["Direction"];
+            metric: components["schemas"]["ObjectiveMetric"];
+        };
+        /**
+         * @description Which quantity of a run the sweep optimises. Annualised Sharpe-type ratios are deliberately
+         *     absent (`docs/research/MARKET_MICROSTRUCTURE.md` §5).
+         * @enum {string}
+         */
+        ObjectiveMetric: "net_pnl" | "realized_pnl" | "fees" | "spread_capture" | "pnl_per_turnover_bps" | "max_drawdown" | "fill_count" | "fill_ratio_orders" | "mean_abs_position";
         OpportunityCost: {
             cost: components["schemas"]["Value"];
             horizon_ns: string;
@@ -2821,19 +3059,27 @@ export interface components {
         /** @description A cursor page (API_CONTRACT §7). */
         Page_Sweep: {
             items: {
+                /** @description The axes of a grid design (first axis varies fastest); empty otherwise. */
+                axes: components["schemas"]["SweepAxis"][];
                 /** @description Omitted (`null`) in list responses. */
                 cells?: components["schemas"]["SweepCell"][] | null;
                 created_at_ns: string;
+                /** @description `grid`, `random` or `seeds`. */
+                design: string;
+                /** @description `SweepSpec::fingerprint`. */
+                fingerprint: string;
                 id: string;
                 label: string;
+                objective: components["schemas"]["Objective"];
+                partition?: components["schemas"]["Partition"] | null;
                 progress: components["schemas"]["SweepProgress"];
-                spec?: components["schemas"]["GridSpec"] | null;
+                /** @description Every run is terminal: `GET /sweeps/{id}/report` is available. */
+                report_ready: boolean;
+                spec?: components["schemas"]["SweepSpec"] | null;
                 /** @description `queued`, `running`, `completed`, `partial` or `cancelled`. */
                 state: string;
                 /** Format: int64 */
                 version: number;
-                x: components["schemas"]["SweepAxis"];
-                y: components["schemas"]["SweepAxis"];
             }[];
             /** @description Opaque; pass back as `cursor` with the same filters. */
             next_cursor?: string | null;
@@ -2857,6 +3103,23 @@ export interface components {
             exch_arrival_ns?: string | null;
             first_fill_ns?: string | null;
             first_response_ns?: string | null;
+        };
+        /** @description One parameter value of a cell. */
+        ParamValue: {
+            /** @description [`GridAxis::value_label`], e.g. `1.5 ms`. */
+            label: string;
+            /** @description [`GridAxis::name`], e.g. `order_latency_ns`. */
+            param: string;
+            value: unknown;
+        };
+        /**
+         * @description Contiguous, non-overlapping in-sample and out-of-sample windows. Out-of-sample lies entirely
+         *     after in-sample (a gap between them is allowed), so nothing chosen in sample can depend on
+         *     data from the out-of-sample period.
+         */
+        Partition: {
+            in_sample: components["schemas"]["TimeWindow"];
+            out_of_sample: components["schemas"]["TimeWindow"];
         };
         /** @description A preset sized for a dataset (as `GET /api/presets`), plus whether it is admitted here. */
         Preset: {
@@ -3046,6 +3309,35 @@ export interface components {
             active_jobs: components["schemas"]["QuotaUse"];
             experiments_per_day: components["schemas"]["QuotaUse"];
             sweeps_per_day: components["schemas"]["QuotaUse"];
+        };
+        /**
+         * @description A parameter of a random design and the values it may take. Same parameters and semantics as
+         *     [`GridAxis`]; a drawn value is applied through a one-value `GridAxis`.
+         */
+        RandomParam: {
+            domain: components["schemas"]["IntDomain"];
+            /** @enum {string} */
+            type: "order_latency_ns";
+        } | {
+            domain: components["schemas"]["IntDomain"];
+            /** @enum {string} */
+            type: "entry_latency_ns";
+        } | {
+            domain: components["schemas"]["IntDomain"];
+            /** @enum {string} */
+            type: "feed_latency_offset_ns";
+        } | {
+            /** @enum {string} */
+            type: "queue_model";
+            values: components["schemas"]["QueueModelConfig"][];
+        } | {
+            domain: components["schemas"]["FloatDomain"];
+            /** @enum {string} */
+            type: "maker_fee";
+        } | {
+            domain: components["schemas"]["FloatDomain"];
+            /** @enum {string} */
+            type: "taker_fee";
         };
         Ready: {
             blob: string;
@@ -3298,6 +3590,74 @@ export interface components {
             type: "from_touch";
         };
         /**
+         * @description Which part of the data a run covers.
+         * @enum {string}
+         */
+        Segment: "full" | "in_sample" | "out_of_sample";
+        /** @description The cell the objective selected in sample, and what happened to it out of sample. */
+        SelectedCell: {
+            /** Format: int32 */
+            cell: number;
+            /**
+             * Format: double
+             * @description In-sample minus out-of-sample in the objective's direction: positive means the selected
+             *     cell did worse out of sample.
+             */
+            degradation?: number | null;
+            /** Format: double */
+            degradation_per_second?: number | null;
+            /** Format: double */
+            in_sample: number;
+            /**
+             * Format: double
+             * @description Time-additive objectives only: each value divided by its window's length in seconds, so
+             *     windows of different length compare.
+             */
+            in_sample_per_second?: number | null;
+            /** Format: double */
+            out_of_sample?: number | null;
+            /** Format: int32 */
+            out_of_sample_of: number;
+            /** Format: double */
+            out_of_sample_per_second?: number | null;
+            /**
+             * Format: int32
+             * @description 1 is best, in the objective's direction, among the `out_of_sample_of` cells with an
+             *     out-of-sample value: one plus the number of cells strictly better.
+             */
+            out_of_sample_rank?: number | null;
+            /**
+             * Format: double
+             * @description `degradation / |in_sample|`; `None` when the in-sample value is zero.
+             */
+            relative_degradation?: number | null;
+            /**
+             * Format: int32
+             * @description Other cells with exactly the same in-sample value; the lowest index is selected.
+             */
+            tied_with: number;
+        };
+        SelectionBias: {
+            /**
+             * Format: double
+             * @description Approximate expected maximum of `trials` independent standard normals (Bailey et al.
+             *     2014): what `selected_z` would be on average if every cell were noise. `None` below two
+             *     trials.
+             */
+            expected_max_z_under_noise?: number | null;
+            /**
+             * Format: double
+             * @description How many in-sample standard deviations the selected value lies above the in-sample mean
+             *     of the completed cells, in the objective's direction.
+             */
+            selected_z?: number | null;
+            /**
+             * Format: int32
+             * @description Number of trials: every declared configuration.
+             */
+            trials: number;
+        };
+        /**
          * @description Severity of a data-quality finding.
          * @enum {string}
          */
@@ -3446,45 +3806,167 @@ export interface components {
         };
         /** @description API_CONTRACT §8.7 `Sweep`. */
         Sweep: {
+            /** @description The axes of a grid design (first axis varies fastest); empty otherwise. */
+            axes: components["schemas"]["SweepAxis"][];
             /** @description Omitted (`null`) in list responses. */
             cells?: components["schemas"]["SweepCell"][] | null;
             created_at_ns: string;
+            /** @description `grid`, `random` or `seeds`. */
+            design: string;
+            /** @description `SweepSpec::fingerprint`. */
+            fingerprint: string;
             id: string;
             label: string;
+            objective: components["schemas"]["Objective"];
+            partition?: components["schemas"]["Partition"] | null;
             progress: components["schemas"]["SweepProgress"];
-            spec?: components["schemas"]["GridSpec"] | null;
+            /** @description Every run is terminal: `GET /sweeps/{id}/report` is available. */
+            report_ready: boolean;
+            spec?: components["schemas"]["SweepSpec"] | null;
             /** @description `queued`, `running`, `completed`, `partial` or `cancelled`. */
             state: string;
             /** Format: int64 */
             version: number;
-            x: components["schemas"]["SweepAxis"];
-            y: components["schemas"]["SweepAxis"];
         };
+        /** @description One axis of a grid design. */
         SweepAxis: {
             axis: string;
             labels: string[];
         };
+        /** @description One configuration of a sweep and the state of its runs. */
         SweepCell: {
-            experiment_id: string;
+            /** @description Grid coordinates, one per axis; empty for random and seeds designs. */
+            coords: number[];
+            /**
+             * Format: int32
+             * @description Position in the spec's cell order, from 0.
+             */
+            index: number;
+            params: components["schemas"]["ParamValue"][];
+            runs: components["schemas"]["SweepCellRun"][];
+        };
+        /** @description One run of a cell: its job state and, once completed, its run. */
+        SweepCellRun: {
+            error?: string | null;
+            /** @description `None` until the run was submitted (an interrupted submission; resubmit the spec). */
+            experiment_id?: string | null;
             job_id?: string | null;
             metrics?: components["schemas"]["CellMetrics"] | null;
             run_id?: string | null;
+            segment: components["schemas"]["Segment"];
+            /**
+             * @description `queued`, `running`, `completed`, `failed`, `cancelled`, `expired`, `detached` or
+             *     `not_submitted`.
+             */
             state: string;
-            /** Format: int32 */
-            x: number;
-            /** Format: int32 */
-            y: number;
         };
+        /** @description How the configurations of a sweep are chosen. */
+        SweepDesign: {
+            axes: components["schemas"]["GridAxis"][];
+            /** @enum {string} */
+            type: "grid";
+        } | {
+            params: components["schemas"]["RandomParam"][];
+            /** Format: int32 */
+            samples: number;
+            seed: string;
+            /** @enum {string} */
+            type: "random";
+        } | {
+            base_seed?: string | null;
+            /** Format: int32 */
+            count?: number | null;
+            seeds?: string[];
+            /** @enum {string} */
+            type: "seeds";
+        };
+        /** @description Counts over the sweep's runs (a partitioned cell has two). */
         SweepProgress: {
             cancelled: number;
+            /** @description Configurations declared by the spec. */
             cells_total: number;
             completed: number;
             expired: number;
             failed: number;
             queued: number;
             running: number;
+            /** @description Runs planned: one per cell, or in-sample and out-of-sample per cell. */
+            runs_total: number;
+        };
+        /** @description The registry report of one sweep. */
+        SweepReport: {
+            /** Format: int32 */
+            analysis_version: number;
+            caveats: components["schemas"]["Caveat"][];
+            configurations: components["schemas"]["ConfigurationCounts"];
+            dispersion: components["schemas"]["DispersionReport"];
+            /** @description [`SweepSpec::fingerprint`] of the analysed spec. */
+            fingerprint: string;
+            has_out_of_sample: boolean;
+            objective: components["schemas"]["Objective"];
+            pbo: components["schemas"]["Availability_Pbo"];
+            rank_correlation: components["schemas"]["Availability_RankCorrelation"];
+            selected?: components["schemas"]["SelectedCell"] | null;
+            selection_bias: components["schemas"]["SelectionBias"];
+            /** @description [`ObjectiveMetric::unit`] of the objective. */
+            unit: string;
+        };
+        /** @description A configuration as analysed: its parameters and objective values. */
+        SweepReportCell: {
+            error?: string | null;
+            /**
+             * Format: double
+             * @description Objective on the selection data: the in-sample window, or the whole dataset.
+             */
+            in_sample?: number | null;
+            in_sample_run_id?: string | null;
+            /** Format: int32 */
+            index: number;
+            /** Format: double */
+            out_of_sample?: number | null;
+            out_of_sample_run_id?: string | null;
+            params: components["schemas"]["ParamValue"][];
+        };
+        /**
+         * @description `GET /sweeps/{id}/report`: the analysis of a finished sweep. Grid and random designs carry
+         *     `analysis` (selection, IS→OOS degradation, Spearman, PBO, caveats); a seeds design carries
+         *     `ensemble` (per-metric dispersion over seeds) instead.
+         */
+        SweepReportResponse: {
+            analysis?: components["schemas"]["SweepReport"] | null;
+            cells: components["schemas"]["SweepReportCell"][];
+            design: string;
+            ensemble?: components["schemas"]["EnsembleReport"] | null;
+            label: string;
+            objective: components["schemas"]["Objective"];
+            partition?: components["schemas"]["Partition"] | null;
+            state: string;
+            sweep_id: string;
+        };
+        /**
+         * @description The sweep to run: a `SweepSpec` (has `design`), or a legacy two-axis `GridSpec` (has `x` and
+         *     `y`), which is converted to a grid sweep on the whole dataset ranked by net P&L.
+         */
+        SweepRequestSpec: components["schemas"]["SweepSpec"] | components["schemas"]["GridSpec"];
+        /** @description A declared, bounded parameter sweep. */
+        SweepSpec: {
+            base: components["schemas"]["RunConfig"];
+            /**
+             * Format: int32
+             * @description Number of equal time blocks of the selection window (in-sample, or the whole dataset) for
+             *     the CSCV probability of backtest overfitting. `None` skips it.
+             */
+            cscv_blocks?: number | null;
+            design: components["schemas"]["SweepDesign"];
+            /** @description Ranks the cells; defaults to maximising net P&L. A seeds ensemble ranks nothing. */
+            objective?: components["schemas"]["Objective"];
+            partition?: components["schemas"]["Partition"] | null;
         };
         SweepSubmitted: {
+            /**
+             * @description `false` when the same spec was already submitted in this workspace (idempotent; any
+             *     run missing from an interrupted submission is submitted now).
+             */
             created: boolean;
             sweep: components["schemas"]["Sweep"];
         };
@@ -3499,6 +3981,11 @@ export interface components {
         Tif: "gtc" | "gtx" | "ioc" | "fok";
         /** @enum {string} */
         TimeUnit: "seconds" | "millis" | "micros" | "nanos";
+        /** @description Half-open exchange-clock interval `[start, end)`, nanoseconds relative to the dataset origin. */
+        TimeWindow: {
+            end: string;
+            start: string;
+        };
         TimestampInfo: {
             /** @description Unit the source file declared or was told to use. */
             input_unit: components["schemas"]["TimeUnit"];
@@ -5298,6 +5785,14 @@ export interface operations {
                     "application/json": components["schemas"]["SweepSubmitted"];
                 };
             };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -5454,6 +5949,8 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+                /** @description `json` (default) or `markdown`. */
+                format: string | null;
             };
             cookie?: never;
         };
@@ -5464,10 +5961,20 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+                    "application/json": components["schemas"]["SweepReportResponse"];
                     "text/markdown": string;
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not every run is terminal yet */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

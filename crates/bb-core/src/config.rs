@@ -145,6 +145,19 @@ pub enum OrderLatencyConfig {
     },
 }
 
+impl OrderLatencyConfig {
+    /// Whether the run's seed changes any latency (and so possibly the result): `false` for
+    /// `constant` and for `jitter` with `jitter_ns == 0`. The seed drives nothing else, so two
+    /// configurations that differ only in the seed give the same result when this is `false`.
+    pub fn uses_seed(&self) -> bool {
+        match self {
+            OrderLatencyConfig::Constant { .. } => false,
+            OrderLatencyConfig::Jitter { jitter_ns, .. } => *jitter_ns > 0,
+            OrderLatencyConfig::LogNormal { .. } | OrderLatencyConfig::HeavyTail { .. } => true,
+        }
+    }
+}
+
 /// One leg of the `log_normal` latency model.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

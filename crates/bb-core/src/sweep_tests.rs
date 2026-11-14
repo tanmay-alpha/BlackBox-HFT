@@ -727,3 +727,187 @@ fn objective_metrics_extract_and_orient() {
     assert_eq!(ObjectiveMetric::Fees.cumulative(&sample), Some(0.5));
     assert_eq!(ObjectiveMetric::FillCount.cumulative(&sample), None);
 }
+
+fn seeds(design: SweepDesign) -> SweepSpec {
+    SweepSpec {
+        design,
+        ..grid(vec![])
+    }
+}
+
+#[test]
+fn seeds_design_replays_one_configuration_under_each_seed() {
+    let listed = seeds(SweepDesign::Seeds {
+        seeds: vec![7, 3, 11],
+        count: None,
+        base_seed: None,
+    });
+    assert!(listed.validate().is_empty(), "{:?}", listed.validate());
+    assert_eq!(listed.cell_count(), 3);
+    let cells = listed.cells().unwrap();
+    assert_eq!(
+        cells.iter().map(|c| c.config.seed).collect::<Vec<_>>(),
+        vec![7, 3, 11]
+    );
+    for c in &cells {
+        assert!(c.coords.is_empty());
+        assert_eq!(c.params[0].param, "seed");
+        assert_eq!(
+            c.params[0].value,
+            serde_json::json!(c.config.seed.to_string())
+        );
+        let mut same = c.config.clone();
+        same.seed = base().seed;
+        assert_eq!(same, base(), "only the seed varies");
+    }
+
+    // count + base_seed, and count alone from the base configuration's seed.
+    let counted = seeds(SweepDesign::Seeds {
+        seeds: vec![],
+        count: Some(3),
+        base_seed: Some(100),
+    });
+    assert_eq!(counted.ensemble_seeds(), Some(vec![100, 101, 102]));
+    let from_base = seeds(SweepDesign::Seeds {
+        seeds: vec![],
+        count: Some(2),
+        base_seed: None,
+    });
+    assert_eq!(
+        from_base.ensemble_seeds(),
+        Some(vec![base().seed, base().seed + 1])
+    );
+
+    // Admission plans one run per seed (two with a partition).
+    let plan = SweepSpec {
+        partition: Some(partition((0, 40), (40, 60))),
+        ..counted.clone()
+    }
+    .admit(&manifest(1_000), &SweepLimits::local())
+    .unwrap();
+    assert_eq!(plan.runs.len(), 6);
+
+    let json = serde_json::to_value(&counted).unwrap();
+    assert_eq!(
+        json["design"],
+        serde_json::json!({"type": "seeds", "count": 3, "base_seed": 100})
+    );
+    assert_eq!(serde_json::from_value::<SweepSpec>(json).unwrap(), counted);
+}
+
+#[test]
+fn seeds_design_is_validated() {
+    let bad = |design: SweepDesign| seeds(design).validate().join("; ");
+    assert!(
+        bad(SweepDesign::Seeds {
+            seeds: vec![1],
+            count: None,
+            base_seed: None
+        })
+        .contains("at least 2")
+    );
+    assert!(
+        bad(SweepDesign::Seeds {
+            seeds: vec![1, 1],
+            count: None,
+            base_seed: None
+        })
+        .contains("twice")
+    );
+    assert!(
+        bad(SweepDesign::Seeds {
+            seeds: vec![],
+            count: None,
+            base_seed: None
+        })
+        .contains("needs seeds or a count")
+    );
+    assert!(
+        bad(SweepDesign::Seeds {
+            seeds: vec![1, 2],
+            count: Some(2),
+            base_seed: None
+        })
+        .contains("not both")
+    );
+    assert!(
+        bad(SweepDesign::Seeds {
+            seeds: vec![1, 2],
+            count: None,
+            base_seed: Some(4)
+        })
+        .contains("only with count")
+    );
+    assert!(
+        bad(SweepDesign::Seeds {
+            seeds: vec![1, 1 << 53],
+            count: None,
+            base_seed: None
+        })
+        .contains("2^53")
+    );
+    assert!(
+        bad(SweepDesign::Seeds {
+            seeds: vec![],
+            count: Some(101),
+            base_seed: None
+        })
+        .contains("limit is")
+    );
+    let with_cscv = SweepSpec {
+        cscv_blocks: Some(4),
+        ..seeds(SweepDesign::Seeds {
+            seeds: vec![1, 2],
+            count: None,
+            base_seed: None,
+        })
+    };
+    assert!(
+        with_cscv
+            .validate()
+            .join("; ")
+            .contains("nothing is selected")
+    );
+}
+
+#[test]
+fn a_grid_spec_converts_to_a_row_major_grid_sweep() {
+    let grid_spec = GridSpec {
+        base: base(),
+        x: GridAxis::MakerFee {
+            values: vec![0.0, 0.0001],
+        },
+        y: GridAxis::OrderLatencyNs {
+            values: vec![NS_PER_MS, 2 * NS_PER_MS, 3 * NS_PER_MS],
+        },
+    };
+    let spec = SweepSpec::from(grid_spec.clone());
+    assert_eq!(spec.objective, Objective::default());
+    let cells = spec.cells().unwrap();
+    assert_eq!(cells.len(), 6);
+    for yi in 0..3 {
+        for xi in 0..2 {
+            let expected = grid_spec
+                .y
+                .apply(&grid_spec.x.apply(&grid_spec.base, xi), yi);
+            assert_eq!(cells[yi * 2 + xi].config, expected);
+            assert_eq!(cells[yi * 2 + xi].coords, vec![xi as u32, yi as u32]);
+        }
+    }
+    // The objective may be omitted.
+    let mut json = serde_json::to_value(&spec).unwrap();
+    json.as_object_mut().unwrap().remove("objective");
+    assert_eq!(serde_json::from_value::<SweepSpec>(json).unwrap(), spec);
+}
+
+#[test]
+fn only_seeded_latency_models_use_the_seed() {
+    assert!(!base().execution.order_latency.uses_seed());
+    let jitter = |j| OrderLatencyConfig::Jitter {
+        entry_ns: 1,
+        response_ns: 1,
+        jitter_ns: j,
+    };
+    assert!(!jitter(0).uses_seed());
+    assert!(jitter(5).uses_seed());
+}
