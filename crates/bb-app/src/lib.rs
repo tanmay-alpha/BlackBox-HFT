@@ -1,23 +1,41 @@
 //! BlackBox HFT application layer.
 //!
-//! Wires the dataset store, the strategy library, the simulation adapter and the forensics rules
-//! into one pipeline, persists completed runs, and exposes everything over the HTTP API described
-//! in `docs/API.md` and through the `blackbox` command line.
+//! Composition root (TARGET_ARCHITECTURE §3): the `/api/v1` HTTP API ([`v1`]), the leased job
+//! worker ([`worker`]), admission ([`admission`]), integrity-checked artefact reads
+//! ([`artifacts`]), the dataset registry ([`registry`]), configuration from the environment
+//! ([`config`], the only place that reads it) and the `blackbox` command line. The offline
+//! pipeline ([`pipeline`]) and the legacy file-store tooling ([`store`], [`server`]) keep the
+//! local, DB-free commands working.
 //!
-//! Nothing in this crate talks to an exchange or makes an outbound network request. Every number
-//! it returns comes from a simulation over historical or synthetic data.
+//! Nothing in this crate talks to an exchange. Every number it returns comes from a simulation
+//! over historical or synthetic data.
 
 pub mod access;
+pub mod admission;
+pub mod analytics;
 pub mod api;
+pub mod artifacts;
+pub mod canonical;
+pub mod config;
 pub mod datasets;
 pub mod demos;
 pub mod error;
 pub mod export_static;
+pub mod metrics;
 pub mod pipeline;
 pub mod presets;
+pub mod registry;
 mod report;
+pub mod runtime;
+pub mod seed;
+/// Deprecated legacy `/api` router (unauthenticated, file store). Served only by `blackbox
+/// demo` and, in the local profile, as the fallback of `blackbox serve` until the web UI uses
+/// `/api/v1` (TARGET_ARCHITECTURE §11); never deployed to the hosted profile.
 pub mod server;
 pub mod store;
+pub mod v1;
+pub mod wire;
+pub mod worker;
 
 pub use error::AppError;
 

@@ -19,6 +19,7 @@ pub const MIN_PLAUSIBLE_NS: Ns = 1_262_304_000 * NS_PER_S;
 pub const MAX_PLAUSIBLE_NS: Ns = 4_102_444_800 * NS_PER_S;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TimeUnit {
     Seconds,

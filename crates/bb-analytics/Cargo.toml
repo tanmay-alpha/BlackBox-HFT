@@ -11,6 +11,10 @@ bb-core.workspace = true
 bb-data.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[features]
+openapi = ["dep:utoipa", "bb-core/openapi"]
 
 [dev-dependencies]
 bb-app = { path = "../bb-app" }

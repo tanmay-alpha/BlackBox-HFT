@@ -9,6 +9,7 @@ pub const ANALYTICS_VERSION: &str = "1.0.0";
 
 /// A value always carries its units and contributing/excluded observation counts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Value {
     Available {
@@ -24,6 +25,11 @@ pub enum Value {
         excluded: u64,
     },
 }
+/// `Value` under a name utoipa does not mistake for `serde_json::Value` (it treats any type whose
+/// last path segment is `Value` as an arbitrary JSON value). Fields typed [`Value`] use it as their
+/// schema `value_type`.
+#[cfg(feature = "openapi")]
+pub type AnalyticsValue = Value;
 impl Value {
     pub fn measured(value: f64, unit: &str, n: u64, excluded: u64) -> Self {
         if value.is_finite() {

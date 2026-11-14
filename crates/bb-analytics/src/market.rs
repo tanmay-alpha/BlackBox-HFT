@@ -24,9 +24,13 @@ const NS: f64 = 1_000_000_000.0;
 const MAX_STATES: usize = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MarketConfig {
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub start_ns: Option<i64>,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub end_ns: Option<i64>,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub clock_step_ns: i64,
     /// Inclusive integer basis-point band, anchored to each current mid (M3).
     pub depth_band_bps: u32,
@@ -69,62 +73,94 @@ pub enum MarketError {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MetricSummary {
     pub name: String,
     pub unit: String,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub event_mean: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub clock_mean: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub time_weighted_mean: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub event_min: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub event_max: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MarketPoint {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub ts_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<crate::AnalyticsValue>))]
     pub values: Vec<Value>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MarketSeries {
     pub sampling: String,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub clock_step_ns: Option<i64>,
     pub reduction: String,
     pub max_points: usize,
     pub points: Vec<MarketPoint>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct VarianceReport {
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub realised_variance: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub variance_rate: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub volatility: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FlowInterval {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub start_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub end_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub ofi: Value,
     pub flagged_invalid: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TradeImbalance {
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub buy_volume: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub sell_volume: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub unknown_volume: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub imbalance: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub coverage: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TradeFlowInterval {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub start_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub end_ns: i64,
     pub trade_imbalance: TradeImbalance,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MarketReport {
     pub analytics_version: String,
     pub clock: String,
     pub batching: String,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub start_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub end_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub clock_step_ns: i64,
     pub metrics: Vec<MetricSummary>,
     pub event_series: Option<MarketSeries>,
@@ -134,6 +170,7 @@ pub struct MarketReport {
     pub ask_depth_truncated: bool,
     pub event_variance: VarianceReport,
     pub clock_variance: VarianceReport,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub order_flow_imbalance: Value,
     pub invalid_ofi_transitions: u64,
     /// Bounded last-interval-per-time-bin view; total OFI above includes every transition.
@@ -1140,17 +1177,26 @@ fn trade_summary(
 
 /// Sampling used to estimate the discrete Stoikov chain; distinct from report display sampling.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum CalibrationSampling {
     Event,
-    Clock { step_ns: i64 },
+    Clock {
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
+        step_ns: i64,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct StoikovConfig {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub train_start_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub train_end_ns: i64,
     /// Must be strictly after train_end_ns; all evaluation is held out.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub test_start_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub test_end_ns: i64,
     pub imbalance_buckets: usize,
     pub spread_ticks: Vec<i64>,
@@ -1159,6 +1205,7 @@ pub struct StoikovConfig {
     pub sampling: CalibrationSampling,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct StoikovModel {
     pub config: StoikovConfig,
     pub tick_size: f64,
@@ -1474,40 +1521,55 @@ fn solve_stoikov(
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiquidityBand {
     BasisPoints { bps: u32 },
     FirstLevels { levels: usize },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LiquidityWindow {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub start_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub end_ns: i64,
     pub side: Side,
     pub band: LiquidityBand,
     /// Absolute exchange timestamp distance allowed for price-matched trade attribution.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub trade_match_lag_ns: i64,
     /// Bounds attribution bookkeeping even under an arbitrarily dense trade stream.
     pub max_matched_trades: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Recovery {
     /// Recovery time if observed, otherwise the right-censoring duration, both in ns.
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub elapsed: Value,
     pub censored: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LiquidityReport {
     pub window: LiquidityWindow,
     pub usable: bool,
     pub unavailable_reason: Option<String>,
     pub band_truncated: bool,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub pre_event_mid: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub initial_depth: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub final_depth: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub trade_depletion: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub cancel_depletion: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub replenishment: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub net_flow: Value,
     pub spread_recovery: Recovery,
     pub depth_recovery: Recovery,

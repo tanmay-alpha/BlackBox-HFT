@@ -7,6 +7,7 @@ use crate::{OrdType, Side, Tif};
 
 /// Complete, self-contained description of one simulation run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 // Every client-supplied type rejects unknown fields: a misspelled optional field such as
 // `max_drawdwon` must be an error, not a silently disabled risk limit.
 #[serde(deny_unknown_fields)]
@@ -18,11 +19,13 @@ pub struct RunConfig {
     pub risk: RiskConfig,
     pub record: RecordConfig,
     /// Seed for every stochastic component (currently only [`OrderLatencyConfig::Jitter`]).
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub seed: u64,
 }
 
 /// The modeled execution assumptions. These are what counterfactual scenarios vary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionConfig {
     pub exchange_model: ExchangeModel,
@@ -30,12 +33,14 @@ pub struct ExecutionConfig {
     pub order_latency: OrderLatencyConfig,
     /// Added to every feed event's local receipt time (engine `latency_offset`). Zero keeps the
     /// dataset's own exchange-to-local latency. Must keep `local_ts > exch_ts` for every event.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub feed_latency_offset_ns: i64,
     pub fees: FeeConfig,
 }
 
 /// Which pinned-engine exchange model matches orders.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExchangeModel {
     /// `NoPartialFillExchange`: a resting order fills completely as soon as its fill condition is
@@ -49,6 +54,7 @@ pub enum ExchangeModel {
 /// Queue-position model for resting orders on Market-By-Price data. All are estimates: L2 data
 /// does not show individual orders, so position in the queue is never observed.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueueModelConfig {
     /// Engine `RiskAdverseQueueModel`: the queue ahead shrinks only when trades print at the
@@ -86,18 +92,27 @@ impl QueueModelConfig {
 
 /// Order-entry and order-response latency. Entry latency applies to new orders and cancels alike.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OrderLatencyConfig {
     /// Engine `ConstantLatency`.
-    Constant { entry_ns: i64, response_ns: i64 },
+    Constant {
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
+        entry_ns: i64,
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
+        response_ns: i64,
+    },
     /// BlackBox model implementing the engine's `LatencyModel` trait: the base latency plus a
     /// seeded uniform draw from `[0, jitter_ns]`. The draw is a pure function of the seed and of
     /// what is delayed (entry: order id and request time; response: exchange timestamp), never a
     /// sequential stream, so results do not depend on the engine's internal iteration order. The
     /// engine's order bus keeps messages in send order, so jitter never reorders them.
     Jitter {
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         entry_ns: i64,
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         response_ns: i64,
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         jitter_ns: i64,
     },
 }
@@ -105,6 +120,7 @@ pub enum OrderLatencyConfig {
 /// Fees as a fraction of traded value (engine `TradingValueFeeModel<CommonFees>`). Negative means
 /// a rebate. Example: `0.0002` is 2 basis points.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FeeConfig {
     pub maker: f64,
@@ -113,6 +129,7 @@ pub struct FeeConfig {
 
 /// Pre-trade risk rules enforced by the strategy harness before a request reaches the engine.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RiskConfig {
     /// Reject an order whose fill would take `|position|` above this. Uses the locally known
@@ -129,6 +146,7 @@ pub struct RiskConfig {
 
 /// What the flight recorder keeps.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RecordConfig {
     /// Equity, position and market are sampled every this many strategy ticks.
@@ -151,14 +169,17 @@ impl Default for RecordConfig {
 
 /// Strategy selection. Every strategy is evaluated on a fixed local-time grid of `interval_ns`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StrategyConfig {
     /// Local-clock time between strategy evaluations.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub interval_ns: i64,
     pub kind: StrategyKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StrategyKind {
     /// Joins the best bid and best ask with post-only orders and skews away from inventory.
@@ -183,6 +204,7 @@ impl StrategyKind {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TouchMakerParams {
     pub order_qty: f64,
@@ -196,6 +218,7 @@ pub struct TouchMakerParams {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AvellanedaStoikovParams {
     pub order_qty: f64,
@@ -211,6 +234,7 @@ pub struct AvellanedaStoikovParams {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ImbalanceTakerParams {
     pub order_qty: f64,
@@ -224,12 +248,14 @@ pub struct ImbalanceTakerParams {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ScriptedParams {
     pub orders: Vec<ScriptedOrder>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ScriptedOrder {
     /// Strategy tick at which to place the order.
@@ -248,6 +274,7 @@ pub struct ScriptedOrder {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScriptedPrice {
     /// Absolute price in ticks.
