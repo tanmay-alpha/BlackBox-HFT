@@ -280,6 +280,142 @@ fn check(
     }
 }
 
+/// Maximum post-trade lag examined by the diagnostic (not a timestamp repair).
+pub const TRADE_BOOK_LAG_NS: i64 = 50_000_000;
+
+#[derive(Default)]
+struct TradeDiagnostics {
+    sweep: Finding,
+    lagged: Finding,
+    outside: Finding,
+    checked: u64,
+    lag_ns: Vec<i64>,
+}
+
+/// Classifies against the last *completed* batch strictly before each trade. Future book
+/// states are used only for a post-hoc lag diagnostic, never to repair the stream.
+fn trade_diagnostics(
+    events: &[Event],
+    instrument: &InstrumentMeta,
+    origin: i64,
+) -> TradeDiagnostics {
+    use bb_core::Side;
+    use std::collections::BTreeMap;
+    let mut result = TradeDiagnostics::default();
+    let mut book = L2Book::new();
+    let mut pending: Vec<(i64, i64)> = Vec::new();
+    let mut cursor = 0;
+    while cursor < events.len() {
+        if !has(&events[cursor], EXCH_EVENT) {
+            cursor += 1;
+            continue;
+        }
+        let ts = events[cursor].exch_ts;
+        let mut end = cursor + 1;
+        while end < events.len() && (!has(&events[end], EXCH_EVENT) || events[end].exch_ts == ts) {
+            end += 1;
+        }
+        let before = book.bbo();
+        let mut bought: BTreeMap<i64, i64> = BTreeMap::new();
+        let mut sold: BTreeMap<i64, i64> = BTreeMap::new();
+        for event in events[cursor..end]
+            .iter()
+            .filter(|e| has(e, EXCH_EVENT) && kind(e) == TRADE_EVENT)
+        {
+            let tick = instrument.tick(event.px);
+            let side = side_of(event);
+            if let (true, Some((bid, _)), Some((ask, _))) =
+                (before.is_valid(), before.bid, before.ask)
+            {
+                result.checked += 1;
+                if tick > ask.saturating_add(1) || tick < bid.saturating_sub(1) {
+                    let sweep = match side {
+                        Some(Side::Buy) if tick > ask => {
+                            book.ask_qty(tick).is_some()
+                                && book
+                                    .top_asks(book.ask_levels())
+                                    .iter()
+                                    .take_while(|(p, _)| *p < tick)
+                                    .all(|(p, q)| {
+                                        bought.get(p).copied().unwrap_or(0) >= instrument.lots(*q)
+                                    })
+                        }
+                        Some(Side::Sell) if tick < bid => {
+                            book.bid_qty(tick).is_some()
+                                && book
+                                    .top_bids(book.bid_levels())
+                                    .iter()
+                                    .take_while(|(p, _)| *p > tick)
+                                    .all(|(p, q)| {
+                                        sold.get(p).copied().unwrap_or(0) >= instrument.lots(*q)
+                                    })
+                        }
+                        _ => false,
+                    };
+                    if sweep {
+                        result.sweep.hit(|| {
+                            format!("t=+{} ns: same-aggressor sweep to tick {tick}", ts - origin)
+                        });
+                    } else {
+                        pending.push((ts, tick));
+                    }
+                }
+            }
+            let consumed = match side {
+                Some(Side::Buy) => Some(&mut bought),
+                Some(Side::Sell) => Some(&mut sold),
+                None => None,
+            };
+            if let Some(consumed) = consumed {
+                let quantity = consumed.entry(tick).or_default();
+                *quantity = quantity.saturating_add(instrument.lots(event.qty));
+            }
+        }
+        for event in events[cursor..end].iter().filter(|e| has(e, EXCH_EVENT)) {
+            book.apply(event, instrument);
+        }
+        let after = book.bbo();
+        pending.retain(|&(trade_ts, tick)| {
+            let lag = ts - trade_ts;
+            if lag <= TRADE_BOOK_LAG_NS
+                && let (true, Some((bid, _)), Some((ask, _))) =
+                    (after.is_valid(), after.bid, after.ask)
+                && tick >= bid
+                && tick <= ask
+            {
+                result.lagged.hit(|| {
+                    format!(
+                        "t=+{} ns: tick {tick} inside book after {lag} ns",
+                        trade_ts - origin
+                    )
+                });
+                result.lag_ns.push(lag);
+                return false;
+            }
+            if lag > TRADE_BOOK_LAG_NS {
+                result.outside.hit(|| {
+                    format!(
+                        "t=+{} ns: unexplained trade at tick {tick}",
+                        trade_ts - origin
+                    )
+                });
+                return false;
+            }
+            true
+        });
+        cursor = end;
+    }
+    for (ts, tick) in pending {
+        result.outside.hit(|| {
+            format!(
+                "t=+{} ns: tick {tick}; no explaining book before dataset end",
+                ts - origin
+            )
+        });
+    }
+    result
+}
+
 /// Runs every check and gathers the manifest's event counts.
 ///
 /// Fails only when there is no exchange-clock event at all, in which case there is no dataset to
@@ -302,8 +438,7 @@ pub fn analyze(input: &ReportInput<'_>) -> Result<Analysis, DataError> {
     let mut stats = BatchStats::default();
     let mut latencies: Vec<i64> = Vec::new();
     let mut split = Finding::default();
-    let mut outside = Finding::default();
-    let mut trades_checked = 0u64;
+    let mut diagnostics = trade_diagnostics(events, instrument, origin);
     let mut batch_ts = origin;
 
     for ev in events.iter().filter(|e| has(e, EXCH_EVENT)) {
@@ -330,21 +465,6 @@ pub fn analyze(input: &ReportInput<'_>) -> Result<Analysis, DataError> {
         match kind(ev) {
             TRADE_EVENT => {
                 counts.trades += 1;
-                // Rows of one timestamp keep source order, trades first, so the book here is the
-                // one the trade executed against.
-                let bbo = book.bbo();
-                if let (true, Some((bid, _)), Some((ask, _))) = (bbo.is_valid(), bbo.bid, bbo.ask) {
-                    trades_checked += 1;
-                    let tick = instrument.tick(ev.px);
-                    if tick > ask + 1 || tick < bid - 1 {
-                        outside.hit(|| {
-                            format!(
-                                "t=+{} ns: trade at tick {tick}, book {bid}/{ask}",
-                                ev.exch_ts - origin
-                            )
-                        });
-                    }
-                }
             }
             DEPTH_EVENT => {
                 counts.depth_updates += 1;
@@ -614,19 +734,37 @@ pub fn analyze(input: &ReportInput<'_>) -> Result<Analysis, DataError> {
     ));
 
     checks.push(check(
-        "trades.outside_book",
-        "Trades away from the reconstructed book",
+        "trades.beyond_touch_sweep",
+        "Multi-level sweeps beyond the pre-trade touch",
+        Severity::Info,
+        &diagnostics.sweep,
+        format!("{} trades printed beyond the pre-trade best bid/ask at resting levels, after earlier same-aggressor prints at the same timestamp consumed the depth in front (a multi-level sweep).", diagnostics.sweep.count),
+    ));
+    let lag_quantiles = quantiles(&mut diagnostics.lag_ns);
+    let lag_detail = lag_quantiles.map_or_else(
+        || "No explained trade-to-book lag observations.".to_string(),
+        |q| {
+            format!(
+                "Trade → depth-update lag n {}, p50 {} ms, p90 {} ms.",
+                q.n,
+                q.p50 / 1_000_000.0,
+                q.p90 / 1_000_000.0
+            )
+        },
+    );
+    checks.push(check(
+        "trades.book_lags_trades",
+        "Book channel lags trades",
         Severity::Warn,
-        &outside,
-        format!(
-            "{} of {} trades printed more than one tick outside the reconstructed best bid and \
-             ask at their exchange timestamp ({} trades occurred while the book was one-sided \
-             or crossed and were not checked). Trades and book updates may be timestamped \
-             inconsistently, or book updates are missing.",
-            outside.count,
-            trades_checked,
-            counts.trades - trades_checked
-        ),
+        &diagnostics.lagged,
+        format!("{} trades fall outside the pre-trade book but inside it within {} ms after their timestamp. {} This diagnostic does not shift timestamps.", diagnostics.lagged.count, TRADE_BOOK_LAG_NS / 1_000_000, lag_detail),
+    ));
+    checks.push(check(
+        "trades.outside_book",
+        "Unexplained trades outside the pre-trade book",
+        Severity::Warn,
+        &diagnostics.outside,
+        format!("{} of {} checked trades remain more than one tick outside the pre-trade book after sweep and {} ms lag diagnostics; {} trades on invalid books were not checked. The dataset end may truncate the lag window. This alone does not prove missing updates.", diagnostics.outside.count, diagnostics.checked, TRADE_BOOK_LAG_NS / 1_000_000, counts.trades - diagnostics.checked),
     ));
 
     let mut order = Finding::default();
@@ -927,5 +1065,73 @@ mod tests {
         assert_eq!(dup.examples[0], "conflict");
 
         assert!(matches!(report(&[], &ids), Err(DataError::Invalid(_))));
+    }
+
+    #[test]
+    fn outside_trades_split_into_sweeps_lags_and_unexplained() {
+        let ms = 1_000_000;
+        let events = vec![
+            ev(DEPTH_EVENT | BUY_EVENT, 0, 100.0, 5.0),
+            ev(DEPTH_EVENT | SELL_EVENT, 0, 101.0, 1.0),
+            ev(DEPTH_EVENT | SELL_EVENT, 0, 103.0, 4.0),
+            // Exactly consumes the touch, then trades a resting deeper level.
+            ev(TRADE_EVENT | BUY_EVENT, ms, 101.0, 1.0),
+            ev(TRADE_EVENT | BUY_EVENT, ms, 103.0, 1.0),
+            // Not a sweep: no earlier prints consumed the touch in this batch.
+            ev(TRADE_EVENT | BUY_EVENT, 2 * ms, 104.0, 1.0),
+            ev(DEPTH_EVENT | SELL_EVENT, 12 * ms, 101.0, 0.0),
+            ev(DEPTH_EVENT | SELL_EVENT, 12 * ms, 103.0, 0.0),
+            ev(DEPTH_EVENT | SELL_EVENT, 12 * ms, 104.0, 4.0),
+            ev(TRADE_EVENT | BUY_EVENT, 20 * ms, 110.0, 1.0),
+            ev(DEPTH_EVENT | BUY_EVENT, 80 * ms, 100.0, 6.0),
+        ];
+        let a = run(&events, &SourceScan::default(), NS_PER_S);
+        let sweep = find(&a.report, "trades.beyond_touch_sweep");
+        let lag = find(&a.report, "trades.book_lags_trades");
+        let outside = find(&a.report, "trades.outside_book");
+        assert_eq!((sweep.count, sweep.severity), (1, Severity::Info));
+        assert_eq!((lag.count, lag.severity), (1, Severity::Warn));
+        // 12 - 2 = 10 ms; sole observation has nearest-rank p50=p90=10.
+        assert!(lag.detail.contains("p50 10 ms, p90 10 ms"));
+        assert_eq!((outside.count, outside.severity), (1, Severity::Warn));
+    }
+
+    #[test]
+    fn sweep_requires_same_side_same_timestamp_and_sufficient_consumption() {
+        let events = vec![
+            ev(DEPTH_EVENT | BUY_EVENT, 0, 100.0, 5.0),
+            ev(DEPTH_EVENT | SELL_EVENT, 0, 101.0, 2.0),
+            ev(DEPTH_EVENT | SELL_EVENT, 0, 103.0, 4.0),
+            ev(TRADE_EVENT | BUY_EVENT, 1, 101.0, 1.0),
+            ev(TRADE_EVENT | BUY_EVENT, 1, 103.0, 1.0),
+            ev(TRADE_EVENT | BUY_EVENT, 2, 103.0, 1.0),
+            ev(DEPTH_EVENT | BUY_EVENT, TRADE_BOOK_LAG_NS + 3, 100.0, 6.0),
+        ];
+        let a = run(&events, &SourceScan::default(), NS_PER_S);
+        assert_eq!(find(&a.report, "trades.beyond_touch_sweep").count, 0);
+        assert_eq!(find(&a.report, "trades.outside_book").count, 2);
+    }
+
+    #[test]
+    fn lag_window_is_inclusive_and_uses_completed_batches() {
+        let events = vec![
+            ev(DEPTH_EVENT | BUY_EVENT, 0, 100.0, 1.0),
+            ev(DEPTH_EVENT | SELL_EVENT, 0, 101.0, 1.0),
+            ev(TRADE_EVENT | BUY_EVENT, 1, 105.0, 1.0),
+            ev(DEPTH_EVENT | SELL_EVENT, TRADE_BOOK_LAG_NS + 1, 101.0, 0.0),
+            ev(DEPTH_EVENT | SELL_EVENT, TRADE_BOOK_LAG_NS + 1, 105.0, 1.0),
+        ];
+        let a = run(&events, &SourceScan::default(), NS_PER_S);
+        assert_eq!(find(&a.report, "trades.book_lags_trades").count, 1);
+        assert_eq!(find(&a.report, "trades.outside_book").count, 0);
+        // Same update one nanosecond beyond the diagnostic window does not explain it.
+        let mut too_late = events.clone();
+        for event in &mut too_late[3..] {
+            event.exch_ts += 1;
+            event.local_ts += 1;
+        }
+        let a = run(&too_late, &SourceScan::default(), NS_PER_S);
+        assert_eq!(find(&a.report, "trades.book_lags_trades").count, 0);
+        assert_eq!(find(&a.report, "trades.outside_book").count, 1);
     }
 }
