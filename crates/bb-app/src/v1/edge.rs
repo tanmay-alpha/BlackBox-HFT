@@ -443,7 +443,7 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
     } else {
         ANON_TTL
     };
-    let generation = state.hub.generation.load(Ordering::SeqCst);
+    let generation = state.data_generation();
     let hit = state
         .anon_cache
         .entries

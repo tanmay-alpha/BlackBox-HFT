@@ -95,6 +95,18 @@ impl AppState {
     pub fn bundle_limits(&self) -> bb_artifacts::BundleLimits {
         bundle_limits(self.cfg.limits.max_output_bytes)
     }
+
+    /// Changes whenever data a reader may see changed in this process: any state change
+    /// (`WorkerHub::generation`) or a run quarantined on read. Versions the anonymous response
+    /// cache and the demo snapshot.
+    pub fn data_generation(&self) -> u64 {
+        self.hub
+            .generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .wrapping_add(crate::metrics::Metrics::get(
+                &self.metrics.runs_quarantined_total,
+            ))
+    }
 }
 
 pub type Shared = Arc<AppState>;

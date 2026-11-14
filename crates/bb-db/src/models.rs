@@ -138,6 +138,8 @@ pub struct Run {
     pub worker_id: String,
     pub result_sha256: Vec<u8>,
     pub summary_sha256: Vec<u8>,
+    /// Postgres digest of the stored summary fields (`bb.run_summary_digest`), written at insert.
+    pub summary_row_sha256: Vec<u8>,
     pub ticks: i64,
     pub order_count: i64,
     pub fill_count: i64,
@@ -296,6 +298,11 @@ pub struct Comparison {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub version: i64,
+    /// Read paths only (`Database::comparison`, `Database::comparisons`): whether the row still
+    /// matches its `summary_row_sha256` (FINAL_AUDIT §4 item 5). `None` where not selected.
+    #[sqlx(default)]
+    #[serde(default)]
+    pub summary_intact: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

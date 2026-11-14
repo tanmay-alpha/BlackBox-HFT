@@ -18,6 +18,9 @@ pub struct Metrics {
     pub simulations_started_total: AtomicU64,
     pub lease_reclaims_total: AtomicU64,
     pub integrity_failures_total: AtomicU64,
+    /// Runs this process quarantined. Part of the public read version
+    /// (`AppState::data_generation`), so cached demo responses never outlive a quarantine.
+    pub runs_quarantined_total: AtomicU64,
     pub nondeterminism_total: AtomicU64,
     pub artifact_cache_hits_total: AtomicU64,
     pub artifact_cache_misses_total: AtomicU64,
@@ -69,6 +72,11 @@ impl Metrics {
             (
                 "integrity_failures_total",
                 &self.integrity_failures_total,
+                "counter",
+            ),
+            (
+                "runs_quarantined_total",
+                &self.runs_quarantined_total,
                 "counter",
             ),
             (

@@ -166,7 +166,7 @@ impl Database {
         Ok(sqlx::query_as("SELECT * FROM bb.comparisons WHERE workspace_id=$1 AND run_a_id=$2 AND run_b_id=$3 AND comparator_version=$4").bind(workspace).bind(run_a).bind(run_b).bind(comparator_version).fetch_optional(&self.pool).await?)
     }
     pub async fn comparison(&self, workspace: Uuid, id: Uuid) -> Result<Comparison> {
-        sqlx::query_as("SELECT c.* FROM bb.comparisons c JOIN bb.workspaces w ON w.id=c.workspace_id WHERE c.id=$1 AND (c.workspace_id=$2 OR w.is_public_read)").bind(id).bind(workspace).fetch_optional(&self.pool).await?.ok_or(Error::NotFound)
+        sqlx::query_as("SELECT c.*,(c.summary_row_sha256=bb.comparison_summary_digest(c)) AS summary_intact FROM bb.comparisons c JOIN bb.workspaces w ON w.id=c.workspace_id WHERE c.id=$1 AND (c.workspace_id=$2 OR w.is_public_read)").bind(id).bind(workspace).fetch_optional(&self.pool).await?.ok_or(Error::NotFound)
     }
     pub async fn comparisons(
         &self,
@@ -174,7 +174,7 @@ impl Database {
         cursor: Option<&Cursor>,
         count: i64,
     ) -> Result<Vec<Comparison>> {
-        Ok(sqlx::query_as("SELECT * FROM bb.comparisons WHERE workspace_id=$1 AND ($2::timestamptz IS NULL OR (created_at,id)<($2,$3)) ORDER BY created_at DESC,id DESC LIMIT $4").bind(workspace).bind(cursor.map(|c|c.created_at)).bind(cursor.map(|c|c.id)).bind(limit(count)?).fetch_all(&self.pool).await?)
+        Ok(sqlx::query_as("SELECT c.*,(c.summary_row_sha256=bb.comparison_summary_digest(c)) AS summary_intact FROM bb.comparisons c WHERE workspace_id=$1 AND ($2::timestamptz IS NULL OR (created_at,id)<($2,$3)) ORDER BY created_at DESC,id DESC LIMIT $4").bind(workspace).bind(cursor.map(|c|c.created_at)).bind(cursor.map(|c|c.id)).bind(limit(count)?).fetch_all(&self.pool).await?)
     }
     pub async fn rename_comparison(
         &self,

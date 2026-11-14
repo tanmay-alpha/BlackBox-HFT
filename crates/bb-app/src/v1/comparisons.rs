@@ -285,21 +285,46 @@ pub async fn list_comparisons(
         .await?;
     let more = super::runs::has_more(rows.len(), limit);
     let rows = &rows[..rows.len().min(limit as usize)];
-    let items: Vec<Comparison> = rows
+    comparison_page(&state, &caller, rows, more, &filters)
+}
+
+/// Whether a stored comparison still matches its `summary_row_sha256` (FINAL_AUDIT §4 item 5).
+/// A changed row is never served: lists leave it out, detail reads answer `integrity_failed`.
+pub fn intact(row: &Row) -> bool {
+    if row.summary_intact == Some(false) {
+        tracing::error!(comparison = %row.id, "stored comparison failed its row digest");
+        return false;
+    }
+    true
+}
+
+/// One page of comparisons (DB rows or the demo snapshot), newest first.
+pub fn comparison_page(
+    state: &Shared,
+    caller: &Caller,
+    rows: &[Row],
+    more: bool,
+    filters: &str,
+) -> Result<Response, ApiError> {
+    let kept: Vec<&Row> = rows.iter().filter(|r| intact(r)).collect();
+    let items: Vec<Comparison> = kept
         .iter()
         .map(|r| resource(r, false))
         .collect::<Result<_, _>>()?;
-    let (items, cut) = bounded(&items, byte_cap(&state, &caller))?;
-    let next = if (cut || more) && !items.is_empty() {
-        rows.get(items.len() - 1).map(|r| {
-            encode_cursor(
-                &Cursor {
-                    created_at: r.created_at,
-                    id: r.id,
-                },
-                &filters,
-            )
-        })
+    let (items, cut) = bounded(&items, byte_cap(state, caller))?;
+    let cursor = |r: &Row| {
+        encode_cursor(
+            &Cursor {
+                created_at: r.created_at,
+                id: r.id,
+            },
+            filters,
+        )
+    };
+    let next = if cut && !items.is_empty() {
+        kept.get(items.len() - 1).map(|r| cursor(r))
+    } else if more {
+        rows.last().map(cursor)
     } else {
         None
     };
@@ -313,11 +338,19 @@ pub async fn list_comparisons(
 
 async fn visible(state: &Shared, caller: &Caller, id: &str) -> Result<Row, ApiError> {
     let id = uuid_param("comparison", id)?;
-    state
+    let row = state
         .db
         .comparison(caller.workspace.id, id)
         .await
-        .map_err(|_| ApiError::not_found("comparison"))
+        .map_err(|_| ApiError::not_found("comparison"))?;
+    if !intact(&row) {
+        return Err(ApiError::integrity_failed(
+            &row.id.to_string(),
+            "comparison",
+            &hex::encode(&row.summary_sha256),
+        ));
+    }
+    Ok(row)
 }
 
 /// One comparison (alignment counters without pairs).

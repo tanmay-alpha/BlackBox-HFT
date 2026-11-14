@@ -419,8 +419,9 @@ pub async fn quarantine(
 ) -> ApiError {
     Metrics::inc(&metrics.integrity_failures_total);
     let reason = format!("{object} failed verification on read");
-    if let Err(e) = db.quarantine_run(view.run.id, &reason).await {
-        tracing::error!(run = %view.short_id, error = %e, "quarantine failed");
+    match db.quarantine_run(view.run.id, &reason).await {
+        Ok(()) => Metrics::inc(&metrics.runs_quarantined_total),
+        Err(e) => tracing::error!(run = %view.short_id, error = %e, "quarantine failed"),
     }
     ApiError::integrity_failed(&view.short_id, object, expected)
 }

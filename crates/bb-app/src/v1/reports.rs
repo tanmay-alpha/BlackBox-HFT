@@ -96,6 +96,13 @@ pub async fn create_report(
                 .comparison(workspace.id, id)
                 .await
                 .map_err(|_| ApiError::not_found("comparison"))?;
+            if !super::comparisons::intact(&row) {
+                return Err(ApiError::integrity_failed(
+                    &row.id.to_string(),
+                    "comparison",
+                    &hex::encode(&row.summary_sha256),
+                ));
+            }
             (comparison_markdown(&row)?, None, Some(id), None)
         }
         "sweep" => {
@@ -188,18 +195,43 @@ pub async fn list_reports(
         .await?;
     let more = super::runs::has_more(rows.len(), limit);
     let rows = &rows[..rows.len().min(limit as usize)];
-    let items: Vec<Report> = rows.iter().map(resource).collect();
-    let (items, cut) = bounded(&items, byte_cap(&state, &caller))?;
-    let next = if (cut || more) && !items.is_empty() {
-        rows.get(items.len() - 1).map(|r| {
-            encode_cursor(
-                &Cursor {
-                    created_at: r.created_at,
-                    id: r.id,
-                },
-                &filters,
-            )
-        })
+    report_page(&state, &caller, rows, more, &filters)
+}
+
+/// Whether a saved report's body still matches its `body_sha256`. A changed body is never
+/// served: lists leave it out, detail reads answer `integrity_failed`.
+fn intact(row: &ResearchReport) -> bool {
+    if Sha256::digest(row.body.as_bytes()).as_slice() != row.body_sha256 {
+        tracing::error!(report = %row.id, "saved report failed its body digest");
+        return false;
+    }
+    true
+}
+
+/// One page of saved reports (DB rows or the demo snapshot), newest first.
+pub fn report_page(
+    state: &Shared,
+    caller: &Caller,
+    rows: &[ResearchReport],
+    more: bool,
+    filters: &str,
+) -> Result<Response, ApiError> {
+    let kept: Vec<&ResearchReport> = rows.iter().filter(|r| intact(r)).collect();
+    let items: Vec<Report> = kept.iter().map(|r| resource(r)).collect();
+    let (items, cut) = bounded(&items, byte_cap(state, caller))?;
+    let cursor = |r: &ResearchReport| {
+        encode_cursor(
+            &Cursor {
+                created_at: r.created_at,
+                id: r.id,
+            },
+            filters,
+        )
+    };
+    let next = if cut && !items.is_empty() {
+        kept.get(items.len() - 1).map(|r| cursor(r))
+    } else if more {
+        rows.last().map(cursor)
     } else {
         None
     };
@@ -218,7 +250,7 @@ async fn visible(state: &Shared, caller: &Caller, id: &str) -> Result<ResearchRe
         .report(caller.workspace.id, id)
         .await
         .map_err(|_| ApiError::not_found("report"))?;
-    if Sha256::digest(row.body.as_bytes()).as_slice() != row.body_sha256 {
+    if !intact(&row) {
         return Err(ApiError::integrity_failed(
             &row.id.to_string(),
             "report",

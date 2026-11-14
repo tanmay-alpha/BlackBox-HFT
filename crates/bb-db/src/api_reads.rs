@@ -47,6 +47,9 @@ pub struct RunView {
     pub config: Value,
     pub view_experiment_id: Option<Uuid>,
     pub view_label: Option<String>,
+    /// Whether the row still matches its `summary_row_sha256` (FINAL_AUDIT §4 item 5), computed
+    /// by Postgres from the stored row: DB-only list paths check it without opening artefacts.
+    pub summary_intact: bool,
 }
 
 /// Orderings of `GET /runs`.
@@ -163,7 +166,7 @@ pub struct VisibleIdentity {
     pub experiment_id: Uuid,
 }
 
-const RUN_VIEW: &str = "SELECT r.*,c.short_id,c.fingerprint,c.dataset_id,v.version_no AS dataset_version_no,v.events_sha256,v.origin_ns,c.strategy_kind,c.interval_ns,c.contract_version,c.simulation_revision,c.engine_name,c.engine_version,c.config,e.id AS view_experiment_id,e.label AS view_label FROM bb.runs r JOIN bb.experiment_configs c ON c.id=r.experiment_config_id JOIN bb.dataset_versions v ON v.id=c.dataset_version_id LEFT JOIN LATERAL (SELECT e.id,e.label FROM bb.experiments e JOIN bb.workspaces w ON w.id=e.workspace_id WHERE e.experiment_config_id=r.experiment_config_id AND e.platform=r.platform AND (e.workspace_id=$1 OR w.is_public_read) ORDER BY (e.workspace_id=$1) DESC,(e.sweep_id IS NULL) DESC,e.created_at,e.id LIMIT 1) e ON true";
+const RUN_VIEW: &str = "SELECT r.*,(r.summary_row_sha256=bb.run_summary_digest(r)) AS summary_intact,c.short_id,c.fingerprint,c.dataset_id,v.version_no AS dataset_version_no,v.events_sha256,v.origin_ns,c.strategy_kind,c.interval_ns,c.contract_version,c.simulation_revision,c.engine_name,c.engine_version,c.config,e.id AS view_experiment_id,e.label AS view_label FROM bb.runs r JOIN bb.experiment_configs c ON c.id=r.experiment_config_id JOIN bb.dataset_versions v ON v.id=c.dataset_version_id LEFT JOIN LATERAL (SELECT e.id,e.label FROM bb.experiments e JOIN bb.workspaces w ON w.id=e.workspace_id WHERE e.experiment_config_id=r.experiment_config_id AND e.platform=r.platform AND (e.workspace_id=$1 OR w.is_public_read) ORDER BY (e.workspace_id=$1) DESC,(e.sweep_id IS NULL) DESC,e.created_at,e.id LIMIT 1) e ON true";
 // Filters for run listings: $1 workspace, $2 platform, $3 dataset, $4 strategy, $5 sweep,
 // $6 label prefix, $7 created after, $8 created before, $9 key, $10 identity.
 const RUN_LIST_FILTER: &str = " WHERE r.platform=$2 AND r.quarantined_at IS NULL AND EXISTS (SELECT 1 FROM bb.experiments f WHERE f.workspace_id=$1 AND f.experiment_config_id=r.experiment_config_id AND f.platform=r.platform AND ($5::uuid IS NULL OR f.sweep_id=$5) AND ($6::text IS NULL OR starts_with(f.label,$6)) AND ($9::uuid IS NULL OR f.created_by_key_id=$9)) AND ($3::text IS NULL OR c.dataset_id=$3) AND ($4::text IS NULL OR c.strategy_kind=$4) AND ($7::timestamptz IS NULL OR r.created_at>=$7) AND ($8::timestamptz IS NULL OR r.created_at<$8) AND ($10::text IS NULL OR c.short_id=$10 OR encode(c.fingerprint,'hex')=$10)";

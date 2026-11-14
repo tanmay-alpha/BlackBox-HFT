@@ -24,7 +24,7 @@ use super::{
         ApiJson, Cache, Page, TruncatedBy, bounded, byte_cap, check_label, decode_cursor,
         encode_cursor, if_match, json, json_value, limit_param, uuid_param,
     },
-    runs::verified_summary,
+    runs::listed_summary,
 };
 use crate::admission::{self, SubmitOptions};
 
@@ -133,7 +133,8 @@ pub fn experiment_query(p: &Params, caller: &Caller) -> Result<ExperimentQuery, 
     })
 }
 
-/// Experiment resources for views, with their jobs and verified runs (two batched queries).
+/// Experiment resources for views, with their jobs and runs (two batched queries). Each run row
+/// is checked against its stored digest (DB only); a changed one is quarantined and left out.
 pub async fn experiment_resources(
     state: &Shared,
     caller: &Caller,
@@ -180,7 +181,7 @@ pub async fn experiment_resources(
                 )
             });
         let run = match view.live_run_id.and_then(|id| runs.get(&id)) {
-            Some(r) => Some(verified_summary(state, r, false).await?),
+            Some(r) => listed_summary(state, r).await?,
             None => None,
         };
         out.push(Experiment::from_view(view, job, run, include_config)?);

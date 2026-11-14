@@ -114,14 +114,19 @@ fn counts(view: &RunView) -> BundleCounts {
     }
 }
 
-/// The summary of a run after checking its metrics against `summary_sha256`. A mismatch that
-/// is only JSONB number normalisation (e.g. `-0.0` stored as `0`) is resolved against the
-/// verified bundle trailer; any real difference quarantines the run.
+/// The summary of a run after checking the stored row against `summary_row_sha256` (DB only)
+/// and its metrics against `summary_sha256`. A `summary_sha256` mismatch that is only JSONB
+/// number normalisation (e.g. `-0.0` stored as `0`) is resolved against the verified bundle
+/// trailer; any real difference quarantines the run.
 pub async fn verified_summary(
     state: &Shared,
     view: &RunView,
     include_config: bool,
 ) -> Result<RunSummary, ApiError> {
+    if !view.summary_intact {
+        let expected = hex::encode(&view.run.summary_row_sha256);
+        return Err(quarantine(&state.db, &state.metrics, view, "summary", &expected).await);
+    }
     let metrics: Metrics = serde_json::from_value(view.run.metrics.clone()).map_err(|_| {
         ApiError::integrity_failed(
             &view.short_id,
@@ -147,6 +152,21 @@ pub async fn verified_summary(
         }
     }
     RunSummary::from_view(view, include_config)
+}
+
+/// The summary of a run for DB-only list paths (runs, experiments, the demo snapshot): the row
+/// is checked against `summary_row_sha256` without opening artefacts (FINAL_AUDIT §4 item 5).
+/// A changed row is quarantined (which also invalidates the anonymous caches) and left out.
+pub async fn listed_summary(
+    state: &Shared,
+    view: &RunView,
+) -> Result<Option<RunSummary>, ApiError> {
+    if !view.summary_intact {
+        let expected = hex::encode(&view.run.summary_row_sha256);
+        let _ = quarantine(&state.db, &state.metrics, view, "summary", &expected).await;
+        return Ok(None);
+    }
+    RunSummary::from_view(view, false).map(Some)
 }
 
 async fn open(state: &Shared, view: RunView) -> Result<OpenRun, ApiError> {
@@ -269,22 +289,25 @@ pub async fn list_runs(
         .await?;
     let more = has_more(views.len(), limit);
     let views = &views[..views.len().min(limit as usize)];
-    let caller_view = Caller {
-        workspace: workspace.clone(),
-        ..caller.clone()
-    };
     // Lists come from Postgres only (AT-10): no artefact reads, so one unreadable bundle can
-    // never fail a page. Detail reads verify the summary and the bundle.
-    let summaries = views
-        .iter()
-        .map(|v| RunSummary::from_view(v, false))
-        .collect::<Result<Vec<_>, _>>()?;
-    let _ = caller_view;
+    // never fail a page. Each row is checked against its stored digest; detail reads also
+    // verify the summary against the bundle trust root and the bundle itself.
+    let mut listed = Vec::with_capacity(views.len());
+    for view in views {
+        if let Some(summary) = listed_summary(&state, view).await? {
+            listed.push((view, summary));
+        }
+    }
+    let summaries: Vec<&RunSummary> = listed.iter().map(|(_, s)| s).collect();
     let (items, cut) = bounded(&summaries, byte_cap(&state, &caller))?;
-    let next = if (cut || more) && !items.is_empty() {
-        views
+    // A page cut by bytes continues after its last item; a full page continues after its last
+    // row even when a changed row was left out.
+    let next = if cut && !items.is_empty() {
+        listed
             .get(items.len() - 1)
-            .map(|v| encode_cursor(&v.key(sort), &filters))
+            .map(|(v, _)| encode_cursor(&v.key(sort), &filters))
+    } else if more {
+        views.last().map(|v| encode_cursor(&v.key(sort), &filters))
     } else {
         None
     };
