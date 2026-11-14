@@ -1,0 +1,23 @@
+[package]
+name = "bb-artifacts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+flate2.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+tempfile.workspace = true
+reqwest.workspace = true
+tokio-util.workspace = true
+bytes.workspace = true
+httpdate.workspace = true
+rustls.workspace = true
