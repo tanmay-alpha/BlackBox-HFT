@@ -10,11 +10,16 @@
 //! the shared [`quality`] checks, and are persisted and read back through [`store`]. [`book`]
 //! reconstructs the book from an event array for replay views.
 //!
+//! [`itch`] is a local-only validation workflow for NASDAQ TotalView-ITCH 5.0 files: it decodes
+//! them, rebuilds the order-by-order book and aggregates selected stocks into the same engine rows,
+//! with its own manifest. It does not produce a stored dataset.
+//!
 //! Engine events carry absolute epoch nanoseconds; everything serialized is relative to the
 //! dataset's `origin_ns`.
 
 pub mod book;
 mod decimal;
+pub mod itch;
 pub mod normalize;
 pub mod quality;
 pub mod slice;
@@ -22,11 +27,60 @@ pub mod store;
 pub mod synthetic;
 pub mod tardis;
 
-use std::sync::Arc;
+use std::{
+    io::{self, Read},
+    sync::Arc,
+};
 
 use bb_core::dataset::DatasetManifest;
 pub use hftbacktest::types::Event;
 use hftbacktest::types::{BUY_EVENT, SELL_EVENT};
+use sha2::{Digest, Sha256};
+
+/// Passes bytes through while hashing and counting them, so a manifest records the hash of the
+/// file exactly as it is on disk (compressed bytes for `.gz`).
+pub(crate) struct HashingReader<R> {
+    inner: R,
+    hasher: Sha256,
+    bytes: u64,
+}
+
+impl<R: Read> HashingReader<R> {
+    pub(crate) fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+            bytes: 0,
+        }
+    }
+
+    /// Reads whatever the consumer left unread, so that every stored byte has passed through
+    /// the hasher, and returns the hex SHA-256 and size of the whole input.
+    pub(crate) fn finish(mut self) -> io::Result<(String, u64)> {
+        let mut sink = vec![0u8; 1 << 16];
+        loop {
+            match self.inner.read(&mut sink) {
+                Ok(0) => break,
+                Ok(n) => {
+                    self.hasher.update(&sink[..n]);
+                    self.bytes += n as u64;
+                }
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok((hex::encode(self.hasher.finalize()), self.bytes))
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        self.bytes += n as u64;
+        Ok(n)
+    }
+}
 
 /// A freshly built dataset that has not been persisted yet. `manifest.events_file`,
 /// `events_sha256` and `events_bytes` are empty until [`store::save`] fills them.

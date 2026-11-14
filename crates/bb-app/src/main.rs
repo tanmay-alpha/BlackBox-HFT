@@ -67,6 +67,9 @@ enum Command {
     },
     /// Convert Tardis.dev CSV files (trades + incremental_book_L2) into a dataset.
     IngestTardis(IngestArgs),
+    /// Rebuild the order book of a NASDAQ TotalView-ITCH 5.0 file and print its validation
+    /// manifest. Local use only: never commit or upload ITCH files or anything derived from them.
+    ItchReconstruct(ItchArgs),
     /// List datasets.
     Datasets,
     /// Print every data-quality check of a dataset.
@@ -158,6 +161,27 @@ struct IngestArgs {
     /// Keep only this many seconds from the start of the book file.
     #[arg(long)]
     max_duration_s: Option<u64>,
+}
+
+#[derive(Args)]
+struct ItchArgs {
+    /// ITCH 5.0 file in the 2-byte length-prefixed format, plain or gzip-compressed.
+    file: PathBuf,
+    /// Stop after this many messages.
+    #[arg(long)]
+    max_messages: Option<u64>,
+    /// Stock to normalize into Level-2 rows (repeatable), as in the stock directory, e.g. `AAPL`.
+    #[arg(long = "symbol")]
+    symbols: Vec<String>,
+    /// Epoch nanoseconds of the session's midnight (US Eastern), added to every ITCH timestamp.
+    #[arg(long, default_value_t = 0)]
+    midnight_epoch_ns: i64,
+    /// Write the manifest as JSON to this file.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Only frame and decode, without any book: a quick scan, or a timing of the decoder alone.
+    #[arg(long, conflicts_with_all = ["symbols", "out"])]
+    decode_only: bool,
 }
 
 #[derive(Args)]
@@ -281,6 +305,7 @@ fn run(cli: Cli) -> Result<()> {
             duration_s,
         } => cmd_synth(&paths, id, seed, duration_s),
         Command::IngestTardis(args) => cmd_ingest_tardis(&paths, args),
+        Command::ItchReconstruct(args) => cmd_itch_reconstruct(args),
         Command::Datasets => cmd_datasets(&paths),
         Command::Quality { id } => cmd_quality(&paths, &id),
         Command::Presets { dataset } => cmd_presets(&paths, dataset.as_deref()),
@@ -561,6 +586,91 @@ fn cmd_ingest_tardis(paths: &Paths, args: IngestArgs) -> Result<()> {
     print_dataset_summary(&manifest);
     print_quality_summary(&manifest);
     println!("license   : {}", manifest.source.license_note);
+    Ok(())
+}
+
+fn cmd_itch_reconstruct(args: ItchArgs) -> Result<()> {
+    use bb_data::itch::{DecodeScan, ItchOptions, reconstruct_file, run_file};
+
+    let started = std::time::Instant::now();
+    let (source, frames, decoded, stop) = if args.decode_only {
+        let mut scan = DecodeScan::new(args.max_messages);
+        let (source, stop, decoded) = run_file(&args.file, &mut scan)?;
+        println!("frames    : {} ({} invalid)", scan.frames, scan.invalid);
+        for (kind, count) in scan.by_type() {
+            println!("  type {kind:<5} {count}");
+        }
+        (source, scan.frames, decoded, stop.record(scan.frames))
+    } else {
+        let options = ItchOptions {
+            max_messages: args.max_messages,
+            symbols: args.symbols,
+            midnight_epoch_ns: args.midnight_epoch_ns,
+        };
+        let r = reconstruct_file(&args.file, options)?;
+        let m = r.manifest;
+        let b = &m.book;
+        println!("frames    : {}", m.frames);
+        println!(
+            "book      : {} stocks with orders, {} orders added, {} live at the end, {} \
+             executions, {} quarantined",
+            b.stocks_with_orders,
+            b.orders_added,
+            b.live_orders_at_end,
+            b.executions,
+            b.quarantined_total
+        );
+        for s in &m.normalization.streams {
+            println!(
+                "l2        : {} (locate {}): {} rows ({} depth, {} trades)",
+                s.symbol, s.locate, s.rows, s.depth_rows, s.trade_rows
+            );
+        }
+        let failed: Vec<_> = m.checks.iter().filter(|c| !c.passed).collect();
+        println!(
+            "checks    : {} checks, {} with findings, worst severity {}",
+            m.checks.len(),
+            failed.len(),
+            m.worst().map_or_else(|| "ok".to_string(), |s| tag(&s))
+        );
+        for check in failed {
+            println!(
+                "  [{}] {} (count {}): {}",
+                tag(&check.severity),
+                check.id,
+                check.count,
+                check.examples.first().map_or("", String::as_str)
+            );
+        }
+        if let Some(out) = &args.out {
+            std::fs::write(out, serde_json::to_vec_pretty(&m)?)
+                .with_context(|| format!("writing {}", out.display()))?;
+            println!("manifest  : {}", out.display());
+        }
+        (m.source, m.frames, m.decoded_bytes, m.stop)
+    };
+    let elapsed = started.elapsed().as_secs_f64();
+    println!(
+        "source    : {} ({}, {} bytes, sha256 {})",
+        source.name, source.compression, source.bytes, source.sha256
+    );
+    println!(
+        "stop      : {}{}",
+        stop.reason,
+        stop.detail.map(|d| format!(" ({d})")).unwrap_or_default()
+    );
+    println!(
+        "time      : {elapsed:.3} s wall, {:.0} messages/s, {:.1} MB/s decompressed ({} build; \
+         includes reading, decompressing and hashing the whole file)",
+        frames as f64 / elapsed,
+        decoded as f64 / elapsed / 1e6,
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
+    println!("license   : {}", bb_data::itch::LICENSE_NOTE);
     Ok(())
 }
 

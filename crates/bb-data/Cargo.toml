@@ -16,3 +16,6 @@ sha2.workspace = true
 hex.workspace = true
 flate2.workspace = true
 zip.workspace = true
+
+[dev-dependencies]
+proptest = "1"

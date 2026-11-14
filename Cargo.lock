@@ -356,6 +356,7 @@ dependencies = [
  "flate2",
  "hex",
  "hftbacktest",
+ "proptest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
