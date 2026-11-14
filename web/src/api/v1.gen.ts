@@ -191,6 +191,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/datasets/{dataset_id}/versions/{version}/analytics/series": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One page of the complete points of a market analytics series of one version. */
+        get: operations["version_analytics_series"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/datasets/{dataset_id}/versions/{version}/quality": {
         parameters: {
             query?: never;
@@ -467,9 +484,27 @@ export interface paths {
         };
         /**
          * Execution (E1–E10) and risk analytics of a run, with units, unavailability reasons and
-         *     caveats; verified against the stored digest.
+         *     caveats; verified against the stored digest. Aggregates are complete; series longer than
+         *     100 points are downsampled and listed in `downsampled` (page them with `/analytics/series`).
          */
         get: operations["run_analytics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs/{run_id}/analytics/series": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One page of the complete points of an analytics series. */
+        get: operations["run_analytics_series"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1106,6 +1141,11 @@ export interface components {
         DatasetAnalytics: {
             analytics_version: string;
             dataset_id: string;
+            /**
+             * @description As [`RunAnalytics::downsampled`]; complete points via
+             *     `GET /datasets/{id}/versions/{version}/analytics/series`.
+             */
+            downsampled?: components["schemas"]["DownsampledSeries"][];
             market: components["schemas"]["MarketReport"];
             /** Format: int32 */
             version: number;
@@ -1269,6 +1309,18 @@ export interface components {
             p05: components["schemas"]["Value"];
             p95: components["schemas"]["Value"];
             total: components["schemas"]["Value"];
+        };
+        /** @description One series shortened in an analytics response. */
+        DownsampledSeries: {
+            /**
+             * @description JSON Pointer of the series in the report, e.g. `/execution/first_fill/km/curve`; pass it
+             *     as `path` to the series endpoint.
+             */
+            path: string;
+            /** @description Points in this response. */
+            returned: number;
+            /** @description Points of the complete series. */
+            total: number;
         };
         /**
          * @description Whether two runs can be compared order by order and like for like. Checked before any
@@ -3168,6 +3220,11 @@ export interface components {
         RunAnalytics: {
             analytics_version: string;
             /**
+             * @description Series of the stored report that this response shortened (see [`downsample`]); the
+             *     complete points are paged by `GET /runs/{run_id}/analytics/series`. Never stored.
+             */
+            downsampled?: components["schemas"]["DownsampledSeries"][];
+            /**
              * @description Exchange-clock execution quality (E1–E10). Per-order details are not retained
              *     (`order_details_streamed = true`).
              */
@@ -3296,6 +3353,17 @@ export interface components {
             offset: number;
             /** @enum {string} */
             type: "from_touch";
+        };
+        /** @description `GET …/analytics/series`: one page of the complete points of a downsampled series. */
+        SeriesPage: {
+            /** @description The points, as in the stored report. */
+            items: Record<string, never>[];
+            next_offset?: number | null;
+            offset: number;
+            path: string;
+            /** @description Points of the complete series. */
+            total: number;
+            truncated_by?: components["schemas"]["TruncatedBy"] | null;
         };
         /**
          * @description Severity of a data-quality finding.
@@ -4103,6 +4171,51 @@ export interface operations {
             };
         };
     };
+    version_analytics_series: {
+        parameters: {
+            query: {
+                /** @description JSON Pointer of the series, as listed in `downsampled[].path`. */
+                path: string;
+                /** @description First point (default 0). */
+                offset?: number;
+                /** @description Points per page, ≤ 5000 (default 1000); a page also ends at the byte cap. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                dataset_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesPage"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_quality: {
         parameters: {
             query?: {
@@ -4887,6 +5000,52 @@ export interface operations {
                 };
             };
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    run_analytics_series: {
+        parameters: {
+            query: {
+                /** @description JSON Pointer of the series, as listed in `downsampled[].path`. */
+                path: string;
+                /** @description First point (default 0). */
+                offset?: number;
+                /** @description Points per page, ≤ 5000 (default 1000); a page also ends at the byte cap. */
+                limit?: number;
+                /** @description Platform class (default: this deployment's result platform, `linux-x86_64` hosted). */
+                platform?: string;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesPage"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

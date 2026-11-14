@@ -806,6 +806,98 @@
         ]
       }
     },
+    "/api/v1/datasets/{dataset_id}/versions/{version}/analytics/series": {
+      "get": {
+        "tags": [
+          "datasets"
+        ],
+        "summary": "One page of the complete points of a market analytics series of one version.",
+        "operationId": "version_analytics_series",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "JSON Pointer of the series, as listed in `downsampled[].path`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "First point (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Points per page, ≤ 5000 (default 1000); a page also ends at the byte cap.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeriesPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/datasets/{dataset_id}/versions/{version}/quality": {
       "get": {
         "tags": [
@@ -2169,7 +2261,7 @@
         "tags": [
           "runs"
         ],
-        "summary": "Execution (E1–E10) and risk analytics of a run, with units, unavailability reasons and\ncaveats; verified against the stored digest.",
+        "summary": "Execution (E1–E10) and risk analytics of a run, with units, unavailability reasons and\ncaveats; verified against the stored digest. Aggregates are complete; series longer than\n100 points are downsampled and listed in `downsampled` (page them with `/analytics/series`).",
         "operationId": "run_analytics",
         "parameters": [
           {
@@ -2210,6 +2302,98 @@
             }
           },
           "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/analytics/series": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "One page of the complete points of an analytics series.",
+        "operationId": "run_analytics_series",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "JSON Pointer of the series, as listed in `downsampled[].path`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "First point (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Points per page, ≤ 5000 (default 1000); a page also ends at the byte cap.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "platform",
+            "in": "query",
+            "description": "Platform class (default: this deployment's result platform, `linux-x86_64` hosted).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeriesPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -4409,6 +4593,13 @@
           "dataset_id": {
             "type": "string"
           },
+          "downsampled": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DownsampledSeries"
+            },
+            "description": "As [`RunAnalytics::downsampled`]; complete points via\n`GET /datasets/{id}/versions/{version}/analytics/series`."
+          },
           "market": {
             "$ref": "#/components/schemas/MarketReport"
           },
@@ -4936,6 +5127,31 @@
           },
           "total": {
             "$ref": "#/components/schemas/Value"
+          }
+        }
+      },
+      "DownsampledSeries": {
+        "type": "object",
+        "description": "One series shortened in an analytics response.",
+        "required": [
+          "path",
+          "total",
+          "returned"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "JSON Pointer of the series in the report, e.g. `/execution/first_fill/km/curve`; pass it\nas `path` to the series endpoint."
+          },
+          "returned": {
+            "type": "integer",
+            "description": "Points in this response.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "description": "Points of the complete series.",
+            "minimum": 0
           }
         }
       },
@@ -10861,6 +11077,13 @@
           "analytics_version": {
             "type": "string"
           },
+          "downsampled": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DownsampledSeries"
+            },
+            "description": "Series of the stored report that this response shortened (see [`downsample`]); the\ncomplete points are paged by `GET /runs/{run_id}/analytics/series`. Never stored."
+          },
           "execution": {
             "$ref": "#/components/schemas/ExecutionReport",
             "description": "Exchange-clock execution quality (E1–E10). Per-order details are not retained\n(`order_details_streamed = true`)."
@@ -11292,6 +11515,54 @@
             }
           }
         ]
+      },
+      "SeriesPage": {
+        "type": "object",
+        "description": "`GET …/analytics/series`: one page of the complete points of a downsampled series.",
+        "required": [
+          "path",
+          "total",
+          "offset",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The points, as in the stored report."
+          },
+          "next_offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Points of the complete series.",
+            "minimum": 0
+          },
+          "truncated_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TruncatedBy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "Severity": {
         "type": "string",
