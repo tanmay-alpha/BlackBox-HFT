@@ -12,6 +12,7 @@ pub const MARKOUT_HORIZONS_NS: [i64; 4] =
     [100_000_000, 1_000_000_000, 5_000_000_000, 30_000_000_000];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EngineInfo {
     pub name: String,
     pub version: String,
@@ -19,6 +20,7 @@ pub struct EngineInfo {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DatasetRef {
     pub id: String,
     /// SHA-256 of the dataset's event file.
@@ -29,6 +31,7 @@ pub struct DatasetRef {
 
 /// Everything needed to reproduce a run and to detect that two runs are the same experiment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RunManifest {
     pub contract_version: u32,
     /// First 16 hex characters of `config_sha256`. Identical inputs give an identical id.
@@ -63,11 +66,13 @@ pub struct RunManifest {
 
 /// One simulated execution with its accounting effect.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FillRecord {
     /// `seq` of the corresponding `ExchFill` on the tape.
     pub seq: u64,
     pub order_id: u64,
     /// Exchange clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub ts: RelNs,
     pub side: Side,
     pub price_tick: i64,
@@ -89,7 +94,9 @@ pub struct FillRecord {
 
 /// Periodic account snapshot on the local clock.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EquitySample {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub ts: RelNs,
     /// Strategy tick the sample was taken on. A run's last sample is its closing sample: it is
     /// taken one interval after the final tick, once everything that followed that tick has been
@@ -114,6 +121,7 @@ pub struct EquitySample {
 
 /// Lifecycle summary of one order, assembled from the tape.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OrderRecord {
     pub order_id: u64,
     pub tick_no: u64,
@@ -126,11 +134,14 @@ pub struct OrderRecord {
     pub reason: String,
     pub outcome: OrderOutcome,
     /// Local clock: when the strategy decided.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub decision_ts: RelNs,
     /// Exchange clock: first exchange-side event for the order (arrival). `None` if it never
     /// reached the exchange (risk-blocked, refused, or data ended first).
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub exch_arrival_ts: Option<RelNs>,
     /// Local clock: first response received.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub first_response_ts: Option<RelNs>,
     /// Modeled quantity ahead when the order started resting.
     pub queue_ahead_at_entry: Option<f64>,
@@ -146,14 +157,18 @@ pub struct OrderRecord {
     pub fees: f64,
     pub fill_count: u32,
     /// Exchange clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub first_fill_ts: Option<RelNs>,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub last_fill_ts: Option<RelNs>,
     /// Local clock: when a cancel request was sent.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub cancel_sent_ts: Option<RelNs>,
     pub cancel_reason: Option<String>,
     /// The exchange rejected the cancel because the order was already gone.
     pub cancel_rejected: bool,
     /// Exchange clock: when the order became terminal at the exchange.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub terminal_ts: Option<RelNs>,
     /// Last exchange status observed.
     pub final_status: OrderStatus,
@@ -164,6 +179,7 @@ pub struct OrderRecord {
 
 /// Coarse classification used for filtering and for scenario alignment.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OrderOutcome {
     /// Stopped by a risk rule; never sent.
@@ -186,7 +202,9 @@ pub enum OrderOutcome {
 
 /// One markout horizon aggregated over fills.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MarkoutStat {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub horizon_ns: i64,
     /// Fills for which the markout could be measured.
     pub fills: u64,
@@ -196,6 +214,7 @@ pub struct MarkoutStat {
 
 /// Run-level measured outcomes. Every number is computed from the tape, fills and equity samples.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Metrics {
     // Orders
     pub orders_intended: u64,
@@ -260,6 +279,7 @@ pub struct Metrics {
 
 /// Cross-check of BlackBox's own ledger against the engine's local-side account state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EngineStateCheck {
     /// Position, cash, fee and trade-count agreement at the end of the run.
     pub agrees: bool,
@@ -277,6 +297,7 @@ pub struct EngineStateCheck {
 
 /// A complete run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RunResult {
     pub manifest: RunManifest,
     pub metrics: Metrics,
@@ -291,6 +312,7 @@ pub struct RunResult {
 
 /// Listing entry for a stored run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RunSummary {
     pub manifest: RunManifest,
     pub metrics: Metrics,

@@ -46,6 +46,7 @@ fn base(dataset_id: &str) -> RunConfig {
                 response_ns: MS,
             },
             feed_latency_offset_ns: 0,
+            think_time_ns: 0,
             fees: FeeConfig {
                 maker: 0.0,
                 taker: 0.0005,

@@ -33,6 +33,7 @@ fn base() -> RunConfig {
                 response_ns: NS_PER_MS,
             },
             feed_latency_offset_ns: 0,
+            think_time_ns: 0,
             fees: FeeConfig {
                 maker: 0.0,
                 taker: 0.0002,

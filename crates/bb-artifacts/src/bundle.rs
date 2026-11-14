@@ -132,6 +132,10 @@ pub struct BundleTrailer {
     pub summary_sha256: String,
     #[serde(with = "index_encoding")]
     pub page_index: Vec<PageIndex>,
+    /// Research analytics of the run (bb-analytics report JSON), authenticated by the trailer
+    /// member digest in [`BundleTrust`]. Absent in bundles written without analytics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analytics: Option<serde_json::Value>,
 }
 
 /// Immutable database trust root. Keep the complete value, including manifest and member hashes.
@@ -202,11 +206,21 @@ impl VerifiedBundle {
 
 pub struct BundleWriter {
     limits: BundleLimits,
+    analytics: Option<serde_json::Value>,
 }
 impl BundleWriter {
     pub fn new(limits: BundleLimits) -> Result<Self, ArtifactError> {
         limits.validate()?;
-        Ok(Self { limits })
+        Ok(Self {
+            limits,
+            analytics: None,
+        })
+    }
+
+    /// Embeds an analytics report in the trailer of every bundle this writer produces.
+    pub fn with_analytics(mut self, analytics: serde_json::Value) -> Self {
+        self.analytics = Some(analytics);
+        self
     }
 
     pub fn write_run(
@@ -316,6 +330,7 @@ impl BundleWriter {
             result_sha256: result_sha256.clone(),
             summary_sha256: summary_sha256.clone(),
             page_index: pages.clone(),
+            analytics: self.analytics.clone(),
         };
         // science_hash seeks through the file; append, never overwrite a page.
         file.as_file_mut().seek(SeekFrom::End(0))?;

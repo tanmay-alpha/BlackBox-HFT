@@ -7,7 +7,9 @@ use bb_core::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RiskConfig {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub bucket_ns: i64,
     pub hac_lag: usize,
     pub position_limit_base: Option<f64>,
@@ -25,22 +27,36 @@ impl Default for RiskConfig {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RiskReport {
     pub analytics_version: String,
     pub mark: String,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub sample_interval_ns: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub bucket_horizon_ns: Value,
     pub trials: u64,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub net_pnl: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub turnover: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub pnl_per_turnover_bps: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub max_drawdown: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub time_under_water_ns: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub mean_absolute_position: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub time_at_position_limit_ns: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub max_long: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub max_short: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub bucket_sharpe: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub sharpe_hac_se: Value,
     pub caveats: Vec<String>,
 }

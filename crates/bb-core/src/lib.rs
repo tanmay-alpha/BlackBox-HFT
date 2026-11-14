@@ -55,6 +55,7 @@ pub const ENGINE_VERSION: &str = "0.9.4";
 
 /// Order side. Also used for the aggressor side of a market trade.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
     Buy,
@@ -86,6 +87,7 @@ impl Side {
 /// * `Ioc`: executes what it can on arrival, remainder expires.
 /// * `Fok`: executes fully on arrival or expires.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Tif {
     Gtc,
@@ -95,6 +97,7 @@ pub enum Tif {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OrdType {
     Limit,
@@ -103,6 +106,7 @@ pub enum OrdType {
 
 /// Order status as reported by the engine.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
     /// No exchange response has been received yet.
@@ -131,6 +135,7 @@ impl OrderStatus {
 
 /// Which kind of request a latency or response event refers to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ReqKind {
     New,
@@ -142,6 +147,7 @@ pub enum ReqKind {
 
 /// Clock domain of a timestamp.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Clock {
     /// Time at the simulated matching engine.
@@ -152,6 +158,7 @@ pub enum Clock {
 
 /// Who produced a recorded fact. The UI must render these distinguishably.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     /// Captured inside a callback the pinned engine invoked (queue, latency, fee or order-response
@@ -167,6 +174,7 @@ pub enum Source {
 
 /// How strongly a statement in an explanation is supported.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Basis {
     /// Present in the historical market data.

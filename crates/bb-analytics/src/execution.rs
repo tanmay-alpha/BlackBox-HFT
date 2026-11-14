@@ -23,6 +23,7 @@ use bb_core::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DirectionalOrder {
     pub order_id: u64,
     /// Explicit decision price in quote/base; None uses the local OrderIntent market mid.
@@ -31,19 +32,25 @@ pub struct DirectionalOrder {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ExecutionConfig {
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
     pub horizons_ns: Vec<i64>,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub queue_horizon_ns: i64,
     /// Finite, increasing bucket edges; buckets are [lower, upper), with outer tails.
     pub relative_queue_edges: Vec<f64>,
     pub absolute_queue_lot_edges: Vec<f64>,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub bootstrap_block_ns: i64,
     pub bootstrap_replicates: usize,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub bootstrap_seed: u64,
     /// Only these explicitly directional intents are eligible for E4/E10.
     pub directional_orders: Vec<DirectionalOrder>,
     /// Exchange-clock observation end. None uses the last BBO/recorded exchange timestamp.
     /// Set this when the run stopped before the dataset ended (e.g. a risk halt).
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub observation_end_ns: Option<RelNs>,
 }
 impl Default for ExecutionConfig {
@@ -73,19 +80,28 @@ pub enum ExecutionError {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PriceMetric {
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub price: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub ticks: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub bps: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ConfidenceBand {
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub lower: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub upper: Value,
     pub method: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct HorizonMetrics {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub horizon_ns: i64,
     /// Same valid cohort as RS and AS, allowing the identity to be checked after exclusions.
     pub matched_effective_half: PriceMetric,
@@ -95,7 +111,9 @@ pub struct HorizonMetrics {
     pub adverse_selection_95: ConfidenceBand,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SpreadMetrics {
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub filled_quantity: Value,
     pub effective_half: PriceMetric,
     pub effective_full: PriceMetric,
@@ -105,61 +123,89 @@ pub struct SpreadMetrics {
     pub horizons: Vec<HorizonMetrics>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LiquiditySplit<T> {
     pub all: T,
     pub maker: T,
     pub taker: T,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Shortfall {
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub execution: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub delay: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub trading: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub opportunity: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub fees: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub total: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub bps: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub decision_price: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub arrival_mid: Value,
     pub arrival_slippage: PriceMetric,
     pub decision_slippage: PriceMetric,
     pub latency_drift: PriceMetric,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OpportunityCost {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub horizon_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub cost: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CancelMetrics {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub sent_ns: RelNs,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub to_exchange: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub round_trip: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub in_flight_quantity: Value,
     pub late_cancel: bool,
     pub exchange_censored: bool,
     pub acknowledgement_censored: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OrderExecution {
     pub order_id: u64,
     pub spreads: LiquiditySplit<SpreadMetrics>,
     pub shortfall: Shortfall,
     pub opportunities: Vec<OpportunityCost>,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub time_to_first_fill: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub time_to_complete_fill: Value,
     pub first_fill_censored: bool,
     pub complete_fill_censored: bool,
     pub cancels: Vec<CancelMetrics>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Distribution {
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub total: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub median: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub p05: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub p95: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ShortfallComponents {
     pub execution: Distribution,
     pub delay: Distribution,
@@ -168,6 +214,7 @@ pub struct ShortfallComponents {
     pub fees: Distribution,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CancelSummary {
     pub attempts: u64,
     pub exchange_censored: u64,
@@ -178,9 +225,13 @@ pub struct CancelSummary {
     pub in_flight_quantity: Distribution,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SurvivalPoint {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub elapsed_ns: i64,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub survival: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub fill_probability: Value,
     pub probability_95: ConfidenceBand,
     pub at_risk: u64,
@@ -188,16 +239,20 @@ pub struct SurvivalPoint {
     pub censored: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct KaplanMeier {
     pub n: u64,
     pub excluded: u64,
     pub censored: u64,
     pub curve: Vec<SurvivalPoint>,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub fill_probability: Value,
     pub probability_95: ConfidenceBand,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub median_ns: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct QueueBucket {
     pub lower: Option<f64>,
     pub upper: Option<f64>,
@@ -205,7 +260,9 @@ pub struct QueueBucket {
     pub estimate: KaplanMeier,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct QueueMetrics {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub horizon_ns: i64,
     pub modeled: bool,
     pub relative: Vec<QueueBucket>,
@@ -214,18 +271,25 @@ pub struct QueueMetrics {
     pub excluded_absolute: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FillTimes {
     pub observed_ns: Distribution,
     pub km: KaplanMeier,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PnlDecomposition {
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub edge: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub drift: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub fees: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub net: Value,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ExecutionReport {
     pub analytics_version: String,
     pub order_count: u64,
@@ -236,12 +300,15 @@ pub struct ExecutionReport {
     pub shortfall: Distribution,
     pub shortfall_components: ShortfallComponents,
     pub cancels: CancelSummary,
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<(String, Distribution)>))]
     pub opportunities: Vec<(i64, Distribution)>,
     pub queue: QueueMetrics,
     pub first_fill: FillTimes,
     pub complete_fill: FillTimes,
     pub pnl: LiquiditySplit<PnlDecomposition>,
+    #[cfg_attr(feature = "openapi", schema(value_type = crate::AnalyticsValue))]
     pub exchange_end_mid: Value,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub observation_end_ns: Option<RelNs>,
     pub unassociated_fills: u64,
     pub caveats: Vec<String>,
@@ -527,7 +594,9 @@ impl Bootstrap {
 
 /// One right-censored lifetime, measured from exchange arrival/resting in nanoseconds.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SurvivalObservation {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub elapsed_ns: i64,
     pub event: bool,
 }

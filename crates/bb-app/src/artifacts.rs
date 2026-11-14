@@ -1,0 +1,569 @@
+//! Artefact storage and integrity on read (TARGET_ARCHITECTURE §6–§7, SECURITY_REVIEW §6.3).
+//!
+//! * [`Storage`] wraps the configured `ArtifactStore`. For Vercel Blob every GET attempt
+//!   (retries included) is charged against the persisted monthly/daily read budget *before* it
+//!   is sent; a refused charge fails closed (503 `storage`) without touching the network.
+//! * [`BundleCache`] keeps whole verified bundles on local disk (`<data-dir>/cache/bundles`),
+//!   byte-bounded. A bundle is fetched once (one GET), verified end to end against the trust
+//!   root in Postgres, and only then cached. Every page read re-verifies the page and metadata
+//!   digests, so a corrupted cache copy is detected; it is discarded and fetched again once,
+//!   and only a store copy that also fails verification quarantines the run.
+
+use std::{
+    collections::HashMap,
+    io::Write,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
+
+use bb_artifacts::{
+    ArtifactError, ArtifactStore, BlobConfig, BundleLimits, BundleReader, BundleTrailer,
+    BundleTrust, FsArtifactStore, RetryPolicy, Section, VercelBlobStore,
+};
+use bb_core::{
+    flight::FlightEvent,
+    result::{EquitySample, FillRecord, OrderRecord, RunResult},
+};
+use bb_db::{Database, RunArtifact, RunView};
+use bytes::Bytes;
+use serde::de::DeserializeOwned;
+
+use crate::{config::StorageConfig, metrics::Metrics, v1::error::ApiError};
+
+/// Largest single ranged GET when fetching a whole bundle.
+const FETCH_CHUNK: u64 = 8 << 20;
+const STORE_ATTEMPTS: usize = 3;
+
+/// The configured artefact store plus the read budget.
+#[derive(Clone)]
+pub struct Storage {
+    pub store: Arc<dyn ArtifactStore>,
+    pub backend: &'static str,
+    /// `None` = unmetered (the filesystem store).
+    budget: Option<(Database, i32, i64)>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+    #[error("storage read budget exhausted")]
+    Budget,
+    #[error(transparent)]
+    Artifact(#[from] ArtifactError),
+    #[error("storage budget check failed: {0}")]
+    Database(#[from] bb_db::Error),
+}
+
+impl StorageError {
+    pub fn into_api(self) -> ApiError {
+        match self {
+            StorageError::Budget => ApiError::unavailable("storage", 3600),
+            StorageError::Artifact(ArtifactError::Transport(e)) => {
+                tracing::error!(error = %e, "storage transport failed");
+                ApiError::unavailable("storage", 30)
+            }
+            StorageError::Artifact(ArtifactError::Http(status))
+                if status == 429 || status >= 500 =>
+            {
+                tracing::error!(status, "storage unavailable");
+                ApiError::unavailable("storage", 30)
+            }
+            StorageError::Artifact(e) => ApiError::internal(format!("storage: {e}")),
+            StorageError::Database(e) => ApiError::from(e),
+        }
+    }
+}
+
+impl Storage {
+    pub fn from_config(
+        config: &StorageConfig,
+        db: Database,
+        reads_cap: i32,
+        bytes_cap: i64,
+    ) -> Result<Self, ArtifactError> {
+        Ok(match config {
+            StorageConfig::Fs(root) => Self {
+                store: Arc::new(FsArtifactStore::new(root)?),
+                backend: "fs",
+                budget: None,
+            },
+            StorageConfig::VercelBlob(token) => {
+                let parts: Vec<&str> = token.expose().split('_').collect();
+                let store_id = parts.get(3).copied().unwrap_or_default();
+                let mut blob = BlobConfig::for_store(store_id)?;
+                // Retries happen here, one budget charge per attempt.
+                blob.retry = RetryPolicy {
+                    attempts: 1,
+                    ..RetryPolicy::default()
+                };
+                Self {
+                    store: Arc::new(VercelBlobStore::with_config(token.expose(), blob)?),
+                    backend: "vercel_blob",
+                    budget: Some((db, reads_cap, bytes_cap)),
+                }
+            }
+        })
+    }
+
+    /// A custom store (tests); `metered` charges the read budget like Vercel Blob.
+    pub fn custom(
+        store: Arc<dyn ArtifactStore>,
+        backend: &'static str,
+        budget: Option<(Database, i32, i64)>,
+    ) -> Self {
+        Self {
+            store,
+            backend,
+            budget,
+        }
+    }
+
+    /// One metered ranged GET with bounded retries on transient failures.
+    pub async fn get_range(&self, key: &str, range: Range<u64>) -> Result<Bytes, StorageError> {
+        let len = i64::try_from(range.end.saturating_sub(range.start)).unwrap_or(i64::MAX);
+        let mut delay = Duration::from_millis(250);
+        let mut last = None;
+        for _ in 0..STORE_ATTEMPTS {
+            if let Some((db, reads, bytes)) = &self.budget
+                && !db
+                    .charge_storage_read(self.backend, len, *reads, *bytes)
+                    .await?
+            {
+                return Err(StorageError::Budget);
+            }
+            match self.store.get_range(key, range.clone()).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(e @ (ArtifactError::Transport(_) | ArtifactError::Http(429 | 500..=599))) => {
+                    last = Some(e);
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(last.map(StorageError::from).unwrap_or(StorageError::Budget))
+    }
+
+    /// Publishes a bundle with bounded retries (uploads are counted at completion).
+    pub async fn put(&self, key: &str, path: &Path) -> Result<(), StorageError> {
+        let mut delay = Duration::from_millis(500);
+        let mut last = None;
+        for _ in 0..STORE_ATTEMPTS {
+            match self.store.put_bundle_from_file(key, path).await {
+                Ok(_) => return Ok(()),
+                // A previous attempt may have landed before its response was lost.
+                Err(ArtifactError::AlreadyExists) => return Ok(()),
+                Err(e @ (ArtifactError::Transport(_) | ArtifactError::Http(429 | 500..=599))) => {
+                    last = Some(e);
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(last.map(StorageError::from).unwrap_or(StorageError::Budget))
+    }
+
+    pub async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        Ok(self.store.delete(key).await?)
+    }
+}
+
+/// Byte-bounded LRU of verified bundle files.
+pub struct BundleCache {
+    dir: PathBuf,
+    capacity: u64,
+    entries: Mutex<HashMap<String, (u64, u64)>>,
+    clock: std::sync::atomic::AtomicU64,
+}
+
+impl BundleCache {
+    /// Starts empty: whatever an earlier process left on disk is discarded (not trusted).
+    pub fn new(data_dir: &Path, capacity: u64) -> std::io::Result<Self> {
+        let dir = data_dir.join("cache").join("bundles");
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self {
+            dir,
+            capacity: capacity.max(1),
+            entries: Mutex::new(HashMap::new()),
+            clock: Default::default(),
+        })
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    fn path(&self, sha256: &str) -> PathBuf {
+        self.dir.join(format!("{sha256}.bbz"))
+    }
+
+    fn touch(&self, sha256: &str) -> Option<PathBuf> {
+        let tick = self
+            .clock
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = entries.get_mut(sha256)?;
+        entry.1 = tick;
+        let path = self.path(sha256);
+        path.is_file().then_some(path)
+    }
+
+    fn forget(&self, sha256: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(sha256);
+        let _ = std::fs::remove_file(self.path(sha256));
+    }
+
+    /// Moves a verified file into the cache (evicting least recently used entries).
+    pub fn insert(&self, sha256: &str, file: &Path, size: u64) -> std::io::Result<PathBuf> {
+        let target = self.path(sha256);
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        if size > self.capacity {
+            return Err(std::io::Error::other("bundle larger than the cache"));
+        }
+        let mut used: u64 = entries.values().map(|e| e.0).sum();
+        while used + size > self.capacity {
+            let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, e)| e.1)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            if let Some((s, _)) = entries.remove(&oldest) {
+                used -= s;
+            }
+            let _ = std::fs::remove_file(self.path(&oldest));
+        }
+        if std::fs::rename(file, &target).is_err() {
+            std::fs::copy(file, &target)?;
+            let _ = std::fs::remove_file(file);
+        }
+        let tick = self
+            .clock
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        entries.insert(sha256.to_string(), (size, tick));
+        Ok(target)
+    }
+}
+
+/// Limits for reading bundles written under the server's profile.
+pub fn bundle_limits(max_output_bytes: u64) -> BundleLimits {
+    let mut limits = BundleLimits::default();
+    if max_output_bytes < limits.max_output_bytes {
+        // The stored, compressed bundle is never larger than the serialized result bound.
+        limits.max_output_bytes = max_output_bytes;
+    }
+    limits
+}
+
+/// The trust root of a run's bundle, checked against the database rows (outer digest first).
+pub fn trust_of(view: &RunView, artifact: &RunArtifact) -> Result<BundleTrust, &'static str> {
+    if crate::canonical::sha256(&artifact.page_index).as_slice() != artifact.page_index_sha256 {
+        return Err("bundle");
+    }
+    let trust: BundleTrust =
+        serde_json::from_value(artifact.page_index.clone()).map_err(|_| "bundle")?;
+    let run = &view.run;
+    let consistent = trust.result_sha256 == hex::encode(&run.result_sha256)
+        && trust.summary_sha256 == hex::encode(&run.summary_sha256)
+        && trust.sha256 == hex::encode(&artifact.sha256)
+        && i64::try_from(trust.size_bytes).ok() == Some(artifact.size_bytes)
+        && trust.fingerprint == hex::encode(&view.fingerprint)
+        && trust.platform == run.platform
+        && i64::try_from(trust.counts.orders).ok() == Some(run.order_count)
+        && i64::try_from(trust.counts.fills).ok() == Some(run.fill_count)
+        && i64::try_from(trust.counts.tape).ok() == Some(run.tape_len)
+        && i64::try_from(trust.counts.equity).ok() == Some(run.equity_len)
+        && i64::try_from(trust.counts.ticks).ok() == Some(run.ticks);
+    if consistent { Ok(trust) } else { Err("bundle") }
+}
+
+/// A run whose bundle is verified and cached locally.
+pub struct OpenRun {
+    pub view: RunView,
+    pub artifact: RunArtifact,
+    pub trust: BundleTrust,
+    pub limits: BundleLimits,
+    path: PathBuf,
+    cache: Arc<BundleCache>,
+    storage: Storage,
+    db: Database,
+    metrics: Arc<Metrics>,
+}
+
+/// Opens (fetching and verifying if needed) the bundle of a visible run.
+pub async fn open_run(
+    db: &Database,
+    storage: &Storage,
+    cache: &Arc<BundleCache>,
+    metrics: &Arc<Metrics>,
+    limits: BundleLimits,
+    view: RunView,
+) -> Result<OpenRun, ApiError> {
+    let artifact = db.artifact(view.run.id).await?;
+    let trust = match trust_of(&view, &artifact) {
+        Ok(trust) => trust,
+        Err(object) => {
+            return Err(quarantine(
+                db,
+                metrics,
+                &view,
+                object,
+                &hex::encode(&artifact.page_index_sha256),
+            )
+            .await);
+        }
+    };
+    let sha = trust.sha256.clone();
+    let path = match cache.touch(&sha) {
+        Some(path) => {
+            Metrics::inc(&metrics.artifact_cache_hits_total);
+            path
+        }
+        None => {
+            Metrics::inc(&metrics.artifact_cache_misses_total);
+            fetch_verified(
+                db, storage, cache, metrics, &view, &artifact, &trust, limits,
+            )
+            .await?
+        }
+    };
+    Ok(OpenRun {
+        view,
+        artifact,
+        trust,
+        limits,
+        path,
+        cache: cache.clone(),
+        storage: storage.clone(),
+        db: db.clone(),
+        metrics: metrics.clone(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fetch_verified(
+    db: &Database,
+    storage: &Storage,
+    cache: &Arc<BundleCache>,
+    metrics: &Arc<Metrics>,
+    view: &RunView,
+    artifact: &RunArtifact,
+    trust: &BundleTrust,
+    limits: BundleLimits,
+) -> Result<PathBuf, ApiError> {
+    let mut temp = tempfile::NamedTempFile::new_in(cache.dir())
+        .map_err(|e| ApiError::internal(format!("cache temp file: {e}")))?;
+    let mut offset = 0;
+    while offset < trust.size_bytes {
+        let end = (offset + FETCH_CHUNK).min(trust.size_bytes);
+        let bytes = match storage.get_range(&artifact.storage_key, offset..end).await {
+            Ok(bytes) => bytes,
+            Err(StorageError::Artifact(ArtifactError::NotFound)) => {
+                return Err(quarantine(db, metrics, view, "bundle", &trust.sha256).await);
+            }
+            Err(e) => return Err(e.into_api()),
+        };
+        temp.write_all(&bytes)
+            .map_err(|e| ApiError::internal(format!("cache write: {e}")))?;
+        offset = end;
+    }
+    temp.flush()
+        .map_err(|e| ApiError::internal(format!("cache flush: {e}")))?;
+    let trust_copy = trust.clone();
+    let temp_path = temp.into_temp_path();
+    let checked = temp_path.to_path_buf();
+    let verified = tokio::task::spawn_blocking(move || {
+        BundleReader::new(&trust_copy, limits)?.verify_file(&checked)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("verifier panicked: {e}")))?;
+    match verified {
+        Ok(trailer) => {
+            if trailer.manifest.result_sha256 != hex::encode(&view.run.result_sha256) {
+                return Err(quarantine(db, metrics, view, "bundle", &trust.sha256).await);
+            }
+        }
+        Err(ArtifactError::Integrity(e)) => {
+            tracing::error!(run = %view.short_id, error = %e, "bundle failed verification");
+            return Err(quarantine(db, metrics, view, "bundle", &trust.sha256).await);
+        }
+        Err(e) => return Err(ApiError::internal(format!("verify bundle: {e}"))),
+    }
+    let kept = temp_path
+        .keep()
+        .map_err(|e| ApiError::internal(format!("cache keep: {e}")))?;
+    cache
+        .insert(&trust.sha256, &kept, trust.size_bytes)
+        .map_err(|e| ApiError::internal(format!("cache insert: {e}")))
+}
+
+/// Quarantines a run after a failed verification and returns the `integrity_failed` error.
+pub async fn quarantine(
+    db: &Database,
+    metrics: &Metrics,
+    view: &RunView,
+    object: &str,
+    expected: &str,
+) -> ApiError {
+    Metrics::inc(&metrics.integrity_failures_total);
+    let reason = format!("{object} failed verification on read");
+    if let Err(e) = db.quarantine_run(view.run.id, &reason).await {
+        tracing::error!(run = %view.short_id, error = %e, "quarantine failed");
+    }
+    ApiError::integrity_failed(&view.short_id, object, expected)
+}
+
+impl OpenRun {
+    /// Runs `read` against the cached file. A failure of the cached copy discards it and
+    /// fetches the bundle again once; a second failure quarantines the run.
+    pub async fn read<T, F>(&self, read: F) -> Result<T, ApiError>
+    where
+        T: Send + 'static,
+        F: Fn(&BundleReader<'_>, &Path) -> Result<T, ArtifactError> + Send + Sync + Clone + 'static,
+    {
+        let first = self.attempt(&self.path, read.clone()).await?;
+        match first {
+            Ok(value) => Ok(value),
+            Err(ArtifactError::Integrity(e)) => {
+                tracing::warn!(run = %self.view.short_id, error = %e, "cached bundle failed verification; refetching");
+                self.cache.forget(&self.trust.sha256);
+                let path = fetch_verified(
+                    &self.db,
+                    &self.storage,
+                    &self.cache,
+                    &self.metrics,
+                    &self.view,
+                    &self.artifact,
+                    &self.trust,
+                    self.limits,
+                )
+                .await?;
+                match self.attempt(&path, read).await? {
+                    Ok(value) => Ok(value),
+                    Err(ArtifactError::Integrity(_)) => Err(quarantine(
+                        &self.db,
+                        &self.metrics,
+                        &self.view,
+                        "page",
+                        &self.trust.sha256,
+                    )
+                    .await),
+                    Err(e) => Err(ApiError::internal(format!("bundle read: {e}"))),
+                }
+            }
+            Err(e) => Err(ApiError::internal(format!("bundle read: {e}"))),
+        }
+    }
+
+    async fn attempt<T, F>(
+        &self,
+        path: &Path,
+        read: F,
+    ) -> Result<Result<T, ArtifactError>, ApiError>
+    where
+        T: Send + 'static,
+        F: Fn(&BundleReader<'_>, &Path) -> Result<T, ArtifactError> + Send + 'static,
+    {
+        let trust = self.trust.clone();
+        let limits = self.limits;
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let reader = BundleReader::new(&trust, limits)?;
+            read(&reader, &path)
+        })
+        .await
+        .map_err(|e| ApiError::internal(format!("bundle reader panicked: {e}")))
+    }
+
+    pub async fn trailer(&self) -> Result<BundleTrailer, ApiError> {
+        self.read(|reader, path| reader.trailer(path)).await
+    }
+
+    /// Page numbers (indices into the trust page index) of one section.
+    pub fn pages(&self, section: Section) -> Vec<(usize, u64, u64)> {
+        self.trust
+            .page_index
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.section == section)
+            .map(|(i, p)| (i, p.first_row, p.rows))
+            .collect()
+    }
+
+    pub fn page_index(&self) -> &[bb_artifacts::PageIndex] {
+        &self.trust.page_index
+    }
+
+    /// Verified rows of one page.
+    pub async fn page<T: DeserializeOwned + Send + 'static>(
+        &self,
+        page_no: usize,
+    ) -> Result<Vec<T>, ApiError> {
+        self.read(move |reader, path| {
+            let bytes = reader.page(path, page_no)?;
+            parse_rows(&bytes)
+        })
+        .await
+    }
+
+    /// The complete run (for comparisons, timelines, reports and analytics). Bounded by the
+    /// profile's output limit, and only used behind the heavy-read concurrency limit.
+    pub async fn full(&self) -> Result<RunResult, ApiError> {
+        let pages: Vec<(usize, Section)> = self
+            .trust
+            .page_index
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.section))
+            .collect();
+        self.read(move |reader, path| {
+            let trailer = reader.trailer(path)?;
+            let mut orders: Vec<OrderRecord> = Vec::new();
+            let mut fills: Vec<FillRecord> = Vec::new();
+            let mut equity: Vec<EquitySample> = Vec::new();
+            let mut tape: Vec<FlightEvent> = Vec::new();
+            for (page_no, section) in &pages {
+                let bytes = reader.page(path, *page_no)?;
+                match section {
+                    Section::Orders => orders.extend(parse_rows::<OrderRecord>(&bytes)?),
+                    Section::Fills => fills.extend(parse_rows::<FillRecord>(&bytes)?),
+                    Section::Equity => equity.extend(parse_rows::<EquitySample>(&bytes)?),
+                    Section::Tape => tape.extend(parse_rows::<FlightEvent>(&bytes)?),
+                }
+            }
+            Ok(RunResult {
+                manifest: trailer.manifest,
+                metrics: trailer.metrics,
+                engine_check: trailer.engine_check,
+                ticks: trailer.counts.ticks,
+                orders,
+                fills,
+                equity,
+                tape,
+            })
+        })
+        .await
+    }
+
+    /// Path of the verified cached bundle (export).
+    pub fn cached_path(&self) -> &Path {
+        &self.path
+    }
+}
+
+fn parse_rows<T: DeserializeOwned>(bytes: &[u8]) -> Result<Vec<T>, ArtifactError> {
+    bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).map_err(ArtifactError::from))
+        .collect()
+}

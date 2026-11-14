@@ -16,6 +16,7 @@ use crate::{
 
 /// Predicted size of one run, computed from the configuration and the dataset manifest alone.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WorkEstimate {
     /// Engine rows the run replays (the engine holds its own copy of them).
     pub dataset_rows: u64,
@@ -35,6 +36,7 @@ pub struct WorkEstimate {
 
 /// Work and output bounds for one run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ExecutionLimits {
     /// Engine rows of the dataset. Checked at admission.
     pub max_dataset_rows: u64,

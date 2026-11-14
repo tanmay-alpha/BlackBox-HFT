@@ -34,6 +34,7 @@ pub fn split_order_id(order_id: u64) -> (u64, u8) {
 
 /// Top of book as the strategy host knew it, with the provenance of that knowledge.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MarketView {
     /// `None` while the local book has no bid.
     pub best_bid_tick: Option<i64>,
@@ -41,8 +42,10 @@ pub struct MarketView {
     pub best_bid_qty: f64,
     pub best_ask_qty: f64,
     /// Exchange timestamp of the last feed event received locally.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub feed_exch_ts: Option<RelNs>,
     /// Local receipt timestamp of that event.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub feed_local_ts: Option<RelNs>,
 }
 
@@ -72,6 +75,7 @@ impl MarketView {
 
 /// One of the strategy's own orders as known locally.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OpenOrder {
     pub order_id: u64,
     pub side: Side,
@@ -94,7 +98,9 @@ impl OpenOrder {
 
 /// A market trade as received on the local feed.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TradePrint {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub local_ts: RelNs,
     pub price_tick: i64,
     pub qty: f64,
@@ -122,6 +128,7 @@ pub struct LocalView<'a> {
 
 /// What a strategy wants done.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Intent {
     Place {

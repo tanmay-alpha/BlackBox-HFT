@@ -54,6 +54,7 @@ pub const MAX_CSCV_BLOCKS: u32 = 16;
 
 /// Half-open exchange-clock interval `[start, end)`, nanoseconds relative to the dataset origin.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TimeWindow {
     pub start: RelNs,
@@ -102,6 +103,7 @@ impl TimeWindow {
 /// Which quantity of a run the sweep optimises. Annualised Sharpe-type ratios are deliberately
 /// absent (`docs/research/MARKET_MICROSTRUCTURE.md` §5).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectiveMetric {
     /// [`Metrics::net_pnl`], quote currency.
@@ -192,6 +194,7 @@ impl ObjectiveMetric {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Maximize,
@@ -200,6 +203,7 @@ pub enum Direction {
 
 /// The one quantity, declared up front, that ranks the cells.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Objective {
     pub metric: ObjectiveMetric,
@@ -218,6 +222,7 @@ impl Objective {
 
 /// Integer parameter values (nanoseconds).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IntDomain {
     /// `min, min + step, …` up to and including `max` when it lies on the grid.
@@ -233,6 +238,7 @@ pub enum IntDomain {
 
 /// Fee values (fractions of traded value).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FloatDomain {
     /// Continuous uniform on `[min, max)`.
@@ -248,6 +254,7 @@ pub enum FloatDomain {
 /// A parameter of a random design and the values it may take. Same parameters and semantics as
 /// [`GridAxis`]; a drawn value is applied through a one-value `GridAxis`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RandomParam {
     OrderLatencyNs { domain: IntDomain },
@@ -392,6 +399,7 @@ impl RandomParam {
 
 /// How the configurations of a sweep are chosen.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SweepDesign {
     /// Every combination of one or two axes. Cells are ordered row-major, the first axis
@@ -415,6 +423,7 @@ pub enum SweepDesign {
 /// after in-sample (a gap between them is allowed), so nothing chosen in sample can depend on
 /// data from the out-of-sample period.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Partition {
     pub in_sample: TimeWindow,
@@ -423,6 +432,7 @@ pub struct Partition {
 
 /// A declared, bounded parameter sweep.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SweepSpec {
     pub base: RunConfig,
@@ -440,6 +450,7 @@ pub struct SweepSpec {
 
 /// One parameter value of a cell.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ParamValue {
     /// [`GridAxis::name`], e.g. `order_latency_ns`.
     pub param: String,
@@ -450,6 +461,7 @@ pub struct ParamValue {
 
 /// Which part of the data a run covers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Segment {
     /// The whole dataset (no partition).
@@ -459,6 +471,7 @@ pub enum Segment {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SweepRun {
     pub segment: Segment,
     /// `None` for [`Segment::Full`].
@@ -467,6 +480,7 @@ pub struct SweepRun {
 
 /// One configuration of a sweep.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SweepCell {
     /// Position in [`SweepSpec::cells`], from 0.
     pub index: u32,
@@ -481,6 +495,7 @@ pub struct SweepCell {
 
 /// One simulation to queue, with its dataset id resolved.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PlannedRun {
     pub cell: u32,
     pub segment: Segment,
@@ -493,6 +508,7 @@ pub struct PlannedRun {
 
 /// Summed predicted work of every run of a sweep.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SweepWork {
     pub runs: u64,
     pub ticks: u64,
@@ -504,6 +520,7 @@ pub struct SweepWork {
 /// Admission bounds of a sweep: a cell cap, the per-run limits every run must pass, and a total
 /// over all runs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SweepLimits {
     pub max_cells: u32,
     pub per_run: ExecutionLimits,
@@ -622,6 +639,7 @@ impl std::fmt::Display for SweepRefusal {
 /// An admitted sweep: its cells and the exact runs to queue, in cell order (in-sample before
 /// out-of-sample).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SweepPlan {
     pub fingerprint: String,
     pub cells: Vec<SweepCell>,
