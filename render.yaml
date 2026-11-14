@@ -1,0 +1,83 @@
+# Render Blueprint for the hosted BlackBox HFT API. Field reference: https://render.com/docs/blueprint-spec
+# Setup, environment contract and operations: docs/engineering/DEPLOYMENT.md (§4 this file, §5 variables).
+#
+# The service pulls the prebuilt public image from GHCR; nothing is built on Render, so no pipeline
+# minutes are used. Image-backed services do not redeploy when the tag moves: the publish workflow
+# triggers each deploy through the service's deploy hook with ?imgURL=<image>@<digest>.
+#
+# No preDeployCommand: it is available only on paid web services (blueprint-spec, `preDeployCommand`).
+# Migrations instead run inside `blackbox serve` before it binds the port (BB_MIGRATE_ON_START),
+# over DATABASE_URL_UNPOOLED, serialised by sqlx's Postgres advisory lock.
+services:
+  - type: web
+    name: blackbox-hft-api
+    runtime: image
+    image:
+      url: ghcr.io/tanmay-alpha/blackbox-hft:main
+    plan: free
+    region: singapore
+    healthCheckPath: /healthz
+    # maxShutdownDelaySeconds is omitted: Render's validator rejects it for free services ("max
+    # shutdown delay is not supported for free tier services", render blueprints validate,
+    # 2026-11-14), so the default 30 s applies. The server drains within BB_SHUTDOWN_GRACE_MS (25 s).
+    envVars:
+      # Secrets: Render prompts for these when the Blueprint is first created and ignores them on
+      # later syncs (sync: false), so their values live only in Render.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
+      - key: BLOB_READ_WRITE_TOKEN
+        sync: false
+      - key: BB_ADMIN_BOOTSTRAP_KEY_SHA256
+        sync: false
+      # Non-secret configuration.
+      - key: PORT
+        value: "10000"
+      - key: BB_PROFILE
+        value: hosted
+      - key: BB_MIGRATE_ON_START
+        value: "true"
+      - key: BB_CORS_ALLOWED_ORIGINS
+        value: https://blackbox-hft.vercel.app
+      - key: BB_WORKER_SLOTS
+        value: "1"
+      - key: BB_SHUTDOWN_GRACE_MS
+        value: "25000"
+      - key: RUST_LOG
+        value: info
+
+  # Optional paid upgrade (not deployed; costs money). A private background worker runs the same
+  # image as `blackbox worker`; the web service then stops running jobs in-process. To enable:
+  # uncomment, set BB_WORKER_SLOTS to "0" on blackbox-hft-api above, re-sync the Blueprint, enter the
+  # worker's secrets, and add its deploy hook to the publish workflow. Background workers have no
+  # free plan (blueprint-spec, `plan`); 0.5c-512mb is the smallest. A paid service may use
+  # preDeployCommand, so migrations could move there.
+  #
+  # - type: worker
+  #   name: blackbox-hft-worker
+  #   runtime: image
+  #   image:
+  #     url: ghcr.io/tanmay-alpha/blackbox-hft:main
+  #   plan: 0.5c-512mb
+  #   region: singapore
+  #   dockerCommand: blackbox --data-dir /var/lib/blackbox worker
+  #   preDeployCommand: blackbox migrate
+  #   maxShutdownDelaySeconds: 30
+  #   envVars:
+  #     - key: DATABASE_URL
+  #       sync: false
+  #     - key: DATABASE_URL_UNPOOLED
+  #       sync: false
+  #     - key: BLOB_READ_WRITE_TOKEN
+  #       sync: false
+  #     - key: BB_PROFILE
+  #       value: hosted
+  #     - key: BB_MIGRATE_ON_START
+  #       value: "false"
+  #     - key: BB_WORKER_SLOTS
+  #       value: "1"
+  #     - key: BB_SHUTDOWN_GRACE_MS
+  #       value: "25000"
+  #     - key: RUST_LOG
+  #       value: info

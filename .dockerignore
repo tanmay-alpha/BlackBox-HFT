@@ -1,9 +1,17 @@
-target
-data
+# Allowlist: the build context holds only what the Dockerfile reads. Everything else, including
+# data/ (datasets, runs and data/secrets/*.env), .git, target/ and the machine-local
+# rust-toolchain.toml and .cargo/config.toml (Windows-only settings), never reaches the builder.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!docs/LIMITATIONS.md
+!web/
+
+# Re-excluded inside allowed directories.
+**/target
 web/node_modules
 web/dist
-.git
-.research
-.toolchain
-.cargo
-rust-toolchain.toml
+web/playwright-report
+web/test-results
+web/.env*
