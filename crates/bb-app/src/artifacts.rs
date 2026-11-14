@@ -185,6 +185,49 @@ impl Storage {
 
 /// Parsed runs kept in memory for paged whole-run reads (timeline cursor pages).
 const PARSED_RUNS: usize = 2;
+/// Byte budget of the parsed runs (estimated by their decoded section bytes); a run above it is
+/// never retained.
+const PARSED_BYTES: u64 = 64 << 20;
+
+/// One in-flight whole-run decode, shared by concurrent misses on the same bundle.
+type ParsedLoad = Arc<tokio::sync::OnceCell<(Arc<RunResult>, u64)>>;
+
+/// Count- and byte-bounded LRU (most recently used last).
+struct ParsedLru<T> {
+    entries: Vec<(String, T, u64)>,
+    bytes: u64,
+}
+
+impl<T: Clone> ParsedLru<T> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            bytes: 0,
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<T> {
+        let i = self.entries.iter().position(|(k, _, _)| k == key)?;
+        let hit = self.entries.remove(i);
+        let value = hit.1.clone();
+        self.entries.push(hit);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: &str, value: T, bytes: u64) {
+        if bytes > PARSED_BYTES || self.entries.iter().any(|(k, _, _)| k == key) {
+            return;
+        }
+        while !self.entries.is_empty()
+            && (self.entries.len() >= PARSED_RUNS || self.bytes + bytes > PARSED_BYTES)
+        {
+            let (_, _, b) = self.entries.remove(0);
+            self.bytes -= b;
+        }
+        self.bytes += bytes;
+        self.entries.push((key.to_string(), value, bytes));
+    }
+}
 
 /// Byte-bounded LRU of verified bundle files, plus the last few parsed runs.
 pub struct BundleCache {
@@ -193,7 +236,9 @@ pub struct BundleCache {
     entries: Mutex<HashMap<String, (u64, u64)>>,
     clock: std::sync::atomic::AtomicU64,
     /// Most recently used last, keyed by bundle sha256 (content-addressed, so never stale).
-    parsed: Mutex<Vec<(String, Arc<RunResult>)>>,
+    parsed: Mutex<ParsedLru<Arc<RunResult>>>,
+    /// Whole-run decodes in progress, keyed by bundle sha256 (single-flight).
+    loading: Mutex<HashMap<String, ParsedLoad>>,
 }
 
 impl BundleCache {
@@ -209,7 +254,8 @@ impl BundleCache {
             capacity: capacity.max(1),
             entries: Mutex::new(HashMap::new()),
             clock: Default::default(),
-            parsed: Mutex::new(Vec::new()),
+            parsed: Mutex::new(ParsedLru::new()),
+            loading: Mutex::new(HashMap::new()),
         })
     }
 
@@ -601,14 +647,21 @@ impl OpenRun {
     /// The complete run (for comparisons, timelines, reports and analytics). Bounded by the
     /// profile's output limit, and only used behind the heavy-read concurrency limit.
     pub async fn full(&self) -> Result<RunResult, ApiError> {
+        Ok(self.full_sized().await?.0)
+    }
+
+    /// [`Self::full`] and its decoded section bytes (the in-memory size estimate).
+    async fn full_sized(&self) -> Result<(RunResult, u64), ApiError> {
         let sections: Vec<Section> = self.trust.page_index.iter().map(|p| p.section).collect();
         self.read(move |reader, path| {
             let mut orders: Vec<OrderRecord> = Vec::new();
             let mut fills: Vec<FillRecord> = Vec::new();
             let mut equity: Vec<EquitySample> = Vec::new();
             let mut tape: Vec<FlightEvent> = Vec::new();
+            let mut decoded: u64 = 0;
             let all: Vec<usize> = (0..sections.len()).collect();
             let trailer = reader.trailer_and_pages(path, &all, |page_no, bytes| {
+                decoded += bytes.len() as u64;
                 match sections[page_no] {
                     Section::Orders => orders.extend(parse_rows::<OrderRecord>(&bytes)?),
                     Section::Fills => fills.extend(parse_rows::<FillRecord>(&bytes)?),
@@ -617,16 +670,19 @@ impl OpenRun {
                 }
                 Ok(())
             })?;
-            Ok(RunResult {
-                manifest: trailer.manifest,
-                metrics: trailer.metrics,
-                engine_check: trailer.engine_check,
-                ticks: trailer.counts.ticks,
-                orders,
-                fills,
-                equity,
-                tape,
-            })
+            Ok((
+                RunResult {
+                    manifest: trailer.manifest,
+                    metrics: trailer.metrics,
+                    engine_check: trailer.engine_check,
+                    ticks: trailer.counts.ticks,
+                    orders,
+                    fills,
+                    equity,
+                    tape,
+                },
+                decoded,
+            ))
         })
         .await
     }
@@ -635,32 +691,40 @@ impl OpenRun {
     /// paging over one run (timeline cursor pages) decodes it once rather than per page.
     pub async fn full_shared(&self) -> Result<Arc<RunResult>, ApiError> {
         let sha = &self.trust.sha256;
-        {
-            let mut parsed = self
-                .cache
-                .parsed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if let Some(i) = parsed.iter().position(|(k, _)| k == sha) {
-                let hit = parsed.remove(i);
-                let run = hit.1.clone();
-                parsed.push(hit);
-                return Ok(run);
-            }
-        }
-        let run = Arc::new(self.full().await?);
-        let mut parsed = self
-            .cache
+        let cache = &self.cache;
+        if let Some(run) = cache
             .parsed
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if !parsed.iter().any(|(k, _)| k == sha) {
-            if parsed.len() >= PARSED_RUNS {
-                parsed.remove(0);
-            }
-            parsed.push((sha.clone(), run.clone()));
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(sha)
+        {
+            return Ok(run);
         }
-        Ok(run)
+        let load = cache
+            .loading
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(sha.clone())
+            .or_default()
+            .clone();
+        let result = load
+            .get_or_try_init(|| async {
+                let (run, bytes) = self.full_sized().await?;
+                let run = Arc::new(run);
+                cache
+                    .parsed
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(sha, run.clone(), bytes);
+                Ok::<_, ApiError>((run, bytes))
+            })
+            .await
+            .map(|(run, _)| run.clone());
+        let mut loading = cache.loading.lock().unwrap_or_else(PoisonError::into_inner);
+        if loading.get(sha).is_some_and(|l| Arc::ptr_eq(l, &load)) {
+            loading.remove(sha);
+        }
+        result
     }
 
     /// Path of the verified cached bundle (export).
@@ -675,4 +739,27 @@ fn parse_rows<T: DeserializeOwned>(bytes: &[u8]) -> Result<Vec<T>, ArtifactError
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_slice(line).map_err(ArtifactError::from))
         .collect()
+}
+
+#[cfg(test)]
+mod parsed_tests {
+    use super::{PARSED_BYTES, PARSED_RUNS, ParsedLru};
+
+    #[test]
+    fn parsed_runs_are_byte_bounded() {
+        let mut lru = ParsedLru::new();
+        lru.insert("big", (), PARSED_BYTES + 1);
+        assert_eq!(
+            lru.get("big"),
+            None,
+            "a run above the budget is never retained"
+        );
+        lru.insert("a", (), PARSED_BYTES / 2);
+        lru.insert("b", (), PARSED_BYTES / 2);
+        assert!(lru.get("a").is_some() && lru.get("b").is_some());
+        // Over budget: the least recently used (`a`) is evicted.
+        lru.insert("c", (), 1);
+        assert_eq!(lru.get("a"), None);
+        assert!(lru.entries.len() <= PARSED_RUNS && lru.bytes <= PARSED_BYTES);
+    }
 }

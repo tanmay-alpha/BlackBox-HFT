@@ -84,7 +84,7 @@ pub async fn list_jobs(
         None
     };
     let limit = p.limit(50, 100)?;
-    let filters = p.filters();
+    let filters = p.filters("/api/v1/jobs");
     let cursor: Option<Cursor> = p
         .get("cursor")
         .map(|c| decode_cursor(c, &filters))

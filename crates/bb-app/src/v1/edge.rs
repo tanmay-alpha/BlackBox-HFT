@@ -535,7 +535,7 @@ static ROUTE_QUERY_PARAMS: LazyLock<Vec<(Vec<String>, Vec<String>)>> = LazyLock:
 
 /// The query parameter names the GET route(s) matching `path` read; `None` for an undocumented
 /// path.
-fn known_query_params(path: &str) -> Option<Vec<&'static str>> {
+pub(crate) fn known_query_params(path: &str) -> Option<Vec<&'static str>> {
     let segments: Vec<&str> = path.split('/').collect();
     let mut known: Option<Vec<&'static str>> = None;
     for (template, names) in ROUTE_QUERY_PARAMS.iter() {
