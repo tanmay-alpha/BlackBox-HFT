@@ -121,7 +121,15 @@ pub fn byte_cap(state: &super::AppState, caller: &Caller) -> usize {
 }
 
 /// Room left for items after the page envelope.
-const ENVELOPE_RESERVE: usize = 4096;
+pub const ENVELOPE_RESERVE: usize = 4096;
+
+/// One item as a wire value and its serialized size plus a separating comma.
+pub fn wire_item<T: Serialize>(item: &T) -> Result<(Value, usize), ApiError> {
+    let mut v = serde_json::to_value(item)?;
+    wire::to_wire(&mut v).map_err(ApiError::internal)?;
+    let size = serde_json::to_vec(&v)?.len() + 1;
+    Ok((v, size))
+}
 
 /// Converts items to wire values until `cap` bytes; returns the values and whether the byte
 /// cap ended the page early. A single item larger than the cap is an internal error.
@@ -130,9 +138,7 @@ pub fn bounded<T: Serialize>(items: &[T], cap: usize) -> Result<(Vec<Value>, boo
     let mut out = Vec::with_capacity(items.len());
     let mut used = 0usize;
     for item in items {
-        let mut v = serde_json::to_value(item)?;
-        wire::to_wire(&mut v).map_err(ApiError::internal)?;
-        let size = serde_json::to_vec(&v)?.len() + 1;
+        let (v, size) = wire_item(item)?;
         if used + size > budget {
             if out.is_empty() {
                 return Err(ApiError::internal("a single item exceeds the response cap"));

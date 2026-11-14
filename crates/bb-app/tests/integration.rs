@@ -25,6 +25,7 @@ use bb_app::{
     pipeline, presets,
     server::{self, AppState},
     store::{self, FsRunStore, RunStore},
+    v1::runs::{TimelineQuery as V1TimelineQuery, timeline_page},
 };
 use bb_core::{
     CONTRACT_VERSION, ENGINE_NAME, ENGINE_VERSION, Side,
@@ -1335,6 +1336,314 @@ async fn timeline_order_overlap_uses_terminal_then_last_event_then_run_end() {
     .await;
     assert_eq!(after.equity, [*run.equity.last().unwrap()]);
     assert!(after.events.is_empty() && after.fills.is_empty() && after.orders.is_empty());
+}
+
+// ----- /api/v1 timeline paging (the page function behind GET /api/v1/runs/{id}/timeline) -----
+
+const PAGING_EVENTS: u64 = 12_000;
+const PAGING_STEP_NS: i64 = 1_000_000;
+
+/// A real run whose tape is replaced by copies of one of its events: groups of four share a
+/// `ts`, clocks alternate, and every fifth event lies just before or just after the window
+/// `[t0, t1]` returned alongside. 9,600 of the 12,000 events are inside.
+fn paging_fixture() -> &'static (RunResult, i64, i64) {
+    static FIXTURE: std::sync::LazyLock<(RunResult, i64, i64)> = std::sync::LazyLock::new(|| {
+        let dir = TempDir::new("timeline-paging");
+        let ctx = make_dataset(&dir);
+        let mut run =
+            pipeline::execute(&ctx, &preset_config(ctx.manifest(), "maker_baseline")).unwrap();
+        let t0 = run.equity[run.equity.len() / 3].ts;
+        let t1 = t0 + ((PAGING_EVENTS - 1) / 4) as i64 * PAGING_STEP_NS;
+        let template = run.tape[0].clone();
+        run.tape = (0..PAGING_EVENTS)
+            .map(|seq| {
+                let mut e = template.clone();
+                e.seq = seq;
+                e.ts = match seq % 10 {
+                    4 => t0 - 1,
+                    9 => t1 + 1,
+                    _ => t0 + (seq / 4) as i64 * PAGING_STEP_NS,
+                };
+                e.clock = if seq % 2 == 0 {
+                    bb_core::Clock::Local
+                } else {
+                    bb_core::Clock::Exchange
+                };
+                e
+            })
+            .collect();
+        (run, t0, t1)
+    });
+    &FIXTURE
+}
+
+fn v1_query(t0: i64, t1: i64, max_events: Option<u32>) -> V1TimelineQuery {
+    V1TimelineQuery {
+        t0_ns: Some(t0.to_string()),
+        t1_ns: Some(t1.to_string()),
+        max_events,
+        ..V1TimelineQuery::default()
+    }
+}
+
+fn v1_page(
+    run: &RunResult,
+    q: &V1TimelineQuery,
+    cap: usize,
+) -> Result<serde_json::Value, bb_app::v1::error::ApiError> {
+    let page = timeline_page(run, "run", q, cap)?;
+    let bytes = serde_json::to_vec(&page).unwrap();
+    assert!(
+        bytes.len() <= cap,
+        "{} bytes above the {cap}-byte cap",
+        bytes.len()
+    );
+    Ok(serde_json::from_slice(&bytes).unwrap())
+}
+
+/// Follows `next_cursor` to the end of the window and returns every page.
+fn v1_all_pages(run: &RunResult, q: &V1TimelineQuery, cap: usize) -> Vec<serde_json::Value> {
+    let mut pages: Vec<serde_json::Value> = Vec::new();
+    let mut q = q.clone();
+    loop {
+        let page = v1_page(run, &q, cap).unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+        let cursor = page["next_cursor"].as_str().map(str::to_string);
+        assert_eq!(page["truncated_by"].is_null(), cursor.is_none(), "{page}");
+        if !pages.is_empty() {
+            assert_eq!(page["events_total"], pages[0]["events_total"]);
+            for key in ["fills", "equity", "orders"] {
+                assert_eq!(page[key], serde_json::json!([]), "{key} on a cursor page");
+            }
+        }
+        pages.push(page);
+        match cursor {
+            Some(c) => q.cursor = Some(c),
+            None => return pages,
+        }
+        assert!(pages.len() < 100_000, "paging does not progress");
+    }
+}
+
+fn page_seqs(page: &serde_json::Value) -> Vec<u64> {
+    page["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["seq"].as_u64().unwrap())
+        .collect()
+}
+
+fn all_seqs(pages: &[serde_json::Value]) -> Vec<u64> {
+    pages.iter().flat_map(page_seqs).collect()
+}
+
+fn window_seqs(run: &RunResult, t0: i64, t1: i64) -> Vec<u64> {
+    run.tape
+        .iter()
+        .filter(|e| (t0..=t1).contains(&e.ts))
+        .map(|e| e.seq)
+        .collect()
+}
+
+const NO_CAP: usize = 1 << 30;
+
+#[test]
+fn v1_timeline_pages_equal_the_unpaged_window() {
+    let (run, t0, t1) = paging_fixture();
+    let (t0, t1) = (*t0, *t1);
+    let expected = window_seqs(run, t0, t1);
+    assert_eq!(expected.len(), 9_600);
+    let unpaged = server::timeline(
+        run,
+        &bb_app::api::TimelineQuery {
+            t0: Some(t0),
+            t1: Some(t1),
+            max_events: Some(50_000),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        unpaged.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        expected
+    );
+
+    // The default page size (5000) needs two pages.
+    let pages = v1_all_pages(run, &v1_query(t0, t1, None), NO_CAP);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0]["truncated_by"], "limit");
+    assert_eq!(page_seqs(&pages[0]).len(), 5_000);
+    assert_eq!(pages[0]["events_total"], 9_600);
+    assert_eq!(all_seqs(&pages), expected);
+    assert_eq!(
+        pages[0]["events"].as_array().unwrap()[0],
+        serde_json::to_value(&unpaged.events[0])
+            .map(|mut v| {
+                bb_app::wire::to_wire(&mut v).unwrap();
+                v
+            })
+            .unwrap()
+    );
+    let first = &pages[0];
+    assert_eq!(first["t0_ns"], t0.to_string());
+    assert_eq!(first["t1_ns"], t1.to_string());
+    assert_eq!(
+        first["fills"].as_array().unwrap().len(),
+        unpaged.fills.len()
+    );
+    assert_eq!(
+        first["equity"].as_array().unwrap().len(),
+        unpaged.equity.len()
+    );
+    assert_eq!(
+        first["orders"].as_array().unwrap().len(),
+        unpaged.orders.len()
+    );
+    assert!(!unpaged.equity.is_empty());
+
+    // Seven per page splits groups of four identical timestamps across page boundaries
+    // without losing or repeating an event.
+    let pages = v1_all_pages(run, &v1_query(t0, t1, Some(7)), NO_CAP);
+    assert_eq!(pages.len(), 9_600_usize.div_ceil(7));
+    assert_eq!(all_seqs(&pages), expected);
+    let split = pages.windows(2).any(|w| {
+        let a = w[0]["events"].as_array().unwrap();
+        let b = w[1]["events"].as_array().unwrap();
+        a.last().unwrap()["ts"] == b[0]["ts"]
+    });
+    assert!(
+        split,
+        "no page boundary fell inside an identical-timestamp group"
+    );
+}
+
+#[test]
+fn v1_timeline_pages_reach_the_first_and_last_event_of_the_run() {
+    let (run, t0, t1) = paging_fixture();
+    let pages = v1_all_pages(run, &v1_query(t0 - 1, t1 + 1, Some(1_000)), NO_CAP);
+    let seqs = all_seqs(&pages);
+    assert_eq!(seqs, (0..PAGING_EVENTS).collect::<Vec<_>>());
+    assert_eq!(pages[0]["events_total"], PAGING_EVENTS);
+    assert_eq!(
+        pages.last().unwrap()["truncated_by"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn v1_timeline_cursor_is_bound_to_the_window() {
+    let (run, t0, t1) = paging_fixture();
+    let (t0, t1) = (*t0, *t1);
+    let first = v1_page(run, &v1_query(t0, t1, Some(10)), NO_CAP).unwrap();
+    let cursor = first["next_cursor"].as_str().unwrap().to_string();
+    let with = |mut q: V1TimelineQuery| {
+        q.cursor = Some(cursor.clone());
+        q
+    };
+    // The page size may change between pages; the window may not.
+    let next = v1_page(run, &with(v1_query(t0, t1, Some(3))), NO_CAP).unwrap();
+    assert_eq!(page_seqs(&next)[0], page_seqs(&first)[9] + 1);
+    for q in [
+        with(v1_query(t0 + 1, t1, Some(10))),
+        with(v1_query(t0, t1 - 1, Some(10))),
+        with(V1TimelineQuery {
+            platform: Some("other".into()),
+            ..v1_query(t0, t1, Some(10))
+        }),
+        V1TimelineQuery {
+            cursor: Some("not-a-cursor".into()),
+            ..v1_query(t0, t1, Some(10))
+        },
+    ] {
+        let err = v1_page(run, &q, NO_CAP).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, "invalid_request");
+        assert_eq!(err.details["field"], "cursor");
+    }
+}
+
+/// The serialized size of the first page's fills, equity and orders.
+fn context_bytes(run: &RunResult, t0: i64, t1: i64) -> usize {
+    let page = v1_page(run, &v1_query(t0, t1, Some(0)), NO_CAP).unwrap();
+    ["fills", "equity", "orders"]
+        .iter()
+        .map(|k| serde_json::to_vec(&page[k]).unwrap().len())
+        .sum()
+}
+
+#[test]
+fn v1_timeline_byte_cap_ends_pages_with_a_cursor_not_an_error() {
+    let (run, t0, t1) = paging_fixture();
+    let (t0, t1) = (*t0, *t1);
+    let expected = window_seqs(run, t0, t1);
+    let reserve = bb_app::v1::respond::ENVELOPE_RESERVE;
+    let context = context_bytes(run, t0, t1);
+    let event = serde_json::to_vec(&run.tape[0]).unwrap().len();
+    assert!(context > 2 * event, "fixture context too small: {context}");
+
+    // Room for the context and a few dozen events (cursor pages: the context's room too):
+    // many byte-bounded pages, nothing lost.
+    let cap = reserve + context + 30 * event;
+    let pages = v1_all_pages(run, &v1_query(t0, t1, Some(50_000)), cap);
+    assert!(pages.len() > 10, "{} pages", pages.len());
+    for page in &pages[..pages.len() - 1] {
+        assert_eq!(page["truncated_by"], "bytes");
+    }
+    assert_eq!(all_seqs(&pages), expected);
+
+    // The context alone fills the first page: it carries no events but a cursor at the first
+    // event, and the cursor pages (without context) make progress.
+    let cap = reserve + context + event / 4;
+    let pages = v1_all_pages(run, &v1_query(t0, t1, None), cap);
+    assert!(page_seqs(&pages[0]).is_empty());
+    assert_eq!(pages[0]["truncated_by"], "bytes");
+    assert!(!pages[0]["equity"].as_array().unwrap().is_empty());
+    assert_eq!(all_seqs(&pages), expected);
+}
+
+#[test]
+fn v1_timeline_refuses_a_window_whose_context_exceeds_the_cap() {
+    let (run, t0, t1) = paging_fixture();
+    let (t0, t1) = (*t0, *t1);
+    let cap = bb_app::v1::respond::ENVELOPE_RESERVE + context_bytes(run, t0, t1) / 2;
+    let err = v1_page(run, &v1_query(t0, t1, None), cap).unwrap_err();
+    assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    assert_eq!(err.code, "invalid_request");
+    assert_eq!(err.details["reason"], "window_too_large");
+    assert_eq!(err.details["limit_bytes"], cap);
+    // Cursor pages carry no context and still fit.
+    let first = v1_page(run, &v1_query(t0, t1, Some(5)), NO_CAP).unwrap();
+    let q = V1TimelineQuery {
+        cursor: first["next_cursor"].as_str().map(str::to_string),
+        ..v1_query(t0, t1, Some(5))
+    };
+    assert_eq!(page_seqs(&v1_page(run, &q, cap).unwrap()).len(), 5);
+}
+
+#[test]
+fn v1_timeline_empty_window_has_no_cursor() {
+    let (run, t0, _) = paging_fixture();
+    // Between the events at t0 and t0 + step nothing happens.
+    let page = v1_page(run, &v1_query(t0 + 1, t0 + 2, None), NO_CAP).unwrap();
+    assert_eq!(page["events"], serde_json::json!([]));
+    assert_eq!(page["events_total"], 0);
+    assert!(page["next_cursor"].is_null());
+    assert!(page["truncated_by"].is_null());
+    // `max_events = 0` on a non-empty window: counts only, with a cursor at its first event.
+    let count = v1_page(run, &v1_query(*t0, t0 + 2, Some(0)), NO_CAP).unwrap();
+    assert_eq!(count["events"], serde_json::json!([]));
+    assert_eq!(count["events_total"], 4);
+    assert_eq!(count["truncated_by"], "limit");
+    let rest = v1_page(
+        run,
+        &V1TimelineQuery {
+            cursor: count["next_cursor"].as_str().map(str::to_string),
+            ..v1_query(*t0, t0 + 2, None)
+        },
+        NO_CAP,
+    )
+    .unwrap();
+    assert_eq!(page_seqs(&rest), [0, 1, 2, 3]);
+    assert!(rest["next_cursor"].is_null());
 }
 
 async fn attachment(app: &Router, uri: &str, content_type: &str, filename: &str) -> Vec<u8> {

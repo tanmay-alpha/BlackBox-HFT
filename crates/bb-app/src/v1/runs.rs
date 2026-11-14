@@ -15,7 +15,9 @@ use bb_artifacts::{BundleCounts, Section, summary_sha256};
 use bb_core::{
     Side,
     flight::FlightEvent,
-    result::{EngineStateCheck, EquitySample, FillRecord, Metrics, OrderOutcome, OrderRecord},
+    result::{
+        EngineStateCheck, EquitySample, FillRecord, Metrics, OrderOutcome, OrderRecord, RunResult,
+    },
 };
 use bb_db::{RunSort, RunView, Scope};
 use serde::{Deserialize, Serialize};
@@ -31,8 +33,8 @@ use super::{
     experiments::{Params, experiment_query},
     model::{BundleRef, RunSummary},
     respond::{
-        Cache, Page, TruncatedBy, bounded, byte_cap, conditional, decode_cursor, encode_cursor,
-        json, json_value, ns_param,
+        Cache, ENVELOPE_RESERVE, Page, TruncatedBy, bounded, byte_cap, conditional, decode_cursor,
+        encode_cursor, json, json_value, ns_param, wire_item,
     },
 };
 use crate::{
@@ -821,36 +823,65 @@ pub async fn list_equity(
     immutable_value(&headers, &body)
 }
 
-#[derive(Deserialize, IntoParams)]
+#[derive(Deserialize, IntoParams, Default, Clone)]
 #[into_params(parameter_in = Query)]
 pub struct TimelineQuery {
     pub platform: Option<String>,
+    /// Inclusive window start (default: run start).
     pub t0_ns: Option<String>,
+    /// Inclusive window end (default: `min(run end, t0 + 60 s)`).
     pub t1_ns: Option<String>,
-    /// ≤ 50000, default 5000.
+    /// Events per page: default 5000, values above 50000 are capped. `0` returns no events
+    /// (counts and context only) with `next_cursor` at the window's first event.
     pub max_events: Option<u32>,
+    /// `next_cursor` of the previous page; `t0_ns`, `t1_ns` and `platform` must be unchanged.
+    pub cursor: Option<String>,
 }
 
-/// Everything that happened in a window, for the timeline view.
+/// One page of everything that happened in a window, for the timeline view.
 #[derive(Serialize, ToSchema)]
 pub struct RunTimeline {
     pub run_id: String,
     pub dataset_id: String,
     pub t0_ns: String,
     pub t1_ns: String,
-    pub events: Vec<FlightEvent>,
+    /// This page's tape events with `ts` in `[t0_ns, t1_ns]` (either clock), in `seq` order,
+    /// continuing after the previous page.
+    #[schema(value_type = Vec<FlightEvent>)]
+    pub events: Vec<Value>,
+    /// Events of the whole window, over all pages.
     pub events_total: u64,
+    /// Pass back as `cursor` for the window's next events; `null` when this page ends the window.
+    pub next_cursor: Option<String>,
+    /// Why this page stopped before the window's last event: `limit` (`max_events`) or `bytes`
+    /// (the response cap). `null` exactly when `next_cursor` is `null`.
     pub truncated_by: Option<TruncatedBy>,
-    pub fills: Vec<FillRecord>,
-    pub equity: Vec<EquitySample>,
-    pub orders: Vec<OrderRecord>,
+    /// Fills with exchange ts in the window. First page only (empty on `cursor` pages).
+    #[schema(value_type = Vec<FillRecord>)]
+    pub fills: Vec<Value>,
+    /// Samples in the window plus the last one before `t0_ns`. First page only.
+    #[schema(value_type = Vec<EquitySample>)]
+    pub equity: Vec<Value>,
+    /// Orders alive at some point in the window, ascending `order_id`. First page only.
+    #[schema(value_type = Vec<OrderRecord>)]
+    pub orders: Vec<Value>,
     pub run_start_ns: String,
     pub run_end_ns: String,
 }
 
+/// Everything that happened in a window, for the timeline view, cursor-paged over its events.
+///
+/// Events are paged in tape `seq` order (a stable unique key, so equal timestamps never split
+/// or repeat across pages); follow `next_cursor` until it is `null` to get every event counted
+/// by `events_total`. A page holds at most `max_events` events and fits the caller's response
+/// cap (anonymous: 1 MiB): it ends early with `truncated_by = "bytes"` instead of failing.
+/// `fills`, `equity` and `orders` are sent on the first page (no `cursor`) only and are empty
+/// on `cursor` pages; when they alone exceed the cap the request is refused with 400
+/// `invalid_request` (`details.reason = "window_too_large"`): request a shorter window.
 #[utoipa::path(get, path = "/runs/{run_id}/timeline", tag = "runs", security((), ("bearer" = [])),
     params(("run_id" = String, Path), TimelineQuery),
-    responses((status = 200, body = RunTimeline), (status = 404, body = ErrorEnvelope)))]
+    responses((status = 200, body = RunTimeline), (status = 400, body = ErrorEnvelope),
+              (status = 404, body = ErrorEnvelope)))]
 pub async fn timeline(
     State(state): State<Shared>,
     caller: Caller,
@@ -858,36 +889,107 @@ pub async fn timeline(
     Query(q): Query<TimelineQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let t0 = ns_param("t0_ns", q.t0_ns.as_deref())?;
-    let t1 = ns_param("t1_ns", q.t1_ns.as_deref())?;
     let _permit = heavy(&state).await?;
     let run = run_data(&state, &caller, &run_id, q.platform.as_deref()).await?;
     let full = run.full().await?;
-    let t = crate::server::timeline(
-        &full,
-        &crate::api::TimelineQuery {
-            t0,
-            t1,
-            max_events: q.max_events,
-        },
-    )?;
-    immutable(
-        &headers,
-        &RunTimeline {
-            run_id: run.view.short_id.clone(),
-            dataset_id: t.dataset_id,
-            t0_ns: t.t0.to_string(),
-            t1_ns: t.t1.to_string(),
-            events: t.events,
-            events_total: t.events_total,
-            truncated_by: t.events_truncated.then_some(TruncatedBy::Limit),
-            fills: t.fills,
-            equity: t.equity,
-            orders: t.orders,
-            run_start_ns: t.run_start.to_string(),
-            run_end_ns: t.run_end.to_string(),
-        },
-    )
+    let page = timeline_page(&full, &run.view.short_id, &q, byte_cap(&state, &caller))?;
+    immutable_value(&headers, &serde_json::to_value(&page)?)
+}
+
+/// One page of [`timeline`] over a loaded run, bounded to `cap` response bytes.
+pub fn timeline_page(
+    run: &RunResult,
+    run_id: &str,
+    q: &TimelineQuery,
+    cap: usize,
+) -> Result<RunTimeline, ApiError> {
+    let t0 = ns_param("t0_ns", q.t0_ns.as_deref())?;
+    let t1 = ns_param("t1_ns", q.t1_ns.as_deref())?;
+    let filters = format!("timeline|{t0:?}|{t1:?}|{:?}", q.platform);
+    let from_seq = q
+        .cursor
+        .as_deref()
+        .map(|c| decode_cursor::<RowCursor>(c, &filters))
+        .transpose()?
+        .map(|c| c.row);
+    let limit = q.max_events.unwrap_or(5_000).min(50_000) as usize;
+    let w = crate::server::timeline_window(run, t0, t1)?;
+    let events_total = crate::server::timeline_events(run, w, 0).count() as u64;
+
+    let (mut fills, mut equity, mut orders, mut context_bytes) = (vec![], vec![], vec![], 0);
+    if from_seq.is_none() {
+        let context = crate::server::timeline_context(run, w);
+        for (out, items) in [
+            (&mut fills, wire_items(&context.fills)?),
+            (&mut equity, wire_items(&context.equity)?),
+            (&mut orders, wire_items(&context.orders)?),
+        ] {
+            *out = items.0;
+            context_bytes += items.1;
+        }
+    }
+    let Some(budget) = cap.checked_sub(ENVELOPE_RESERVE + context_bytes) else {
+        return Err(ApiError::invalid_request(format!(
+            "the fills, equity and orders of this window take {context_bytes} bytes, above the \
+             {cap}-byte response limit; request a shorter window (t0_ns..t1_ns)"
+        ))
+        .with_details(
+            json!({ "field": "t1_ns", "reason": "window_too_large", "limit_bytes": cap }),
+        ));
+    };
+
+    let mut events = Vec::new();
+    let mut used = 0usize;
+    let mut stop = None;
+    for event in crate::server::timeline_events(run, w, from_seq.unwrap_or(0)) {
+        if events.len() == limit {
+            stop = Some((event.seq, TruncatedBy::Limit));
+            break;
+        }
+        let (v, size) = wire_item(event)?;
+        if used + size > budget {
+            // A first page may end before its first event (the context took the room); the
+            // cursor page after it has the whole budget, so paging always progresses.
+            if events.is_empty() && from_seq.is_some() {
+                return Err(ApiError::internal(
+                    "a single event exceeds the response cap",
+                ));
+            }
+            stop = Some((event.seq, TruncatedBy::Bytes));
+            break;
+        }
+        used += size;
+        events.push(v);
+    }
+    Ok(RunTimeline {
+        run_id: run_id.to_string(),
+        dataset_id: run.manifest.dataset.id.clone(),
+        t0_ns: w.t0.to_string(),
+        t1_ns: w.t1.to_string(),
+        events,
+        events_total,
+        next_cursor: stop.map(|(row, _)| encode_cursor(&RowCursor { row }, &filters)),
+        truncated_by: stop.map(|(_, why)| why),
+        fills,
+        equity,
+        orders,
+        run_start_ns: w.run_start.to_string(),
+        run_end_ns: w.run_end.to_string(),
+    })
+}
+
+/// Wire values of `items` and their serialized size (as counted by [`wire_item`]).
+fn wire_items<T: Serialize>(items: &[T]) -> Result<(Vec<Value>, usize), ApiError> {
+    let mut bytes = 0;
+    let values = items
+        .iter()
+        .map(|item| {
+            let (v, size) = wire_item(item)?;
+            bytes += size;
+            Ok(v)
+        })
+        .collect::<Result<_, ApiError>>()?;
+    Ok((values, bytes))
 }
 
 /// The deterministic Markdown research report of a run.

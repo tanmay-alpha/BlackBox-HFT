@@ -806,6 +806,53 @@ async fn at3_tampering_is_detected_and_at10_pages_are_bounded() {
     }
     assert_eq!(seen, tape_len);
 
+    // The timeline pages its window's events by seq: every event exactly once, then no cursor;
+    // the cursor is bound to the window.
+    let window = "t0_ns=-1000000000000&t1_ns=1000000000000000";
+    let mut seqs: Vec<u64> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut first_cursor: Option<String> = None;
+    loop {
+        let mut path = format!("/api/v1/runs/{run_id}/timeline?{window}&max_events=7");
+        if let Some(c) = &cursor {
+            path.push_str(&format!("&cursor={c}"));
+        }
+        let (status, _, page) = server.get(&path, Some(&key)).await;
+        assert_eq!(status, 200, "{page}");
+        assert_eq!(page["events_total"].as_u64().unwrap(), tape_len);
+        assert!(page["events"].as_array().unwrap().len() <= 7);
+        if cursor.is_some() {
+            assert_eq!(page["orders"], json!([]), "context on a cursor page");
+        }
+        seqs.extend(
+            page["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["seq"].as_u64().unwrap()),
+        );
+        match page["next_cursor"].as_str() {
+            Some(c) => {
+                assert_eq!(page["truncated_by"], "limit");
+                first_cursor.get_or_insert_with(|| c.to_string());
+                cursor = Some(c.to_string());
+            }
+            None => break,
+        }
+    }
+    assert_eq!(seqs, (0..tape_len).collect::<Vec<_>>());
+    let (status, _, err) = server
+        .get(
+            &format!(
+                "/api/v1/runs/{run_id}/timeline?t0_ns=0&t1_ns=1000000000000000&cursor={}",
+                first_cursor.expect("more than one page")
+            ),
+            Some(&key),
+        )
+        .await;
+    assert_eq!(status, 400, "{err}");
+    assert_eq!(err["error"]["details"]["field"], "cursor");
+
     // AT-3 (summary): a changed metric in the database row is caught by summary_sha256.
     let (run2, _) = run(&server, &key, config_json(&manifest, 200, 12), "row tamper").await;
     sqlx::query("ALTER TABLE bb.runs DISABLE TRIGGER runs_immutable")

@@ -119,8 +119,8 @@ export type SweepReport = Omit<W.SweepReport, 'partition'> & { partition: Partit
 export type DemoRun = Omit<W.DemoRun, 'config'> & { config: RunConfig };
 export type Demo = Omit<W.Demo, 'runs'> & { runs: DemoRun[] };
 
-/** Dataset-relative timeline, bb-core names (`t0`, `run_start`, …) with exact ns numbers. */
-export type RunTimeline = CoreRunTimeline & { truncated_by: W.TruncatedBy };
+/** One dataset-relative timeline page, bb-core names (`t0`, `run_start`, …) with exact ns numbers. */
+export type RunTimeline = CoreRunTimeline & { truncated_by: W.TruncatedBy; next_cursor: string | null };
 export type OrderDetail = CoreOrderDetail;
 
 /** Whether `items` are downsampled buckets rather than raw samples. */

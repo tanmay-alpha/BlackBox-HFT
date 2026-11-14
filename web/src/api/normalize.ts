@@ -426,7 +426,10 @@ export const normalize = {
     events(p.items, 'tape.items');
     return p;
   },
-  /** The wire's `t0_ns`/`t1_ns`/`run_start_ns`/`run_end_ns` become the bb-core view names. */
+  /**
+   * One timeline page. The wire's `t0_ns`/`t1_ns`/`run_start_ns`/`run_end_ns` become the bb-core
+   * view names; `events_truncated` means more pages follow (`next_cursor`).
+   */
   timeline(t: W.RunTimeline): M.RunTimeline {
     for (const k of ['t0_ns', 't1_ns', 'run_start_ns', 'run_end_ns'] as const) ns(t, k, 'timeline');
     const view = {
@@ -438,11 +441,12 @@ export const normalize = {
       run_end: t.run_end_ns as unknown as number,
       events: events(t.events, 'timeline.events'),
       events_total: t.events_total,
-      events_truncated: t.events.length < t.events_total,
+      events_truncated: (t.next_cursor ?? null) !== null,
       fills: fills(t.fills, 'timeline.fills'),
       equity: equity(t.equity, 'timeline.equity'),
       orders: orders(t.orders, 'timeline.orders'),
       truncated_by: t.truncated_by,
+      next_cursor: t.next_cursor ?? null,
     };
     return view;
   },

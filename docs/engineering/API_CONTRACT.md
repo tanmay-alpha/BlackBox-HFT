@@ -245,7 +245,7 @@ experiment in the caller's workspace or in demo. A run that fails verification a
 | `GET /runs/{run_id}/fills` | read | `t0_ns`, `t1_ns`, `cursor`, `limit ≤ 5000` | cursor page of `FillRecord` |
 | `GET /runs/{run_id}/equity` | read | `t0_ns`, `t1_ns`, `max_points ≤ 5000` (default 2000), `cursor` | `{items: EquitySample[] \| EquityBucket[], downsampled: bool, bucket_ns: string \| null, next_cursor, truncated_by}`. When the window has more than `max_points` samples, buckets carry `{t0_ns, t1_ns, first, last, min_equity, max_equity, n}` and the UI shows `DOWNSAMPLED` |
 | `GET /runs/{run_id}/tape` | read | `from_seq`, `order_id`, `limit ≤ 5000` (default 500) | cursor page of `FlightEvent` (cursor = next seq) |
-| `GET /runs/{run_id}/timeline` | read | `t0_ns`, `t1_ns`, `max_events ≤ 50000` | `RunTimeline` (existing semantics, ns as strings, plus `truncated_by`) |
+| `GET /runs/{run_id}/timeline` | read | `t0_ns`, `t1_ns`, `max_events ≤ 50000` (events per page, default 5000), `cursor` | `RunTimeline` (ns as strings): one page of the window's events in tape `seq` order plus `events_total`, `next_cursor` (`null` when the window is complete) and `truncated_by`. Pages fit the caller's response cap. `fills`/`equity`/`orders` come on the first page only (empty on `cursor` pages); if they alone exceed the cap: 400 `invalid_request`, `details.reason = "window_too_large"` |
 | `GET /runs/{run_id}/report` | read | | `text/markdown` research report, deterministic |
 | `GET /runs/{run_id}/export` | read | | `application/gzip`, `Content-Disposition: attachment; filename="run-<run_id>-<platform>.bbz"`: the verified bundle (gzip-member NDJSON, format v1; `blackbox verify-bundle` checks it offline). Bounded by `max_output_bytes` |
 

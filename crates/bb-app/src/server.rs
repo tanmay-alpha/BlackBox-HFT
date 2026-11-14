@@ -19,8 +19,9 @@ use bb_core::{
     CONTRACT_VERSION, RelNs,
     compare::{Comparison, GridResult, GridSpec},
     dataset::DatasetManifest,
+    flight::FlightEvent,
     market::ReplayWindow,
-    result::{RunResult, RunSummary},
+    result::{EquitySample, FillRecord, OrderRecord, RunResult, RunSummary},
     time::{NS_PER_MS, NS_PER_S},
 };
 use bb_data::book::ReplayRequest;
@@ -521,28 +522,62 @@ async fn get_tape(
     .map(Json)
 }
 
-/// Selects inclusive windows without assuming the tape's two clocks are time-sorted.
-pub fn timeline(run: &RunResult, query: &TimelineQuery) -> Result<RunTimeline, AppError> {
+/// The resolved inclusive bounds of a timeline window and the run span.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TimelineWindow {
+    pub t0: i64,
+    pub t1: i64,
+    /// First and last equity sample ts (0 without samples).
+    pub run_start: i64,
+    pub run_end: i64,
+}
+
+/// Resolves `t0` (default: run start) and `t1` (default: `min(run end, t0 + 60 s)`).
+pub fn timeline_window(
+    run: &RunResult,
+    t0: Option<i64>,
+    t1: Option<i64>,
+) -> Result<TimelineWindow, AppError> {
     let run_start = run.equity.first().map_or(0, |s| s.ts);
     let run_end = run.equity.last().map_or(0, |s| s.ts);
-    let t0 = query.t0.unwrap_or(run_start);
-    let t1 = query
-        .t1
-        .unwrap_or_else(|| run_end.min(t0.saturating_add(DEFAULT_REPLAY_SPAN_NS)));
+    let t0 = t0.unwrap_or(run_start);
+    let t1 = t1.unwrap_or_else(|| run_end.min(t0.saturating_add(DEFAULT_REPLAY_SPAN_NS)));
     if t1 < t0 {
         return Err(AppError::InvalidRequest("timeline t1 must be >= t0".into()));
     }
-    let limit = query.max_events.unwrap_or(5_000).min(50_000) as usize;
-    let mut events = Vec::new();
-    let mut events_total = 0;
-    for event in &run.tape {
-        if (t0..=t1).contains(&event.ts) {
-            events_total += 1;
-            if events.len() < limit {
-                events.push(event.clone());
-            }
-        }
-    }
+    Ok(TimelineWindow {
+        t0,
+        t1,
+        run_start,
+        run_end,
+    })
+}
+
+/// Tape events with `ts` in `[t0, t1]` (on either clock; the tape is not time-sorted) and
+/// `seq >= from_seq`, in `seq` order.
+pub fn timeline_events(
+    run: &RunResult,
+    w: TimelineWindow,
+    from_seq: u64,
+) -> impl Iterator<Item = &FlightEvent> {
+    let start = run.tape.partition_point(|event| event.seq < from_seq);
+    run.tape[start..]
+        .iter()
+        .filter(move |event| (w.t0..=w.t1).contains(&event.ts))
+}
+
+/// What a window shows besides its events: fills in it, the equity samples in it plus the last
+/// one before `t0`, and the orders alive at some point in it (ascending `order_id`).
+pub struct TimelineContext {
+    pub fills: Vec<FillRecord>,
+    pub equity: Vec<EquitySample>,
+    pub orders: Vec<OrderRecord>,
+}
+
+pub fn timeline_context(run: &RunResult, w: TimelineWindow) -> TimelineContext {
+    let TimelineWindow {
+        t0, t1, run_end, ..
+    } = w;
     let start = run.equity.partition_point(|s| s.ts < t0);
     let end = run.equity.partition_point(|s| s.ts <= t1);
     let equity = run.equity[start.saturating_sub(1)..end].to_vec();
@@ -563,14 +598,7 @@ pub fn timeline(run: &RunResult, query: &TimelineQuery) -> Result<RunTimeline, A
         .cloned()
         .collect();
     orders.sort_unstable_by_key(|order| order.order_id);
-    Ok(RunTimeline {
-        run_id: run.manifest.run_id.clone(),
-        dataset_id: run.manifest.dataset.id.clone(),
-        t0,
-        t1,
-        events_truncated: events_total > events.len() as u64,
-        events,
-        events_total,
+    TimelineContext {
         fills: run
             .fills
             .iter()
@@ -579,8 +607,35 @@ pub fn timeline(run: &RunResult, query: &TimelineQuery) -> Result<RunTimeline, A
             .collect(),
         equity,
         orders,
-        run_start,
-        run_end,
+    }
+}
+
+/// Selects inclusive windows without assuming the tape's two clocks are time-sorted.
+pub fn timeline(run: &RunResult, query: &TimelineQuery) -> Result<RunTimeline, AppError> {
+    let w = timeline_window(run, query.t0, query.t1)?;
+    let limit = query.max_events.unwrap_or(5_000).min(50_000) as usize;
+    let mut events = Vec::new();
+    let mut events_total = 0;
+    for event in timeline_events(run, w, 0) {
+        events_total += 1;
+        if events.len() < limit {
+            events.push(event.clone());
+        }
+    }
+    let context = timeline_context(run, w);
+    Ok(RunTimeline {
+        run_id: run.manifest.run_id.clone(),
+        dataset_id: run.manifest.dataset.id.clone(),
+        t0: w.t0,
+        t1: w.t1,
+        events_truncated: events_total > events.len() as u64,
+        events,
+        events_total,
+        fills: context.fills,
+        equity: context.equity,
+        orders: context.orders,
+        run_start: w.run_start,
+        run_end: w.run_end,
     })
 }
 

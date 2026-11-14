@@ -655,6 +655,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Everything that happened in a window, for the timeline view, cursor-paged over its events.
+         * @description Events are paged in tape `seq` order (a stable unique key, so equal timestamps never split
+         *     or repeat across pages); follow `next_cursor` until it is `null` to get every event counted
+         *     by `events_total`. A page holds at most `max_events` events and fits the caller's response
+         *     cap (anonymous: 1 MiB): it ends early with `truncated_by = "bytes"` instead of failing.
+         *     `fills`, `equity` and `orders` are sent on the first page (no `cursor`) only and are empty
+         *     on `cursor` pages; when they alone exceed the cap the request is refused with 400
+         *     `invalid_request` (`details.reason = "window_too_large"`): request a shorter window.
+         */
         get: operations["timeline"];
         put?: never;
         post?: never;
@@ -3591,14 +3601,26 @@ export interface components {
             /** Format: int64 */
             wall_time_ms: number;
         };
-        /** @description Everything that happened in a window, for the timeline view. */
+        /** @description One page of everything that happened in a window, for the timeline view. */
         RunTimeline: {
             dataset_id: string;
+            /** @description Samples in the window plus the last one before `t0_ns`. First page only. */
             equity: components["schemas"]["EquitySample"][];
+            /**
+             * @description This page's tape events with `ts` in `[t0_ns, t1_ns]` (either clock), in `seq` order,
+             *     continuing after the previous page.
+             */
             events: components["schemas"]["FlightEvent"][];
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Events of the whole window, over all pages.
+             */
             events_total: number;
+            /** @description Fills with exchange ts in the window. First page only (empty on `cursor` pages). */
             fills: components["schemas"]["FillRecord"][];
+            /** @description Pass back as `cursor` for the window's next events; `null` when this page ends the window. */
+            next_cursor?: string | null;
+            /** @description Orders alive at some point in the window, ascending `order_id`. First page only. */
             orders: components["schemas"]["OrderRecord"][];
             run_end_ns: string;
             run_id: string;
@@ -5846,10 +5868,17 @@ export interface operations {
         parameters: {
             query?: {
                 platform?: string;
+                /** @description Inclusive window start (default: run start). */
                 t0_ns?: string;
+                /** @description Inclusive window end (default: `min(run end, t0 + 60 s)`). */
                 t1_ns?: string;
-                /** @description ≤ 50000, default 5000. */
+                /**
+                 * @description Events per page: default 5000, values above 50000 are capped. `0` returns no events
+                 *     (counts and context only) with `next_cursor` at the window's first event.
+                 */
                 max_events?: number;
+                /** @description `next_cursor` of the previous page; `t0_ns`, `t1_ns` and `platform` must be unchanged. */
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -5865,6 +5894,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunTimeline"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             404: {
