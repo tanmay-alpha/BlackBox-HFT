@@ -5,7 +5,7 @@
 // arithmetic is the explicit P&L identity check in `pnlBreakdown`, which states its inputs.
 
 import { api } from '../../api/client';
-import type { Comparison, Demo, OrderDetail, RunDetail, RunTimeline } from '../../api/model';
+import { fetchTimelineWindow } from '../terminal/timelinePaging';
 import type { MetricRow, OrderPair, ReplayWindow } from '../../api/types';
 import { baseEntryNs, baseResponseNs } from '../../api/types';
 
@@ -149,19 +149,21 @@ export interface Moment {
 }
 
 /**
- * The market and both runs' activity in a short window. Windows are kept short (≤ 1 s by
- * default) so each timeline response holds every event of the window; `complete` is false when
- * the server reports truncation, and callers must say so rather than present a partial window.
+ * The market and both runs' activity in a short window. Run timelines are loaded completely
+ * (every cursor page, checked against `events_total`; `fetchTimelineWindow` throws otherwise).
+ * `complete` is false only when the market replay's trade list was capped, and callers must say so
+ * rather than present a partial window.
  */
 export async function loadMoment(story: LatencyStory, w: MomentWindow, signal: AbortSignal): Promise<Moment & { complete: boolean }> {
   const ds = story.fast.run.dataset;
+  const timeline = (runId: string) =>
+    fetchTimelineWindow(w, (cursor, s) => api.timeline(runId, { t0: w.t0, t1: w.t1, max_events: 5000, cursor }, { signal: s }), signal);
   const [market, fast, slow] = await Promise.all([
     api.replay(ds.id, { t0: w.t0, t1: w.t1, levels: 10, max_trades: 5000 }, { signal, version: ds.version }),
-    api.timeline(story.fast.runId, { t0: w.t0, t1: w.t1, max_events: 5000 }, { signal }),
-    api.timeline(story.slow.runId, { t0: w.t0, t1: w.t1, max_events: 5000 }, { signal }),
+    timeline(story.fast.runId),
+    timeline(story.slow.runId),
   ]);
-  const complete = fast.truncated_by === null && slow.truncated_by === null && !market.trades_truncated;
-  return { window: w, market, fast, slow, complete };
+  return { window: w, market, fast, slow, complete: !market.trades_truncated };
 }
 
 /** One order's full lifecycle in both scenarios (same order id = same decision slot). */
