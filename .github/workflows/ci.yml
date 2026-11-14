@@ -87,7 +87,81 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - name: npm audit (SEC-21)
+        # Production dependencies only: a high or critical advisory fails; registry signatures and
+        # provenance attestations of every installed package must verify.
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm audit signatures
       - run: npm run build
+      - name: Secret scan of the bundle (SEC-19)
+        working-directory: .
+        run: bash scripts/ci/secret-scan.sh dist web/dist
+
+  policy:
+    # Supply-chain and source-policy gates (SECURITY_REVIEW SEC-19, SEC-21, SEC-24, SEC-30).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the secret scan reads every commit of the push or pull request.
+          fetch-depth: 0
+      - name: Actions SHA-pinned, base images digest-pinned (SEC-21)
+        run: bash scripts/ci/check-pins.sh
+      - name: Secret scan of the repository and the new commits (SEC-19)
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # A new branch has no `before` (all zeros): the tracked-file scan still runs.
+          if [[ -n "$BASE" && ! "$BASE" =~ ^0+$ ]] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            bash scripts/ci/secret-scan.sh repo "$BASE"
+          else
+            bash scripts/ci/secret-scan.sh repo
+          fi
+      - name: No process spawn or dynamic loading, SQL only from literals (SEC-24, SEC-30)
+        run: bash scripts/ci/code-policy.sh
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: cargo-deny (advisories, bans, licences, sources; deny.toml)
+        env:
+          DENY_VERSION: 0.20.2
+          DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          set -euo pipefail
+          tarball="cargo-deny-$DENY_VERSION-x86_64-unknown-linux-musl.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$DENY_VERSION/$tarball"
+          echo "$DENY_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" --strip-components=1
+          "$RUNNER_TEMP/cargo-deny" --locked check
+      - name: Engine built without its live feature (SEC-21)
+        run: |
+          set -euo pipefail
+          tree=$(cargo tree --locked --target all -e features -i hftbacktest)
+          if grep -q 'hftbacktest feature "live"' <<<"$tree"; then
+            echo "::error::hftbacktest is built with its live (exchange connectivity) feature"
+            exit 1
+          fi
+
+  contract:
+    # AT-14: web/openapi.json and web/src/api/v1.gen.ts are regenerated and must not change.
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build simulator
+        run: cargo build --locked -p bb-app --bin blackbox
+      - run: npm ci
+        working-directory: web
+      - name: Contract drift
+        run: bash scripts/ci/check-contract.sh target/debug/blackbox
 
   audit:
     # RustSec advisory database check of Cargo.lock.
@@ -125,14 +199,31 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name bb -p 127.0.0.1:8787:8787 blackbox-hft:ci
-          for i in $(seq 60); do curl -sf http://127.0.0.1:8787/api/health && break; sleep 2; done
+          for _ in $(seq 60); do curl -sf http://127.0.0.1:8787/api/health && break; sleep 2; done
           curl -sf http://127.0.0.1:8787/api/datasets | grep -q synthetic-demo
           docker logs bb | tail -5
 
   e2e:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: blackbox
+          POSTGRES_PASSWORD: blackbox-local
+          POSTGRES_DB: blackbox_e2e_ui
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U blackbox -d blackbox_e2e_ui"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       CARGO_BUILD_JOBS: 6
+      # Read by web/e2e/serve.mjs (paths relative to the repository root).
+      BLACKBOX_BIN: target/release/blackbox
+      DATABASE_URL: postgres://blackbox:blackbox-local@127.0.0.1:55432/blackbox_e2e_ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable

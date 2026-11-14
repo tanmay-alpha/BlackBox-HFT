@@ -33,9 +33,56 @@ were taken earlier at 235 tests; re-run the command for current numbers.
 | `bb-app` | `tests/integration.rs` | 13 | Every preset executes; pipeline determinism and identity covering every assumption; run store round trip; grids store every cell; oversized grids and degenerate intervals refused; demos vary exactly their declared paths and run idempotently from the CLI; report and export reproduce the stored run; replay-terminal timeline windows; HTTP API end to end; web UI served with SPA fallback |
 | `bb-app` | `tests/golden.rs` | 1 | Pinned result hashes of seven preset runs on a fixed synthetic dataset, tied to `SIMULATION_REVISION` ([EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPRODUCIBILITY.md#keeping-identity-honest)) |
 
-CI (`.github/workflows/ci.yml`, Ubuntu 24.04) runs `cargo test --workspace --locked`, a
-cross-process determinism check of `maker_baseline` on a freshly generated synthetic dataset, and
-the web build.
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request. Every job must
+pass; the gate scripts live in `scripts/ci/` and run locally from the repository root (Linux,
+macOS, or Git Bash on Windows).
+
+| Job | What fails it |
+|---|---|
+| `rust` (Ubuntu 24.04, Postgres 18) | `cargo build`/`cargo test --workspace --locked` (determinism, upstream-defect pins, linux-x86_64 golden pins, hosted peak memory); two processes giving different result hashes for `maker_baseline`; a dataset-manifest number beyond 2^53 − 1 (AT-9) |
+| `golden-windows` | The windows-x86_64-gnu golden pins and the Windows peak-memory check |
+| `web` | `npm ci`; `npm audit --omit=dev --audit-level=high` (a high or critical advisory in a production dependency) and `npm audit signatures` (an unverifiable registry signature or attestation) (SEC-21); `npm run build`; `secret-scan.sh dist web/dist` (below) |
+| `policy` | `check-pins.sh`, `secret-scan.sh repo`, `code-policy.sh` (below); `cargo deny --locked check` against `deny.toml` (cargo-deny 0.20.2, downloaded and SHA-256-checked); `cargo tree -e features -i hftbacktest` showing the engine's `live` feature (SEC-21) |
+| `contract` | `check-contract.sh`: contract drift (AT-14, below) |
+| `audit` | `rustsec/audit-check` on `Cargo.lock`, with the documented ignore list |
+| `docker` | The image does not build, or the container does not answer `/api/health` and `/api/datasets` |
+| `e2e` | The Playwright v1 stories against `blackbox serve` (release build, `BLACKBOX_BIN=target/release/blackbox`) on a Postgres 18 service database `blackbox_e2e_ui` |
+
+The gates:
+
+- **cargo-deny** (`deny.toml`, SEC-21, SEC-24): *advisories*: the RustSec database, ignoring only the
+  accepted zip 6 and bincode advisories documented in [SECURITY.md](SECURITY.md) (the `audit` job's
+  `libsqlite3-sys` ignore is unnecessary here: cargo-deny resolves real features, where that crate
+  never appears); *licences*: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3, ISC, Zlib,
+  Unicode-3.0, CDLA-Permissive-2.0, MIT-0 and bzip2-1.0.6 only; *bans*: `openssl`/`openssl-sys`
+  and the code-execution crates `libloading` (allowed only under `clang-sys`, a build-time
+  dependency of `bindgen`), `wasmtime`, `wasmer`, `pyo3`, `rhai`, `mlua`, `deno_core`; *sources*:
+  crates.io only, no git dependencies. Run locally with `cargo deny --locked check`.
+- **Pins** (`scripts/ci/check-pins.sh`, SEC-21): every `uses:` in `.github/workflows/` names a full
+  40-hex commit SHA (local `./` actions excepted; `docker://` needs `@sha256:`), and every
+  `Dockerfile` `ARG *_IMAGE=` and literal `FROM` image carries an `@sha256:` digest.
+- **Secret scan** (`scripts/ci/secret-scan.sh`, SEC-19). `repo [<base>]` greps every tracked file,
+  and every line added by the commits `<base>..HEAD` (the pull request's base, or the push's
+  previous head), for credential *values*: a Vercel Blob token (`vercel_blob_rw_<store>_<secret>`),
+  a Neon password (`npg_…`), a full 43-character `bbk_` API key, a `postgres://user:password@` URL,
+  or `DATABASE_URL*`/`BLOB_READ_WRITE_TOKEN`/`BB_API_KEY_PEPPER` assigned a literal. Docs and code
+  that only name the variables, `$VAR` references, `<placeholder>`s, and the local development
+  password `blackbox-local` (plus the placeholders `password`, `p`, `supersecret`) pass. `dist <dir>`
+  is stricter: the bundle may not even contain `vercel_blob_rw_`, `postgres://`, `npg_`,
+  `BLOB_READ_WRITE`, `DATABASE_URL` or `BB_API_KEY_PEPPER`; `web/src` may read no
+  `import.meta.env.VITE_*` other than `VITE_API_BASE_URL`; and `web/vite.config.ts` may not set
+  `envPrefix`, `define` or call `loadEnv`. Findings print file and line, never the matched text.
+- **Code policy** (`scripts/ci/code-policy.sh`): no `process::Command`, `Command::new`,
+  `libloading`, `dlopen` or `LoadLibrary` in non-test crate sources (SEC-24); SQL from literals only
+  (SEC-30): `AssertSqlSafe` (the only way sqlx 0.9 accepts a non-`'static` query string) appears
+  only in `crates/bb-db/src`, every `format!` in a file using it interpolates only UPPER_CASE
+  constants or the `&'static str` fragments of `sort_sql`, and `QueryBuilder`/`raw_sql` are absent.
+- **Contract drift** (`scripts/ci/check-contract.sh <blackbox binary>`, AT-14): `blackbox openapi
+  --out` must equal the committed `web/openapi.json`, and `npm run gen:api` must leave
+  `web/src/api/v1.gen.ts` unchanged. After an API change, regenerate both
+  (`blackbox openapi --out web/openapi.json`, then `npm run gen:api` in `web/`) and commit them.
 
 ## Upstream-defect pins
 

@@ -1,0 +1,70 @@
+# cargo-deny policy (SECURITY_REVIEW SEC-21, SEC-24), checked in CI by `cargo deny check`.
+# Run locally: `cargo deny check` (https://github.com/EmbarkStudios/cargo-deny).
+
+[graph]
+# Every target, so a Windows- or macOS-only dependency is checked too.
+all-features = false
+
+[advisories]
+# RustSec advisory database. Accepted advisories, with evidence (docs/SECURITY.md,
+# "Dependency advisories"); the same list as the `audit` job (rustsec/audit-check) in ci.yml.
+ignore = [
+    # zip 6.x extraction APIs (`ZipArchive::extract`, `ZipStreamReader::extract`). Fixed only in
+    # zip 9, but hftbacktest 0.9.4 requires zip ^6. Neither the engine nor BlackBox calls an
+    # extraction API: archives are opened with `ZipArchive::new` + `by_name` and written with
+    # `ZipWriter`, and BlackBox only reads archives it wrote, after checking their SHA-256.
+    { id = "RUSTSEC-2026-0367", reason = "zip 6 extraction API, never called" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 6 extraction API, never called" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 6 extraction API, never called" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 6 extraction API, never called" },
+    # bincode unmaintained (an engine dependency); informational, no known vulnerability.
+    { id = "RUSTSEC-2025-0141", reason = "unmaintained engine dependency, no vulnerability" },
+    # RUSTSEC-2026-0459 (libsqlite3-sys), ignored by the `audit` job, is not listed: cargo-deny
+    # resolves the real feature graph, where sqlx-sqlite (sqlx is built with `postgres` only) and
+    # so libsqlite3-sys never appear, and it warns on an ignore that matches nothing.
+]
+
+[licenses]
+# Permissive licences compatible with distributing BlackBox under MIT (NOTICE lists the engine).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    # zip 6 (engine dependency): libbz2-rs-sys and ppmd-rust.
+    "bzip2-1.0.6",
+    "MIT-0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+# Workspace crates depend on each other by path (they are never published); registry versions
+# are pinned by Cargo.lock, and every cargo command in CI and the Dockerfile uses `--locked`.
+wildcards = "allow"
+deny = [
+    # SEC-24: no plugin loading, embedded interpreter or WebAssembly runtime (no user code execution).
+    # bindgen, a build-time tool of aws-lc-sys (via the engine), loads libclang through clang-sys.
+    { crate = "libloading", wrappers = ["clang-sys"], reason = "dynamic library loading (SEC-24)" },
+    { crate = "wasmtime", reason = "WebAssembly runtime (SEC-24)" },
+    { crate = "wasmer", reason = "WebAssembly runtime (SEC-24)" },
+    { crate = "pyo3", reason = "embedded Python (SEC-24)" },
+    { crate = "rhai", reason = "embedded scripting (SEC-24)" },
+    { crate = "mlua", reason = "embedded Lua (SEC-24)" },
+    { crate = "deno_core", reason = "embedded JavaScript (SEC-24)" },
+    # SEC-21: TLS is rustls with ring only; no system OpenSSL in the image.
+    { crate = "openssl-sys", reason = "TLS is rustls (SEC-21)" },
+    { crate = "openssl", reason = "TLS is rustls (SEC-21)" },
+]
+
+[sources]
+# crates.io only: no git dependencies, no other registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
