@@ -163,7 +163,17 @@ async fn partitioned_grid_seed_ensemble_budget_and_idempotency() {
     assert_eq!(status, 422, "{b}");
     assert_eq!(b["error"]["code"], "invalid_config");
     let (_, _, after) = server.get("/api/v1/sweeps", Some(&key)).await;
-    assert_eq!(after["items"], before["items"], "refusals store nothing");
+    // Compare ids only: the worker keeps running the earlier sweeps, so their progress counts
+    // may change between the two reads.
+    let ids = |v: &Value| -> Vec<String> {
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(ids(&after), ids(&before), "refusals store nothing");
 
     // ----- a legacy GridSpec body is converted to a grid sweep -----
     let legacy = json!({
