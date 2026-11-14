@@ -11,33 +11,33 @@ run the real pinned engine, not a mock.
 
 ## Inventory
 
-Counts from `cargo test --workspace --no-fail-fast` in the debug profile, Windows
-(x86_64-pc-windows-gnu): **241 tests, 0 failed, 0 ignored** at the commit that added the static
-viewer exporter and the input-validation fixes from the final review. The per-suite rows below
-were taken earlier at 235 tests; re-run the command for current numbers.
+Current recorded verification (2026-11-14): **422 Rust tests passed, 1 ignored; 93 Vitest tests passed**.
+The Rust total includes the database/API suites with local Postgres configured; see
+[FINAL_AUDIT §7](engineering/FINAL_AUDIT.md#7-fixes-after-the-audit) for the recorded run.
+Playwright has **3 browser stories**. CI jobs and their actual commands are defined in
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml), summarised below; Vitest is a separate
+`cd web && npm test` check, not currently a CI step.
 
-| Crate | Suite | Tests | What it proves |
-|---|---|---:|---|
-| `bb-core` | unit | 11 | Clock and source are derived from the event body and cannot disagree; serialized tags match type names; SHA-256 known vector; SplitMix64 reference vector, PRNG ranges and stream independence; order id round-trips and sorts by tick; time units are inferred only when unambiguous and a wrong unit is rejected, not converted |
-| `bb-data` | unit | 49 | Tardis conversion (snapshots, mid-file snapshots, a snapshot at end of file, missing initial snapshot, skewed clocks, wrong header, malformed rows with file and line, gzip, window limit, an over-long line refused); exact-decimal grid checks; normalization port (negative-latency shift, dual ordering, row splitting, tie-breaking, validation); every quality check's detection and severity; synthetic generator determinism and book invariants at every row; store round trip and hash integrity; book reconstruction and replay windows |
-| `bb-strategies` | unit | 41 | Each strategy's quotes and intents on hand-built views: touch-maker join, offset, skew, replace-only-when-moved, gates; Avellaneda-Stoikov symmetry at zero inventory, inventory shading, γ widening, volatility scaling, warm-up, grid rounding, never crossing; imbalance taker entry, threshold, cooldown, hold and exit; scripted placement, price modes, cancel timing; shared rules (one place per slot, never cancel a non-cancellable order, same views → same intents) |
-| `bb-sim` | unit | 9 | Ledger arithmetic and the cash identity; jitter is a pure function within bounds; the queue probe reads the real engine models' state bit for bit and reports unreadable formats as unreadable |
-| `bb-sim` | `tests/engine_adapter.rs` | 20 | Recorder behaviour on hand-built markets where every value is worked out on paper: maker fills by trade-through and by queue exhaustion, taker IOC, post-only expiry, taker sweep one execution per level, cancels (resting, refused in flight, losing the race to a fill, late rejection after terminal), partial fills with `fill_reset`, queue-model differences, entry latency deciding fills, feed offset delaying only the view, risk rules before the engine and hard limits, drawdown halt and its use of locally known fills only, queue-update cap, in-flight at end of data |
-| `bb-sim` | `tests/engine_defects.rs` | 11 | The six upstream defects reproduced on the **unwrapped** engine, and the adapter's workaround for each ([below](#upstream-defect-pins)) |
-| `bb-sim` | `tests/determinism.rs` | 3 | Simultaneous fills recorded in a reproducible order (40 repeats per configuration); seed changes jitter and nothing else; tick grid independent of execution assumptions |
-| `bb-sim` | `tests/invariants.rs` | 3 | The tape grammar across a sweep of strategies and models ([below](#invariants-sweep)); feed offset keeps the invariants; fill side moves position the right way |
-| `bb-sim` | `tests/properties.rs` | 10 | Property-based tests on generated markets and request streams ([below](#property-based-tests)) |
-| `bb-forensics` | unit | 55 | Order records from tapes; every explanation verdict and its wording rules (observed versus modeled versus derived, unknown queue is unknown, no invented counterfactuals); metrics against a hand-computed example, markouts stopping at end of data, nearest-rank quantiles; comparison eligibility (each refusal and not-like-for-like reason), timing-aware pair classes (decision time, exchange arrival, missing orders, shifted ids, divergent fills, identical fills under distinct histories, fee-only pairs, the audit's order-9472 fill-timing case), timing summaries, capped storage and the exact fee-only attribution; result hash stability |
-| `bb-forensics` | `tests/real_tapes.rs` | 3 | Orders, explanations, metrics and a self-comparison over tapes produced by the real recorder, not hand-written events; a queue-model switch where an independent check confirms that a pair is `identical` exactly when records and lifecycles match, so nothing before the first divergence differs; a 5 ms versus 10 ms interval refused alignment |
-| `bb-app` | unit | 19 | Host and origin admission for the local server; dataset ids cannot escape the data root; API error codes; preset catalogue (valid, unique, whole lots, one assumption per variant, the A-S half-spread scaling, the probe script); replay query defaults and caps; run-id shape enforced before the filesystem |
-| `bb-app` | `tests/integration.rs` | 13 | Every preset executes; pipeline determinism and identity covering every assumption; run store round trip; grids store every cell; oversized grids and degenerate intervals refused; demos vary exactly their declared paths and run idempotently from the CLI; report and export reproduce the stored run; replay-terminal timeline windows; HTTP API end to end; web UI served with SPA fallback |
-| `bb-app` | `tests/golden.rs` | 1 | Pinned result hashes of seven preset runs on a fixed synthetic dataset, tied to `SIMULATION_REVISION` ([EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPRODUCIBILITY.md#keeping-identity-honest)) |
+| Area | Suites / coverage |
+|---|---|
+| `bb-core`, `bb-data`, `bb-strategies` | Wire types, hashes, config and sweep validation; ingestion and book reconstruction; strategy fixtures |
+| `bb-sim` | Ledger, engine adapter and six upstream-defect pins; determinism, invariants, properties, run control and raw-engine parity |
+| `bb-forensics`, `bb-analytics` | Explanations, comparison eligibility and timing, sweep/ensemble analysis; hand-computed market, execution and risk analytics |
+| `bb-artifacts` | Bundle hashes, bounded decompression, storage keys, byte-bounded cache and Blob mock-server behaviour |
+| `bb-db` | Real-Postgres repositories, queue races, scoped reads, keys, quotas, upload reservations and transactional audit rows |
+| `bb-app` | Offline pipeline, golden hashes, budgets and hosted peak memory; v1 auth/IDOR, jobs/cancellation/restart, integrity, demo workflow, sweeps and hardening |
+| `web/` (Vitest) | Formatting, API/query state and workstation view-model fixtures |
+| `web/e2e/` (Playwright) | Anonymous demo reads; authenticated submit/complete/forensics/cancel/reload; rejected-key handling |
+
+Database/API Rust tests skip when `BLACKBOX_TEST_DATABASE_URL` is unset; they require a disposable
+Postgres 18 database with `CREATEDB`. CI supplies it. Playwright needs a built `blackbox` binary
+(`BLACKBOX_BIN`) and its own `DATABASE_URL`; the `e2e` job supplies both.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request. Every job must
-pass; the gate scripts live in `scripts/ci/` and run locally from the repository root (Linux,
-macOS, or Git Bash on Windows).
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request.
+Its jobs are `rust`, `golden-windows`, `policy`, `contract`, `web`, `e2e`, `audit` and `docker`.
+The gate scripts live in `scripts/ci/` and run locally from the repository root (Linux, macOS, or Git Bash on Windows).
 
 | Job | What fails it |
 |---|---|
@@ -47,8 +47,8 @@ macOS, or Git Bash on Windows).
 | `policy` | `check-pins.sh`, `secret-scan.sh repo`, `code-policy.sh` (below); `cargo deny --locked check` against `deny.toml` (cargo-deny 0.20.2, downloaded and SHA-256-checked); `cargo tree -e features -i hftbacktest` showing the engine's `live` feature (SEC-21) |
 | `contract` | `check-contract.sh`: contract drift (AT-14, below) |
 | `audit` | `rustsec/audit-check` on `Cargo.lock`, with the documented ignore list |
-| `docker` | The image does not build, or the container does not answer `/api/health` and `/api/datasets` |
-| `e2e` | The Playwright v1 stories against `blackbox serve` (release build, `BLACKBOX_BIN=target/release/blackbox`) on a Postgres 18 service database `blackbox_e2e_ui` |
+| `docker` | The local compose stack must build, serve `/api/v1/status` and datasets, expose 5 curated comparisons and 3 saved reports, serve the console HTML and print the first-start research key |
+| `e2e` | The 3 Playwright v1 stories against `blackbox serve` (release build, `BLACKBOX_BIN=target/release/blackbox`) on a Postgres 18 service database `blackbox_e2e_ui` |
 
 The gates:
 
@@ -175,8 +175,8 @@ rejected cancel (6) were found by these properties.
   [PNL_ACCOUNTING.md](PNL_ACCOUNTING.md), not by automated tests.
 - **Whether the models are right.** Tests prove the simulator does what the models say; no test can
   show that a queue or latency model matches a real venue.
-- **The web UI.** The web build is checked in CI; there are no component or browser end-to-end
-  tests yet (Playwright is planned, `TODO.md` M6). Browser verification is manual.
+- **Exhaustive web coverage.** Vitest and the 3 real-v1 Playwright stories cover selected flows,
+  not every component, interaction or browser.
 - **Cross-platform equality for Avellaneda-Stoikov**, and debug versus release hash equality
   ([EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPRODUCIBILITY.md#caveats)).
 - **Performance regressions.** Benchmarks are run by hand ([PERFORMANCE.md](PERFORMANCE.md)); no

@@ -136,29 +136,27 @@ would invite treating simulated results as real ones.
 | Upstream (used unmodified) | BlackBox |
 |---|---|
 | hftbacktest 0.9.4: event loop, order bus, exchange models, queue models, constant latency, fees, depth | Flight recorder, ledger, risk harness, jitter latency, strategies, data pipeline and quality checks, explanations, comparisons, grids, run store, API, web console |
-| Two py-hftbacktest data-prep algorithms (ported, attributed) | Five upstream defects found, pinned and worked around |
+| Two py-hftbacktest data-prep algorithms (ported, attributed) | Six upstream defects found, pinned and worked around |
 | Lightweight Charts (npm) | Every other UI component |
 
 Details and licences: [OPEN_SOURCE_RESEARCH.md](OPEN_SOURCE_RESEARCH.md#reuse-boundaries-and-licence-obligations).
 
 ## Five-minute demo script
 
-Start the server with `blackbox demo` (synthetic data, no network needed) or `blackbox serve` with
-the Tardis sample ingested locally, and open the printed address. Mission Control, Replay Terminal
-and Latency Lab are being built as this is written (`TODO.md`, M3 and M4); steps marked
-**[re-check]** describe the planned screens and must be verified against the finished UI before the
-demo is given.
+Use https://blackbox-hft.vercel.app for the read-only synthetic demo, or start the supported
+local v1 stack with `docker compose up --build` and open http://127.0.0.1:8787
+([DEPLOYMENT.md](DEPLOYMENT.md#local)). A research key is needed only to create experiments.
+`blackbox demo` is the deprecated `/api` server and cannot populate this console.
 
 | Time | Screen (route) | Do | Say |
 |---|---|---|---|
-| 0:00 | **Mission Control** (`/`) **[re-check]** | Point at the dataset card and its quality badge; start the one-click sample experiment. | "This replays recorded L2 data through an unmodified open-source engine. Everything is simulated; nothing here can trade. The badge is the data-quality report: we check the data before we trust it." |
-| 0:45 | **Run overview** (`/runs/:runId`) | Show net P&L, fees, spread capture and markouts side by side. | "Spread capture says what quotes earned at the instant of the fill; markouts say what happened next; net P&L is what the books say. They disagree, which is the point." |
-| 1:30 | **Replay Terminal** (`/runs/:runId/replay`) **[re-check]** | Play the run: book, own orders, fills and inventory on one clock. Jump to a fill. | "Every order is on a two-clock tape: when the strategy decided, when the exchange saw it, when the fill came back." |
-| 2:15 | **Explain** (`/runs/:runId/orders/:orderId`) | Open a filled order, then an unfilled one. Read the explanation steps and their basis tags. | "Each statement is tagged observed, modeled, derived or unobservable and links to the recorded events. The queue position is modeled; the trades at our price are observed." |
-| 3:15 | **Latency Lab** (`/latency`) **[re-check]** | Run the `cost_of_latency` demo (1 ms versus 50 ms each way); show the varied and controlled lists, then the first divergence. | "Only one variable differs. The comparison finds the first decision where the runs part ways, and it refuses to attribute the P&L difference to latency unless the arithmetic proves it." |
-| 4:15 | **Latency Lab**, `gross_vs_net` **[re-check]** | Show fills identical across fee schedules and the exact fee arithmetic. | "This is the one case where attribution is certain: same fills, different fees, so the P&L difference is exactly the fee difference." |
-| 4:45 | Close | Mention the queue-position demo and the five engine defects. | "On L2 data queue position is unknowable; we show how much results depend on it instead of hiding it." |
+| 0:00 | **Overview** (`/`) | Open a stored demo run. | "This replays L2 data through an unmodified engine. Hosted data is synthetic; everything is simulated and nothing here can trade." |
+| 0:45 | **Risk & Performance** (`/risk/:runId`) | Show net P&L, fees and execution analytics. | "Spread capture describes the fill; markouts describe what happened next; net P&L is what the books say." |
+| 1:30 | **Order Book Lab** (`/book/runs/:runId`) | Play the book with the run's orders and fills. | "The tape separates the strategy's local clock from the exchange clock." |
+| 2:15 | **Execution Forensics** (`/forensics/:runId/orders/:orderId`) | Open a filled order, then an unfilled one. | "Every explanation tags observed, modeled, derived or unobservable evidence. Queue position is modeled, not observed." |
+| 3:15 | **Experiment Comparison** (`/compare/set`) | Select `cost_of_latency` and open its stored pair. | "Only the declared assumption differs; alignment and eligibility are checked before comparing decisions." |
+| 4:15 | **Experiment Comparison**, `gross_vs_net` | Inspect the fee-only pair and its report. | "When fills match, the fee difference accounts for the net P&L difference." |
+| 4:45 | Close | Mention the queue-position demo and six engine defects. | "L2 cannot reveal queue position; we show sensitivity instead of pretending otherwise." |
 
-If a step's screen is not finished, the same facts are available from the CLI: `blackbox presets`,
-`blackbox run --preset maker_baseline`, `blackbox explain <run> <order>`,
-`blackbox compare <run_a> <run_b>`.
+The same offline facts are available from `blackbox run --preset maker_baseline`,
+`blackbox explain <run> <order>` and `blackbox compare <run_a> <run_b>`.

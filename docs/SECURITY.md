@@ -1,8 +1,35 @@
 # Security
 
-BlackBox is a local research tool: it replays historical market data through a simulator and
-explains the simulated orders. This page states what it protects against, which control does it
-(file and test), what an independent review found, and what is still open.
+BlackBox is a hosted and local research tool: it replays market data through a simulator and
+explains simulated orders. It has no exchange connectivity or trading credentials.
+
+## Hosted v1 security
+
+The current console at https://blackbox-hft.vercel.app uses the live
+https://blackbox-hft-api.onrender.com/api/v1 API. Anonymous access is read-only in the synthetic
+demo workspace; mutations require hashed, scoped, pepper-tagged API keys. Workspaces scope reads
+and mutations; experiments enter a leased Postgres queue with runtime budgets and cancellation.
+Run bundles use filesystem storage locally and private Vercel Blob storage when hosted, with
+integrity verification, quarantine and byte-bounded caches.
+
+`v1/auth.rs`, `v1/edge.rs`, `admission.rs`, `worker.rs` and `bb-db` implement these controls.
+The active-job default is 5 admission units per workspace (a sweep counts as one unit);
+each workspace has 300 Blob upload attempts/month, including retries. Response bodies are
+measured centrally: anonymous responses are capped at 1 MiB and keyed non-export responses at
+`BB_MAX_RESPONSE_BYTES` (default 4 MiB). Paged reads and downsampled analytics keep normal
+responses within those caps; oversize bodies are refused, not silently truncated.
+
+These are source properties, not a claim that every security acceptance exercise passed.
+See [SECURITY_REVIEW](engineering/SECURITY_REVIEW.md) for the dated threat model and requirements,
+[FINAL_AUDIT §3–§7](engineering/FINAL_AUDIT.md#3-acceptance-verdicts) for observed gaps and subsequent
+source fixes, and [PROJECT_STATE](engineering/PROJECT_STATE.md) for release status and remaining
+verification boundaries. Production deployment must be checked separately from source fixes.
+
+## Deprecated local `/api` tooling
+
+The remaining sections document the earlier file-store server and its 2026-11-14 review.
+They apply to `blackbox demo` and the local `serve` legacy fallback, **not** hosted `/api/v1`.
+The current console requires the [local v1 stack](DEPLOYMENT.md#local), not `blackbox demo`.
 
 ## Threat model
 
@@ -54,11 +81,10 @@ Adding names:
 
 - **Vite dev server** (`npm run dev`, port 5173): the proxy in `web/vite.config.ts` rewrites `Host`
   to the target (`changeOrigin: true`) but forwards the browser's `Origin`, so start the API with
-  `blackbox serve --allow-origin http://localhost:5173`.
-- **Docker**: the image runs `demo --addr 0.0.0.0:8787`. With `-p 8787:8787` the browser's Host is
-  `localhost:8787` or `127.0.0.1:8787`, which is allowed. With a different host port, e.g.
-  `-p 127.0.0.1:9000:8787`, the Host is `127.0.0.1:9000`: override the command and add
-  `--allow-host 127.0.0.1:9000` (the matching origin `http://127.0.0.1:9000` is derived from it).
+  `blackbox demo --allow-origin http://localhost:5173` for legacy API requests only; the current console needs v1.
+- **Legacy Docker commands:** the old `demo --addr 0.0.0.0:8787` command exposes only deprecated
+  `/api`. The current compose image starts the authenticated v1 stack instead; see
+  [DEPLOYMENT.md](DEPLOYMENT.md#local). Legacy Host/Origin flags below do not configure v1.
 - **Another hostname** (only on a trusted network): `--allow-host myhost:8787`. Each flag is
   repeatable.
 
@@ -124,15 +150,15 @@ APIs. A search of both code bases (`grep -rn "\.extract(\|ZipStreamReader"` over
 been checked against the dataset manifest. The CI job lists these IDs in `ignore` with this
 justification; revisit when the engine moves to zip 9.
 
-### Static viewer
+### Hosted console
 
-The public static viewer is planned to show precomputed **synthetic** runs only, as static files with
-no server and therefore no API, no simulation and no writes. It was not present in the checkout when
-this page was written, so this is a design requirement, not a verified property.
+The removed static-file viewer is not a deployment mode. The Vercel SPA reads the live v1 API;
+anonymous visitors cannot submit jobs, while authenticated research users can. See the hosted
+security summary above and [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Probes against the running server
 
-Release server on `127.0.0.1:8787`, 2026-11-14.
+Deprecated file-store `/api` release server on `127.0.0.1:8787`, 2026-11-14.
 
 | Probe | Observed |
 |---|---|
@@ -171,7 +197,10 @@ static file fallback (`ServeDir`), report/export filenames, replay and paging ca
 body limit, rejection of non-finite numbers, the 16-entry run cache, and the absence of the engine's
 `live` feature. It could not run `cargo audit` or `npm audit`.
 
-## Residual risks
+## Historical residual risks of deprecated `/api` tooling
+
+These were the local review's residual findings, not a current v1 mitigation verdict; budgets,
+cancellation, paging and byte-bounded caches in the hosted stack are described above.
 
 - **No authentication.** Anyone who can reach a non-loopback bind (`--addr 0.0.0.0:…`, Docker port
   published on all interfaces) and send an allowed Host can read, run and delete. Bind to loopback

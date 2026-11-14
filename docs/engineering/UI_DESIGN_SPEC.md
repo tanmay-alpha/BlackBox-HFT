@@ -8,6 +8,12 @@ from this document without making further design decisions. Where a decision dep
 contract that another Phase 0 document owns (job API, auth header, health fields), this document
 lists exactly what the UI needs and marks the dependency.
 
+Current-status note: §1 is the historical `5fce27d` console audit, not today's inventory.
+The live SPA and `/api/v1` backend are implemented; the static build/bundle mode is removed.
+Use [API_CONTRACT.md](API_CONTRACT.md) for delivered API shapes and
+[PROJECT_STATE.md](PROJECT_STATE.md) / [FINAL_AUDIT §7](FINAL_AUDIT.md#7-fixes-after-the-audit)
+for current implementation and verification status.
+
 Evidence conventions used below:
 
 - `path:line` is a file in this repository at HEAD `5fce27d`.
@@ -531,10 +537,10 @@ Segments are separated by 1 px `--border-subtle` and each is focusable. From lef
 
 | Segment | Content | States |
 |---|---|---|
-| **API** | dot + `API` + state + last round-trip of `/api/health` in ms | `ok` (ok colour), `waking` (warn, with elapsed seconds), `degraded` (warn), `unreachable` (error), `contract mismatch` (warn). See §10.1. |
+| **API** | dot + `API` + state + last round-trip of `/api/v1/status` in ms | `ok` (ok colour), `waking` (warn, with elapsed seconds), `degraded` (warn), `unreachable` (error), `contract mismatch` (warn). See §10.1. |
 | **Worker** | `WORKER` + state + `running n · queued m` + `hb <age>` | `idle`, `running`, `stale heartbeat` (warn: last heartbeat older than 3× the expected interval), `offline` (error), `unknown` (fg-2, when health does not report it). |
 | **Build** | `v<blackbox_version> · contract v<n> · <engine name> <engine version>` | Static. Click copies it. |
-| **Mode** | `DEMO read-only`, `RESEARCH`, or `PRECOMPUTED BUNDLE` (static viewer, `App.tsx:93-96`) | — |
+| **Mode** | `DEMO read-only` or `RESEARCH` | — |
 | **Research banner** | `SIMULATED` modeled badge + the exact `RESEARCH_BANNER` text (`App.tsx:23-24`) | Truncates with ellipsis. The full text is in the tooltip and is always in the accessibility tree. Never hidden. |
 | **Clock** | `HH:MM:SS UTC` from the browser, updated every second | Tooltip shows local time and, if health reports `server_time_ns`, the skew `server − browser`. |
 
@@ -947,8 +953,8 @@ Secrets are never in the URL.
 | `/compare?a&b` | `/compare/pair?a&b` |
 | `/grid?base` | `/sim/sweep?base` |
 
-The static viewer (`isStaticViewer()`) uses the same routes. `web/vercel.json:6-11` already
-rewrites every non-asset path to `index.html`.
+The live SPA uses these routes. `web/vercel.json` rewrites non-asset, non-API paths to `index.html`;
+there is no static-bundle viewer mode.
 
 ---
 
@@ -975,7 +981,7 @@ connecting browsers while a service is spinning up" [S24]. A Free instance has 0
 
 - **WAKING**: status bar `API waking 37 s` (warn). Panels that are waiting show `Loading… 37 s —
   the API is waking up (free host; first response can take about a minute)`. Retries back off
-  2, 4, 8, 15, 15… s. A non-JSON `/api/health` body (the host's loading page) counts as waking,
+  2, 4, 8, 15, 15… s. A non-JSON `/api/v1/status` body (the host's loading page) counts as waking,
   not as an error `[INFERENCE from S24]`.
 - **OK**: health is polled every 30 s while the tab is visible, and paused when it is hidden
   (`document.visibilityState`). `contract_version` mismatch → `contract mismatch` warn badge
@@ -991,7 +997,6 @@ connecting browsers while a service is spinning up" [S24]. A Free instance has 0
 |---|---|---|
 | Demo (no key) | top bar `DEMO · read-only`; status bar `DEMO read-only` | All reads of stored/precomputed datasets, runs, experiments, reports. |
 | Research (key present and accepted) | `RESEARCH · key …a1b2` | Reads + create experiment/run, sweeps, cancel, delete. |
-| Precomputed bundle (static viewer) | `PRECOMPUTED BUNDLE` | Reads of the bundle only; every mutation disabled with the reason "No server: this is a precomputed bundle". |
 
 API key dialog (opened from the access badge, the palette, or a 401):
 
@@ -1208,9 +1213,10 @@ synthetic datasets only.
   terminal), then by creation time.
 - The **Runs** tab reuses `RunsPage.tsx` as a DataTable of stored runs, with multi-select →
   "Compare (2)" / "Compare set (n)".
-- The **Sweep** tab reuses `GridPage.tsx` axis definitions and `gridModel.ts`. In research mode it
-  submits one sweep job that creates up to 100 run jobs (the current `MAX_GRID_CELLS`,
-  `docs/API.md:50`). The results open in Experiment Comparison.
+- The **Sweep** tab submits a `SweepSpec` to `/api/v1/sweeps`: grid, seeded random or seed ensemble,
+  optionally partitioned in-/out-of-sample. Hosted admission allows 25 configurations (local 100);
+  each configuration becomes an ordinary queued experiment, or two when partitioned. A sweep is
+  one active admission unit. Results and ensemble dispersion/collapse are returned by its report.
 - Run detail reuses the `RunOverviewPage.tsx` manifest and engine cross-check panels.
 - Cold start: when the API status is `waking`, a non-dismissible `WAKING` notice is shown in the
   toolbar row. The table keeps its last data with `STALE` until the first response.
@@ -1312,7 +1318,7 @@ link to their run. Colour is a secondary cue; a missing cell is hatched **and** 
 +----+---------------------------+--------------------------------------------------------------+
 ```
 
-The report body is the server's markdown report (`GET /api/runs/{id}/report`, `docs/API.md:44`),
+The report body is the server's markdown report (`GET /api/v1/runs/{id}/report`, API_CONTRACT §8),
 rendered with a sanitising markdown renderer: no raw HTML, links `rel="noreferrer"`. This is the
 only workspace whose main panel scrolls as a document.
 

@@ -1,11 +1,11 @@
 # API contract: `/api/v1`
 
-Status: Phase 0 design, 2026-11-14. This is the contract the Phase 2 server and the new web client build against. It
-replaces `docs/API.md` at the cutover described in [TARGET_ARCHITECTURE.md](TARGET_ARCHITECTURE.md) §11. Storage
-semantics are in [DATABASE_DESIGN.md](DATABASE_DESIGN.md). UI requirements come from
-[UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md) §10 and §16 (traceability in §12 below).
+Status: implemented v1 contract, originating in the Phase 0 design of 2026-11-14.
+[../API.md](../API.md) is the entry point; the generated OpenAPI is normative and §13 records
+implementation deviations. Storage semantics are in [DATABASE_DESIGN.md](DATABASE_DESIGN.md);
+UI requirements come from [UI_DESIGN_SPEC.md](UI_DESIGN_SPEC.md) §10 and §16.
 
-The OpenAPI 3.1 document generated from the code (§11) is normative once it exists. Where this document and the
+The OpenAPI 3.1 document generated from the code (§11) is normative. Where this document and the
 generated spec disagree, the spec wins, and this document is corrected in the same pull request.
 
 ---
@@ -50,7 +50,7 @@ Every non-2xx response has this body (and `Cache-Control: no-store`):
 | 403 | `forbidden` | valid key lacks the scope; write to the demo workspace without `admin`; request from a disallowed `Origin`/`Host` | `{ "required_scope"?: "run" \| "admin" }` |
 | 404 | `not_found` | unknown or invisible resource (another workspace's experiment is 404, not 403, so its existence is not disclosed) | `{ "resource": string }` |
 | 409 | `conflict` | `If-Match` version mismatch; cancel of a terminal job; 16-hex id ambiguity/collision; alignment requested on a `metrics_only` comparison | `{ "reason": "version_mismatch" \| "job_terminal" \| "identity_collision" \| "alignment_unavailable", "current_version"?: number }` |
-| 422 | `invalid_config` | `RunConfig`/`GridSpec` validation failed (all problems listed) | `{ "problems": string[] }` |
+| 422 | `invalid_config` | `RunConfig`/`SweepSpec` validation failed (bounded problem list) | `{ "problems": string[] }` |
 | 422 | `budget_exceeded` | admission: the work estimate exceeds `ExecutionLimits` of this deployment | `{ "what": string, "limit": number, "estimate": number, "profile": "hosted" \| "local" }` |
 | 429 | `rate_limited` | request-rate limit (§5) | `{ "retry_after_s": number }` + `Retry-After` header |
 | 429 | `quota_exceeded` | daily submission quota, active-job quota, or the monthly storage budget | `{ "scope": "experiments_per_day" \| "sweeps_per_day" \| "active_jobs" \| "storage", "limit": number, "used": number, "resets_at_ns": string \| null }` |
@@ -64,7 +64,7 @@ internal}`.
 
 ## 3. Authentication and scopes
 
-- Header: **`Authorization: Bearer bbk_<43 base64url chars>`** (32 random bytes; regex `^bbk_[A-Za-z0-9_-]{43}$`).
+- Header: **`Authorization: Bearer bbk_<43 base64url chars>`** (24 random bytes plus an 8-byte HMAC tag; regex `^bbk_[A-Za-z0-9_-]{43}$`).
   Keys are never accepted in URLs or cookies. The server stores only `sha256(key)` and looks keys up by digest. Logs
   show `display_prefix` (`bbk_` + 4 characters) only.
 - Keys are minted by the CLI (`blackbox keys mint --workspace <slug> --scopes read,run --label …`), which prints the
@@ -81,11 +81,13 @@ internal}`.
   lets any caller list demo content. Single-resource reads succeed if the resource is visible in the caller's
   workspace or in demo; otherwise 404.
 
-**Demo workspace semantics:** slug `demo`, kind `demo`, public read. Its content (synthetic datasets, curated
-experiments, comparisons, a sweep, saved reports) is created by `blackbox demo seed`, which runs against the hosted
-API with an `admin` key. All its runs are therefore computed by the hosted Linux worker and are canonical. Demo
-experiments are `pinned` (exempt from retention). Demo quotas are 0, so nothing can be submitted into it without
-`admin`.
+**Demo workspace semantics:** slug `demo`, kind `demo`, public read. `blackbox demo seed` connects
+directly to `DATABASE_URL` (not the HTTP API and not an admin API key). It registers synthetic
+data and queues pinned demo experiments for `--platform` (the full platform class); `--wait`
+computes them in this process and only accepts this machine's platform. Once runs complete it
+stores the curated comparisons and saved reports; otherwise it reports them pending, and must be
+run again after the worker finishes. It does **not** seed a sweep. Hosted canonical results require
+the hosted Linux platform. Anonymous mutation protection is unchanged.
 
 ## 4. CORS and Host checks
 
@@ -388,7 +390,7 @@ seed's run id; `seed_affects_result: false` (constant latency, or jitter of zero
 ## 9. Resource shapes (non-bb-core)
 
 bb-core types (`RunConfig`, `Metrics`, `OrderRecord`, `FillRecord`, `EquitySample`, `FlightEvent`, `Explanation`,
-`DatasetManifest`, `QualityReport`, `GridSpec`, `ReplayWindow`, `RunTimeline`, `OrderPair`, …) are reused as they are,
+`DatasetManifest`, `QualityReport`, `SweepSpec`, `GridSpec`, `ReplayWindow`, `RunTimeline`, `OrderPair`, …) are reused as they are,
 with ns fields as strings (TARGET_ARCHITECTURE §10).
 
 ### 9.1 `Status`
@@ -536,17 +538,15 @@ ETag: "9c41e2…-a1f0"
 
 - **Server:** `utoipa` 6 + `utoipa-axum` 0.3 (OSS evaluation §3.5). Routers are built with `OpenApiRouter`, and
   handlers carry `#[utoipa::path]` with response codes and error schemas. bb-core types derive `ToSchema` behind a
-  bb-core `openapi` feature. The ns newtype (`NsString(i64)`) is declared with `#[schema(value_type = String,
-  pattern = "^-?[0-9]{1,19}$")]`, so generated clients see strings.
-- **Spec output:** served at `GET /api/v1/openapi.json`, and printed offline by `blackbox openapi` (no DB or network
-  needed). The committed snapshot is `web/src/api/openapi.json`.
-- **TypeScript:** `openapi-typescript` (npm `openapi-typescript` 7.13.0, MIT, read from the npm registry 2026-11-14)
-  generates `web/src/api/schema.d.ts`. `web/src/api/client.ts` is a thin typed `fetch` wrapper over its `paths` type,
-  adding base URL, auth header, error-envelope decoding and abort/timeout. The hand-maintained
-  `web/src/api/types.ts` (1,034 lines) is deleted at cutover.
-- **CI (AT-14):** `blackbox openapi | diff - web/src/api/openapi.json` and
-  `npx openapi-typescript web/src/api/openapi.json -o "$RUNNER_TEMP/schema.d.ts" && diff "$RUNNER_TEMP/schema.d.ts" web/src/api/schema.d.ts`.
-  Either diff fails the build.
+  bb-core `openapi` feature. Nanoseconds and seeds are string-encoded at the HTTP boundary
+  (`wire.rs`); shared core serialization remains unchanged (§13).
+- **Spec output:** served at `GET /api/v1/openapi.json`, and written offline by
+  `blackbox openapi --out web/openapi.json` (no DB or network needed). The committed snapshot is `web/openapi.json`.
+- **TypeScript:** `cd web && npm run gen:api` uses `openapi-typescript` to generate `web/src/api/v1.gen.ts`.
+  `web/src/api/http.ts` provides base URL, auth headers, error decoding and cancellation.
+- **CI (AT-14):** the `contract` job runs `scripts/ci/check-contract.sh <blackbox binary>`:
+  regenerate OpenAPI and compare it with `web/openapi.json`, then regenerate the TypeScript and
+  require it to match `web/src/api/v1.gen.ts`. Either difference fails the job.
 - **Docs UI:** none in the API process (no Swagger bundle on the 512 MB host). The web app may render the spec.
 
 ## 12. UI_DESIGN_SPEC §16 traceability
@@ -587,4 +587,4 @@ above, and why:
 | Rate limits | `governor` keyed limiters in the auth layer (per IP for anonymous, per key, plus a global anonymous cap; client IP = last `X-Forwarded-For` entry) instead of a `tower_governor` layer | one layer must apply different quotas to anonymous and keyed callers |
 | Quotas | hosted `quota_active_jobs` = 5 admission units, a sweep counting as one unit (migration 0009) | a 25-cell sweep must still be admissible next to single experiments |
 | Sweeps | v1 sweeps take `bb_core::sweep::SweepSpec` (grid, random, seeds; IS/OOS partition; CSCV); a `GridSpec` body is still accepted and converted | AT-12 and the sweep registry exposed through the API |
-| `demo seed` | Runs against the database directly (`DATABASE_URL`), not against the hosted API; `--platform linux-x86_64` seeds canonical jobs for the hosted worker | no admin-API seeding path is needed for a queue-based seed |
+| `demo seed` | Connects directly to `DATABASE_URL`; `--platform` takes the full platform class (e.g. `linux-x86_64+libm-53154a4e`). `--wait` computes on this machine; completed runs get curated comparisons and saved reports, not a sweep | trusted CLI seed, no admin HTTP path; incomplete curation is reported pending |

@@ -106,6 +106,11 @@ an allocation proof.
 
 ### Verification (2026-11-14, Windows GNU)
 
+This is the earlier analytics implementation check, not the current workspace total. The latest
+recorded full verification is **422 Rust tests passed, 1 ignored**, plus **93 Vitest tests** and
+3 Playwright stories in the browser suite; see [../TESTING.md](../TESTING.md) for CI coverage and
+[FINAL_AUDIT §7](../engineering/FINAL_AUDIT.md#7-fixes-after-the-audit) for the recorded local run.
+
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets`: passed without warnings.
 - `cargo test --workspace`: **303 passed**, including **45 analytics unit tests** and

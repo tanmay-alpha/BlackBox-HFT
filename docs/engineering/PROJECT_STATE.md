@@ -8,17 +8,22 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 | Component | Where | Notes |
 |---|---|---|
-| Console (SPA) | https://blackbox-hft.vercel.app | Vercel project `blackbox-hft`, built from Git (root `web`, Vite), env `VITE_API_BASE_URL=https://blackbox-hft-api.onrender.com/api/v1`; no backend secrets in the project (SEC-20 done: 17 integration env vars deleted via the Vercel API) |
+| Console (SPA) | https://blackbox-hft.vercel.app | Vercel project `blackbox-hft`, built from Git (root `web`, Vite), env `VITE_API_BASE_URL=https://blackbox-hft-api.onrender.com/api/v1`; no backend secrets in the project (SEC-20: removal recorded and env-name listing independently verified 2026-11-14, FINAL_AUDIT §3) |
 | API + worker | https://blackbox-hft-api.onrender.com | Render free web service `srv-dbs11fm1egvs73chs7lg` (singapore), image `ghcr.io/tanmay-alpha/blackbox-hft:main` (public, built by `publish.yml` after green CI), `BB_PROFILE=hosted`, `BB_WORKER_SLOTS=1`, migrations on start |
-| Database | Neon free `blackbox-hft-db` (sin1, PostgreSQL 18.7) | 7 migrations applied; `sslmode=verify-full` |
+| Database | Neon free `blackbox-hft-db` (sin1, PostgreSQL 18.7) | audit observed 7 migrations applied; source now embeds migrations through 0009; `sslmode=verify-full` |
 | Artefacts | Vercel Blob private store `blackbox-hft-artifacts` (`store_eod21bxLMlokHq3Z`, sin1) | one verified bundle per run |
 | Demo data | synthetic dataset `synthetic-demo` v1 (events sha256 `0bc26426…`), demo experiments computed by the hosted Linux worker (canonical platform `linux-x86_64+libm-53154a4e`) | seeded with `blackbox demo seed --platform linux-x86_64+libm-53154a4e` |
 
-Verified on production (lead, 2026-11-14): `scripts/deploy/smoke.sh` 8/8 PASS (liveness, status
+Historical production verification (lead, 2026-11-14; not evidence of deployment of later source fixes): `scripts/deploy/smoke.sh` 8/8 PASS (liveness, status
 git SHA, readiness, CORS allowed/refused, foreign Origin 403, anonymous mutation 401, malformed key
 401); a research-key submission went queued → running → completed in ~20 s and its run is served
 (1,241 fills, 2,060 orders, canonical); the console loads every checked workspace with 0 console
 errors and shows API OK, worker heartbeat and the six demo runs.
+
+The independent audit observed production `git_sha = 1873f4d4392c3b222d2c28e9e759c3d9b11e510d`
+(FINAL_AUDIT R3). It did not establish the deployed image digest or a release of the newer
+source: the cited publish run skipped deploy/smoke because no deploy hook was configured.
+Use the manual digest-release procedure in DEPLOYMENT §2 and record new release evidence here.
 
 Secrets (never committed): `data/secrets/{neon.env,vercel-prod.env,render.env,api-keys.txt}`.
 
@@ -56,9 +61,9 @@ Opus agents hit one rate-limit window (HTTP 429) and were resumed on their own t
 ## Open items
 
 All ten ranked defects of `FINAL_AUDIT.md` §4 have source fixes on `main` (§7, with commits and
-tests); none is deployed yet, so production must be re-checked after the next deploy
+tests). Source fixes do not establish deployment: re-check production after release
 (`/api/v1/status` `git_sha`, then `demo seed`). Still open: SEC-9/11/12/17/18/25 partially tested;
-AT-5 runtime-breach test missing; `quota.exceeded` denial audit rows; anonymous detail reads and
+AT-5 full hosted-worker peak-memory coverage (the pipeline runtime-breach/cancellation fixture already exists in `crates/bb-app/tests/budgets.rs`); `quota.exceeded` denial audit rows; anonymous detail reads and
 `/sweeps` still use Postgres on an anonymous-cache miss (lists and catalogues come from the demo
 snapshot); the debug `serve` binary on the dev machine reports libm fingerprint `0352e099` (its
 results are non-canonical; harmless).

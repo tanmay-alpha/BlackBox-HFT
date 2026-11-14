@@ -163,7 +163,7 @@ candidate explanations, and neither is proven here.
 At the end of every run (`Harness::engine_check`, `crates/bb-sim/src/lib.rs`) the **known** ledger is
 compared with the engine's own local account (`StateValues`): position, cash vs `balance`, fees vs
 `fee`, fill count vs `num_trades`, each with relative tolerance `1e-9 × (1 + max(|a|, |b|))`. The
-result (`EngineStateCheck`, `GET /api/runs/{id}/engine-check`) carries a note:
+result (`EngineStateCheck`, `GET /api/v1/runs/{id}/engine-check`) carries a note:
 
 - **`no_partial_fill`: must agree.** Every execution produces exactly one `Filled` response, which
   the engine's local account applies. A disagreement is reported as "Unexpected … treat this run's

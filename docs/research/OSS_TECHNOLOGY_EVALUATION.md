@@ -9,6 +9,14 @@ DuckDB), this one only adds what is new: maintenance status today, deployment co
 
 All observations are from **2026-11-14**. Evidence types:
 
+This is the pre-implementation technology survey, not a current feature or limits inventory.
+For the delivered stack see [../engineering/API_CONTRACT.md](../engineering/API_CONTRACT.md),
+[../engineering/PROJECT_STATE.md](../engineering/PROJECT_STATE.md) and
+[../engineering/FINAL_AUDIT.md §7](../engineering/FINAL_AUDIT.md#7-fixes-after-the-audit).
+The application now uses `/api/v1`, `SweepSpec` seed ensembles, a 5-unit active quota (each sweep
+one unit) and a 300 Blob-upload-attempt/workspace/month default; old local-cache observations
+and proposed paths below describe the survey baseline, not today's server.
+
 - **gh**: `gh api repos/<owner>/<repo>` (stars, `pushed_at`, `license.spdx_id`, `archived`),
   `gh api repos/<o>/<r>/commits?per_page=1` (last commit on the default branch),
   `gh api repos/<o>/<r>/releases/latest`, `gh api repos/<o>/<r>/license` (licence file text).

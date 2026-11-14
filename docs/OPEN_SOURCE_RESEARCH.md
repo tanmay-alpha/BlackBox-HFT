@@ -457,7 +457,7 @@ Factual comparison, based on HFTENGINE's README as read on the survey date. HFTE
 Everything in this list is BlackBox's own code; nothing was adapted from the projects above except the two ported data-prep algorithms.
 
 - **Flight recorder over an unmodified engine.** Recording wrappers around the engine's public traits, with deterministic commit order per engine step and a bit-exact read of the private queue estimate ([EXECUTION_MODEL.md](EXECUTION_MODEL.md)).
-- **Five upstream defects found, pinned by tests and worked around** without a fork ([EXECUTION_MODEL.md](EXECUTION_MODEL.md#defects-in-094-and-what-blackbox-does-about-each)).
+- **Six upstream defects found, pinned by tests and worked around** without a fork ([EXECUTION_MODEL.md](EXECUTION_MODEL.md#defects-in-094-and-what-blackbox-does-about-each)).
 - **Order-level forensics:** one lifecycle record per order and a rule-based why-filled / why-not-filled explanation in which every statement carries a basis tag and cites tape events.
 - **Decision-aligned scenario comparison** by stable order id, with first-divergence detection and P&L attribution only where arithmetic proves it; bounded sensitivity grids made of real runs.
 - **An independent ledger** that sees every execution and reconciles with the engine where the engine is right ([PNL_ACCOUNTING.md](PNL_ACCOUNTING.md)).

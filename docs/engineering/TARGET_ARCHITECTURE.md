@@ -10,6 +10,11 @@ This document assumes the decisions in [PROJECT_STATE.md](PROJECT_STATE.md), the
 them. Statements about external platforms cite a source listed at the end ([R1]…). Anything not read or measured is
 marked **[INFERENCE]**.
 
+Implementation status: the v1 queue/bundle stack and live console now exist. This began as a
+Phase 0 design; current API behaviour is in [API_CONTRACT.md](API_CONTRACT.md), and verification
+and remaining boundaries are in [FINAL_AUDIT §7](FINAL_AUDIT.md#7-fixes-after-the-audit) and
+[PROJECT_STATE.md](PROJECT_STATE.md). The legacy exceptions below reflect the retained code.
+
 ---
 
 ## 1. Constraints that shape the design
@@ -119,11 +124,11 @@ Rules (checked by `cargo tree -e normal -i <crate>` in CI **[INFERENCE: check to
    real Postgres (local cluster; a Postgres service container in CI). sqlx 0.9 requires the workspace
    `rust-version` ≥ 1.94 and the Dockerfile builder image ≥ 1.94 (OSS evaluation §3.5).
 
-**Removed at cutover** (clean cutover, no shims): `bb-app::store` (`RunStore`/`FsRunStore` and its 16-entry cache),
-`export_static.rs` and `blackbox export-static`, `npm run build:static` and the static client mode, the legacy
-`/api` router in `server.rs`, `access.rs` (replaced by auth + CORS + Host allowlist), the `RUN_SLOTS`/`GRID_SLOTS`
-semaphores and `grid_threads`. Local `blackbox serve` uses Postgres (local cluster) plus `FsStore`. `blackbox run`
-stays a DB-free offline command that writes a bundle to a directory.
+**Cutover status:** the static exporter, static client mode and static build script are removed.
+The web client uses `/api/v1`. `bb-app::store`, the `/api` router, `access.rs` and its old semaphores
+remain for DB-free offline commands / deprecated `blackbox demo` and the local `serve` fallback;
+they are not the hosted architecture. Local `blackbox serve` uses Postgres plus filesystem
+artefact storage. `blackbox run` stays DB-free and writes the legacy file-store result.
 
 ---
 
@@ -352,8 +357,8 @@ There is no second executor.
 | `RunConfig::validate()` | submit | 422 `invalid_config` |
 | `estimate_work(manifest)` vs `ExecutionLimits` (`max_ticks`, `max_tape_events`, `max_output_bytes`) | submit, per config | 422 `budget_exceeded` (`details.limit`, `details.value`, `details.what`) |
 | Sweep: cells ≤ `max_sweep_cells` (hosted 25, local 100 = `MAX_GRID_CELLS`); Σ estimates ≤ sweep budget | submit | 422 `budget_exceeded` |
-| Workspace/key quotas (`quota_experiments_per_day`, `quota_sweeps_per_day`, `quota_active_jobs`) | submit, in the transaction that inserts | 429 `quota_exceeded` |
-| Blob month: uploads + projected ≤ 1,800 of 2,000; bytes stored + `est_output_bytes_upper` ≤ 900 MB of 1 GB | submit | 429 `quota_exceeded` (`scope: "storage"`) |
+| Workspace/key quotas (`quota_experiments_per_day`, `quota_sweeps_per_day`, `quota_active_jobs`) | submit, in the transaction that inserts; active default 5 units, each sweep one unit | 429 `quota_exceeded` |
+| Blob month: upload attempts < 1,800 globally and < 300/workspace by default; bytes stored + `est_output_bytes_upper` ≤ 900 MB | submit; reserve every upload attempt including retries before PUT | 429 `quota_exceeded` (`scope: "storage"`); worker upload refusal if allowance is spent |
 | Runtime `RunBudget` (`max_tape_events`, `max_equity_samples`) | during `simulate()` | job `failed{budget_exceeded}` |
 | Deadline (`deadline_ms`, hosted 600,000) | `should_cancel()` checkpoint | job `expired` |
 
@@ -421,10 +426,10 @@ disjoint.
 | `POST /grids` (synchronous) | `POST /api/v1/sweeps` → 202, cells are queued experiments |
 | – | `/api/v1/jobs…`, `/api/v1/whoami`, `/api/v1/reports…`, `/api/v1/system/…`, `/api/v1/openapi.json` |
 
-**Removal rule:** release *N* ships `/api/v1` alongside the legacy router. Release *N+1* removes `/api` together with
-the old web client, in the commit that switches `web/` to the generated v1 client. That is one cutover with no
-compatibility layer. The legacy router is never deployed to Render, because hosted deployment starts at *N+1*, so the
-unauthenticated legacy `DELETE /api/runs/{id}` never becomes public.
+**Current boundary:** the generated v1 web client has already replaced the old client. The legacy
+router remains in `blackbox demo` and as a local-profile `serve` fallback; hosted `serve` never
+mounts it (`main.rs::cmd_serve`). Do not use `blackbox demo` as a quick start for the current console,
+or expose its unauthenticated `/api` routes as the public service.
 
 ## 12. Graceful shutdown (SIGTERM)
 

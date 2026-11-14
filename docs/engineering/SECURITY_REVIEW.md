@@ -6,6 +6,14 @@ Status: Phase 0/2 design review, 2026-11-14. Owner: ThreatModel. Scope: the **ta
 exist in code (`bb-db`, `bb-artifacts`, `bb_core::limits`). The local-tool review ([../SECURITY.md](../SECURITY.md))
 and BASELINE_AUDIT §4.3 are carried forward in §17.
 
+**Historical snapshot:** code findings and checklist statuses below are pinned to `ff5b2b8`,
+not the delivered implementation. The hosted v1 API, auth and live console now exist; static
+build instructions and old quota values below are historical, not current operating guidance.
+Read [FINAL_AUDIT §3–§7](FINAL_AUDIT.md#3-acceptance-verdicts) for the independent re-check and
+post-audit source fixes, [PROJECT_STATE](PROJECT_STATE.md) for release status, and
+[../SECURITY.md](../SECURITY.md) for the current hosted/local distinction. An old `met` label
+does not establish that its acceptance test or production verification passed.
+
 Conventions:
 
 - Current code is cited as `path:line` at `main` = **`ff5b2b8`** (after the merges of `p1-simcore` `1ff0d76`,

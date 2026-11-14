@@ -10,11 +10,13 @@ in [QUEUE_MODELS.md](QUEUE_MODELS.md) and [LATENCY_MODEL.md](LATENCY_MODEL.md).
 
 ```mermaid
 flowchart TB
-  WEB["web/ (React + TypeScript)"] -->|"HTTP JSON /api"| APP
+  WEB["web/ (React + TypeScript)"] -->|"HTTP JSON /api/v1"| APP
   CLI["blackbox CLI"] --> APP
   subgraph APP["bb-app"]
-    SERVER["server.rs (axum)"] --> PIPE["pipeline.rs"]
-    PIPE --> STORE["store.rs (run store)"]
+    SERVER["v1/ (axum, auth, admission)"] --> DB["bb-db (Postgres queue and metadata)"]
+    DB --> WORKER["worker.rs"]
+    WORKER --> PIPE["pipeline.rs"]
+    WORKER --> STORE["bb-artifacts (verified bundles)"]
     PIPE --> PRESETS["presets.rs, demos.rs"]
     PIPE --> DS["datasets.rs (dataset cache)"]
   end
@@ -35,11 +37,14 @@ flowchart TB
 |---|---|---|---|
 | `bb-core` | The shared type contract: configurations, flight events, results, manifests, explanations, comparisons, hashing, PRNG, time units. No engine dependency, so strategies and forensics stay engine-agnostic. | `serde`, `sha2` | `src/lib.rs` (conventions), `src/flight.rs`, `src/config.rs` |
 | `bb-data` | Tardis CSV ingestion, normalization (ported from py-hftbacktest), data-quality checks, synthetic generator, `.npz` store, book reconstruction for replay views. | `bb-core`, `hftbacktest` (event type and `.npz` format) | `src/lib.rs`, `src/tardis.rs`, `src/quality.rs` |
-| `bb-strategies` | Deterministic strategies: touch maker, Avellaneda-Stoikov, imbalance taker, scripted. Pure state machines over a `LocalView`. | `bb-core` only | `src/lib.rs`, [STRATEGIES.md](STRATEGIES.md) |
+| `bb-strategies` | Deterministic strategies: touch maker, Avellaneda-Stoikov, GLFT, imbalance taker, scripted. Pure state machines over a `LocalView`. | `bb-core` only | `src/lib.rs`, [STRATEGIES.md](STRATEGIES.md) |
 | `bb-sim` | Assembles the engine with recording wrappers, runs the strategy on a fixed tick grid, applies pre-trade risk rules, keeps the ledger, emits the tape. | `bb-core`, `hftbacktest` | `src/lib.rs` (`simulate`), `src/engine.rs`, `src/taps.rs`, `src/tape.rs` |
 | `bb-forensics` | Pure functions over a finished tape: order records, metrics, markouts, rule-based explanations, scenario comparison. | `bb-core` only | `src/lib.rs`, `src/explain.rs`, `src/compare.rs` |
-| `bb-app` | Run pipeline, content-addressed run store, presets and demos, sensitivity grids, axum HTTP API, the `blackbox` CLI. | all of the above | `src/pipeline.rs`, `src/server.rs`, `src/main.rs` |
+| `bb-app` | v1 HTTP/auth/admission, leased worker, presets and demos, sweeps, offline pipeline and `blackbox` CLI. | all of the above, `bb-db`, `bb-artifacts`, `bb-analytics` | `src/v1/mod.rs`, `src/worker.rs`, `src/main.rs` |
 | `web/` | Console: Mission Control, datasets and market replay, strategy lab, runs, replay terminal, order forensics, latency lab, compare, grid. | the HTTP API ([API.md](API.md)) | `web/src/App.tsx` |
+| `bb-db` | Postgres metadata, workspace-scoped access, keys, quotas and leased job queue. | `bb-core` | `src/queue.rs`, `src/api_reads.rs` |
+| `bb-artifacts` | Verified paged bundles, filesystem and private Blob storage, byte-bounded cache. | `bb-core` | `src/bundle.rs`, `src/store.rs` |
+| `bb-analytics` | Market microstructure, execution and risk analytics. | `bb-core`, `bb-data` | `src/lib.rs` |
 
 The dependency rule is visible in the `Cargo.toml` files: only `bb-sim` and `bb-data` link the
 engine, and `bb-forensics` and `bb-strategies` depend on nothing but `bb-core`. A forensics bug can
@@ -49,28 +54,28 @@ therefore never change a fill, and a strategy cannot call the engine.
 
 ```mermaid
 sequenceDiagram
-  participant C as Client (web or CLI)
-  participant P as bb-app pipeline
-  participant S as Run store
+  participant C as Client
+  participant A as v1 admission
+  participant D as Postgres
+  participant W as Worker
   participant E as bb-sim + engine
-  participant F as bb-forensics
-  C->>P: RunConfig (POST /api/runs or blackbox run)
-  P->>P: validate config; run_identity = sha256(contract, engine, dataset sha256, config)
-  P->>S: stored run with this run_id and config_sha256?
-  alt already simulated
-    S-->>C: stored RunSummary (same run_id, same result_sha256)
-  else new experiment
-    P->>E: simulate(dataset events, instrument, config, strategy)
-    E-->>P: tape, fills, equity samples, engine cross-check
-    P->>F: build_orders, enrich_fills (mid, markouts), compute_metrics
-    P->>P: result_sha256 = sha256(tape, fills, equity)
-    P->>S: put(RunResult)
-    S-->>C: RunSummary
-  end
+  participant B as Bundle store
+  C->>A: POST /api/v1/experiments {config}
+  A->>A: validate; identity = sha256(contract, simulation revision, engine, dataset sha256, config)
+  A->>D: atomic workspace/quota/single-flight submission
+  D-->>C: existing run (200) or queued job (202)
+  W->>D: claim with lease
+  W->>E: simulate admitted config with budgets and cancellation
+  E-->>W: tape, fills, equity, engine cross-check
+  W->>W: forensics, metrics and result hash
+  W->>B: write verified paged bundle
+  W->>D: commit run metadata and job completion
+  C->>A: GET /api/v1/runs/{id}
+  A-->>C: verified stored result
 ```
 
-The code path is `bb_app::pipeline::find_or_execute` → `execute` → `bb_sim::simulate`
-(`crates/bb-app/src/pipeline.rs`). Inside `simulate` (`crates/bb-sim/src/lib.rs`) the loop is:
+The v1 path is `admission` → `bb-db` queue → `worker`; the DB-free `blackbox run` path uses
+`pipeline::find_or_execute` → `execute`. Both call `bb_sim::simulate`. Inside `simulate` the loop is:
 `elapse(interval)` on the engine; read the local depth, own orders and trades received since the
 last tick; build a `LocalView`; call `Strategy::on_tick`; check each intent against the risk rules;
 submit survivors with `submit_buy_order` / `submit_sell_order` / `cancel`; sample equity. Every
@@ -97,12 +102,11 @@ The brief preferred a Python/FastAPI backend. BlackBox deliberately deviates (re
   the types the simulator produced (`crates/bb-core`, serialized by serde).
 - **Correctness checks are cheap to keep on.** Determinism, invariants and reconciliation tests
   run the real engine in the normal `cargo test` ([TESTING.md](TESTING.md)).
-- **axum** is a thin async HTTP layer. Handlers never run a simulation on the async runtime: all
-  dataset reads, run loads and simulations go to `tokio::task::spawn_blocking`
-  (`crates/bb-app/src/server.rs`).
+- **axum** is a thin async HTTP layer. Submitted simulations run on the worker's blocking
+  execution path, not in an HTTP handler (`crates/bb-app/src/worker.rs`).
 
-What is given up: Python's notebook ecosystem. A run can still be exported as JSON
-(`GET /api/runs/{id}/export`) and the dataset event file is the engine's own `.npz` format, which
+What is given up: Python's notebook ecosystem. A keyed export
+(`GET /api/v1/runs/{id}/export`) returns a verified `.bbz` gzip-NDJSON bundle, and the dataset event file is the engine's own `.npz` format, which
 py-hftbacktest reads (`crates/bb-data/src/store.rs`).
 
 ## Determinism by design
@@ -117,15 +121,15 @@ lives:
 | Strategy decisions timed by execution speed | Fixed local-time tick grid anchored to the dataset; order id = `(tick << 8) \| slot` | `crates/bb-core/src/strategy.rs` |
 | Hash-map ordering in serialized output | Hashed types use structs, `Vec` and `BTreeMap` only; JSON field order is declaration order | `crates/bb-core/src/hash.rs` |
 | Float parsing drift when a stored run is reloaded | `serde_json` with `float_roundtrip` | `crates/bb-app/Cargo.toml` |
-| Platform math libraries | The PRNG uses integer and IEEE `+ - * /` only; `ln`/`exp` in Avellaneda-Stoikov is the one known cross-platform caveat | `crates/bb-core/src/rng.rs`; [BUILDING.md](BUILDING.md) |
+| Platform math libraries | Results carry a libm-fingerprinted platform class; probability queues and `ln`/`exp` paths can differ across platforms | `crates/bb-core/src/platform.rs`; [EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPRODUCIBILITY.md#platform-policy) |
 
 How identity and result hashes are formed and what evidence exists is in
 [EXPERIMENT_REPRODUCIBILITY.md](EXPERIMENT_REPRODUCIBILITY.md).
 
 ## Storage layout
 
-Everything is under the data directory (`--data-dir`, default `data/`), which is git-ignored
-because recorded vendor data must never be committed ([MARKET_DATA.md](MARKET_DATA.md#redistribution-rules)).
+The following layout is for the **offline/deprecated file-store pipeline**, not hosted v1.
+It is under `--data-dir` (default `data/`), which is git-ignored because vendor data must not be committed.
 
 ```
 data/
@@ -143,20 +147,22 @@ by every run, replay request and grid cell (`crates/bb-app/src/datasets.rs`).
 
 ## What runs where
 
-- **Everything runs locally in one process.** `blackbox serve` (and `blackbox demo`) binds
-  `127.0.0.1:8787` by default, serves the API under `/api` and, if built, the web UI from
-  `web/dist` with a single-page-app fallback. The CLI commands (`run`, `explain`, `compare`, `grid`,
-  ...) call the same library functions without a server.
-- **No outbound network.** The binary makes no network request; only `scripts/fetch-tardis-sample.sh`
-  downloads, and only when the user runs it. The engine's `live` feature is not compiled in, so
-  there is no exchange connectivity code in the binary.
-- **Threads.** One simulation is single-threaded (the engine is `Rc`-based). A sensitivity grid
-  runs independent cells on worker threads pulling indices from a shared counter, so the result does
-  not depend on scheduling (`crates/bb-app/src/pipeline.rs`, `run_grid`).
-- **Browser.** The UI only renders what the API returns; it computes no fills, P&L or explanations.
+- **Hosted:** the Vercel SPA calls the Render `/api/v1` service and its in-process worker;
+  metadata and leases live in Postgres, verified bundles in private Blob storage.
+- **Local v1:** `blackbox serve` uses Postgres plus filesystem artefacts and serves `web/dist`.
+  [Docker Compose or the local commands](DEPLOYMENT.md#local) start this supported console stack.
+- **Offline/legacy:** `blackbox run`, `explain`, `compare` and `grid` use local files without a
+  database. `blackbox demo` starts only deprecated `/api`, which cannot populate the current console.
+  The local `serve` profile retains that router as a fallback; hosted `serve` does not.
+- **Network:** hosted storage and database connections are outbound network traffic. The engine
+  has no `live` feature or exchange trading connectivity.
+- **Threads:** each simulation is single-threaded; queued sweeps fan out into ordinary jobs on
+  the same worker pool. Offline grids have a separate local threaded CLI path.
+- **Browser:** the UI renders API results; it computes no fills, P&L or explanations.
 
-The hosted, synthetic-only public viewer and the Docker image are planned work (`TODO.md`, M7);
-SECURITY, DEPLOYMENT and PERFORMANCE documents will cover them.
+The hosted stack and Docker image are implemented. See [DEPLOYMENT.md](DEPLOYMENT.md),
+[TARGET_ARCHITECTURE.md](engineering/TARGET_ARCHITECTURE.md) for queue/bundle design and
+[PROJECT_STATE.md](engineering/PROJECT_STATE.md) for deployment provenance.
 
 ## Conventions that cross every boundary
 

@@ -397,8 +397,9 @@ stated.
 | Simulation wall time of that run | 144 ms | As printed by the same run |
 | Stored trace size | **~465 bytes per tape event** as JSON | `stat` size of `data/runs/<id>/run.json` (30.2 MB) divided by its tape length (`jq '.tape\|length'`, 64,540) |
 
-API latency: 20 sequential `curl -w %{time_total}` requests per endpoint over local loopback
-against the release server; p50 and p95 by nearest rank:
+Historical deprecated `/api` latency (not a measurement of the current `/api/v1` queue/bundle stack):
+20 sequential `curl -w %{time_total}` requests per endpoint over local loopback against the release server;
+p50 and p95 by nearest rank:
 
 | Endpoint | p50 ms | p95 ms |
 |---|---:|---:|

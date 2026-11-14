@@ -1,9 +1,9 @@
 # Deployment: GHCR → Render, Vercel, Neon, Vercel Blob
 
-Status: Phase 3 preparation, 2026-11-14. Owner: Deploy. Nothing described here has been deployed yet: the
-files exist and were validated offline (§16), but no Render service, GHCR package, Vercel setting or
-secret was created or changed. The `blackbox serve` behaviour this relies on (v1 API, worker, migrations at start,
-SIGTERM drain) does not exist yet; §15 lists exactly what bb-app must provide.
+Status: hosted stack implemented and deployed since 2026-11-14; see [PROJECT_STATE.md](PROJECT_STATE.md)
+for observed release provenance. This guide describes source configuration and release procedures,
+not proof that the latest source is deployed. §16 retains the original preparation-time validation;
+[FINAL_AUDIT §7](FINAL_AUDIT.md#7-fixes-after-the-audit) records later source fixes and local checks.
 
 Companion documents: [TARGET_ARCHITECTURE.md](TARGET_ARCHITECTURE.md) (runtime design; §12 shutdown, §13 cold
 start, §14 health), [API_CONTRACT.md](API_CONTRACT.md) (§3 auth, §4 CORS), [DATABASE_DESIGN.md](DATABASE_DESIGN.md)
@@ -236,8 +236,8 @@ no second `BLACKBOX_` convention.
 | `PORT` | yes | no | `10000` | render.yaml (Render's default is 10000 [R7], [R8]); image default `8787` | `serve`: listen on `0.0.0.0:$PORT` |
 | `BB_ADDR` | no | no | `127.0.0.1:9000` | operator | `serve`/`demo`: full listen address; precedence `--addr` > `BB_ADDR` > `0.0.0.0:$PORT` > `127.0.0.1:8787` |
 | `BB_PROFILE` | yes | no | `hosted` (default `local`) | render.yaml | `ExecutionLimits::hosted()`, hosted quotas/rate limits, demo workspace read-only, JSON logs |
-| `DATABASE_URL` | yes | **yes** | `postgres://u:p@ep-…-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require` | Render secret | `PgPool` (pooled; DATABASE_DESIGN §12) |
-| `DATABASE_URL_UNPOOLED` | yes | **yes** | same host without `-pooler` | Render secret | migrations (advisory lock), `blackbox migrate`, `pg_dump` |
+| `DATABASE_URL` | yes | **yes** | `postgres://u:p@ep-…-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=verify-full` | Render secret | `PgPool` (pooled; DATABASE_DESIGN §12); hosted config validates the effective SQLx TLS mode |
+| `DATABASE_URL_UNPOOLED` | yes | **yes** | same host without `-pooler`, also `sslmode=verify-full` | Render secret | migrations (advisory lock), `blackbox migrate`, `pg_dump` |
 | `BB_MIGRATE_ON_START` | yes on Render | no | `true` (default `false`) | render.yaml | `serve`: migrate before binding (§4) |
 | `BLOB_READ_WRITE_TOKEN` | yes | **yes** | `vercel_blob_rw_<storeId>_<secret>` | Render secret | `bb-artifacts` `VercelBlobStore` (store id is embedded in the token: PROJECT_STATE) |
 | `BB_CORS_ALLOWED_ORIGINS` | yes | no | `https://blackbox-hft.vercel.app` (comma-separated, exact) | render.yaml | CORS allowlist and foreign-`Origin` refusal (API_CONTRACT §4) |
@@ -258,22 +258,19 @@ Outside the container:
 | `RENDER_DEPLOY_HOOK_URL` | GitHub repository **secret** | **yes** (anyone holding it can deploy [R9]) | `https://api.render.com/deploy/srv-…?key=…` | publish.yml `deploy` |
 | `RENDER_SERVICE_URL` | GitHub repository **variable** | no | `https://blackbox-hft-api.onrender.com` | publish.yml smoke test |
 | `BB_SMOKE_ALLOWED_ORIGIN` | GitHub repository variable (optional) | no | `https://blackbox-hft.vercel.app` (default) | smoke test CORS check |
-| `VITE_API_BASE_URL` | Vercel project env, Production | no: it is inlined into the public bundle [VT1] | `https://blackbox-hft-api.onrender.com/api/v1` | web API client; unset = same-origin `/api/v1` (local `demo`) |
+| `VITE_API_BASE_URL` | Vercel project env, Production | no: it is inlined into the public bundle [VT1] | `https://blackbox-hft-api.onrender.com/api/v1` | web API client; unset = same-origin `/api/v1` (local `serve`) |
 
 ## 6. Vercel frontend
 
-The SPA moves from the manually deployed static viewer to a Git-built Vite app (Phase 4, UIShell; files under
-`web/` are owned there):
+The live SPA is a Git-built Vite app, not a static-data viewer:
 
 1. **Build from Git with root directory `web`.** Vercel project `blackbox-hft` → Settings → Build and Deployment →
-   Root Directory `web` [VC1]. Framework Vite, build `npm run build`, output `dist`. `web/vercel.json` must drop
-   `"buildCommand": "npm run build:static"`, which cannot succeed on Vercel (BASELINE_AUDIT §5.6). The static mode
-   is retired at cutover (TARGET_ARCHITECTURE §3).
-2. **`VITE_API_BASE_URL`** = `https://<render host>/api/v1`, for the Production environment. Vite inlines `VITE_*`
-   variables into client code at build time [VT1], so the value is public and a change needs a rebuild.
-3. **CSP.** The current header is `connect-src 'self'`, which blocks every call to Render. Change only that
-   directive to `connect-src 'self' https://blackbox-hft-api.onrender.com` (the exact Render origin; a custom API
-   domain must be added the same way). Everything else stays (`script-src 'self'`, `frame-ancestors 'none'`, …).
+   Root Directory `web` [VC1]. `web/vercel.json` sets framework Vite, build `npm run build`, output `dist`.
+2. **`VITE_API_BASE_URL`** = `https://blackbox-hft-api.onrender.com/api/v1`, for Production.
+   Vite inlines `VITE_*` variables into client code at build time [VT1], so this is public and a change needs a rebuild.
+3. **CSP.** `web/vercel.json` permits `connect-src 'self' https://blackbox-hft-api.onrender.com`.
+   A custom API domain must be added explicitly. Other restrictions include `script-src 'self'`
+   and `frame-ancestors 'none'`; do not add unsafe inline script or eval allowances.
 4. **CORS pairing.** The API allows exactly the origins in `BB_CORS_ALLOWED_ORIGINS`. Vercel preview deployments
    (`blackbox-hft-<hash>-….vercel.app`) are therefore **not** allowed (API_CONTRACT §4): no wildcard or suffix
    patterns. Previews either run without an API (the UI shows the offline state), or a specific preview origin is
@@ -450,9 +447,9 @@ Every component costs **$0**. None has a payment method on file, so overages sus
 Arithmetic for the CU-hours: Neon's 0.25 CU minimum running 400 h uses the whole 100 CU-hours [N1]. That is why
 nothing polls the database while idle.
 
-## 15. What the bb-app integration must provide
+## 15. bb-app runtime integration
 
-The deployment files assume exactly this. Each item is a requirement for the `serve`/`worker`/`migrate`/`keys` work.
+The deployment files use these implemented command/runtime interfaces; acceptance evidence is in TESTING and FINAL_AUDIT §7.
 
 1. **Commands:** `blackbox --data-dir <dir> serve`, `blackbox worker`, `blackbox migrate`, `blackbox keys mint
    --workspace <slug> --scopes <list> --label <text>`, and `blackbox demo seed`. The global `--data-dir` stays.
@@ -484,10 +481,10 @@ The deployment files assume exactly this. Each item is a requirement for the `se
    key with that digest exists at startup (idempotent; label `bootstrap`). Never accept the plaintext key via env.
 10. **Writable paths:** only `--data-dir` (`/var/lib/blackbox` in the hosted image) and `/tmp`. Nothing durable is
     written locally.
-11. **Image platform:** the hosted worker's platform class is `linux-x86_64` (built for
-    `x86_64-unknown-linux-gnu`).
+11. **Image platform:** the hosted worker is built for `x86_64-unknown-linux-gnu`; result platform
+    classes include the libm fingerprint (currently canonical `linux-x86_64+libm-53154a4e`).
 
-## 16. Validation performed (2026-11-14, without deploying)
+## 16. Original preparation validation (2026-11-14, before the first deployment)
 
 | Check | Command | Result |
 |---|---|---|

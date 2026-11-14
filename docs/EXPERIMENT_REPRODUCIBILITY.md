@@ -60,14 +60,14 @@ Stored with every run (`RunManifest`) and printed in its report:
 
 ## Idempotent runs
 
-`find_or_execute` computes the identity first. If the store holds a run with that `run_id` **and**
-the same full `config_sha256` (the 64-bit id prefix alone is not trusted) **and** the same platform
-class, the stored run is returned without simulating. If the stored run was computed on another
-platform class, the request fails with `platform_mismatch` (HTTP 409) and the stored run is left
-untouched. Otherwise the run is simulated and stored. The same applies to `POST /api/runs`,
-`blackbox run`, every grid cell and every demo run, so repeating any experiment returns the same run
-id and result hash instantly. The CLI says so: "This configuration was already simulated on this
-dataset; showing the stored run."
+For v1, `POST /api/v1/experiments` computes the identity and atomically submits through the
+Postgres queue. A completed run on the requested platform is reused (200); an existing live job
+is shared or a new job is queued (202). Repeating a request does not start duplicate work.
+
+The offline `find_or_execute` path (`blackbox run`, local grids and deprecated `/api/runs`)
+checks both the full `config_sha256` and platform before reusing the file-store result; a foreign
+platform yields `platform_mismatch`. Its CLI message is "This configuration was already simulated
+on this dataset; showing the stored run." A new queued v1 experiment is not an instant result.
 
 Stored runs are read back with `serde_json`'s `float_roundtrip` feature, so a reloaded run still
 hashes to its own `result_sha256` (`crates/bb-app/Cargo.toml`).
@@ -220,7 +220,7 @@ mechanism now catches.
 
 ## Reproducing a run from its report
 
-`GET /api/runs/{id}/report` (Markdown) contains the identity hashes, engine and platform, the full
+`GET /api/v1/runs/{id}/report` (Markdown) contains the identity hashes, engine and platform, the full
 dataset manifest including input-file hashes, the full configuration, every assumption in plain
 language, all metrics, the engine cross-check, and a POSIX-shell recipe
 (`crates/bb-app/src/report.rs`). To reproduce:
@@ -237,5 +237,6 @@ language, all metrics, the engine cross-check, and a POSIX-shell recipe
 4. **Compare** the printed `run id` and `result sha256` with the report. Equal run ids mean the same
    experiment; equal result hashes mean the same outcome, byte for byte.
 
-`GET /api/runs/{id}/export` returns the complete `RunResult` JSON, and each canonical demo
-(`GET /api/demos`) carries one such recipe per run.
+Keyed `GET /api/v1/runs/{id}/export` returns a verified `.bbz` bundle (concatenated gzip NDJSON),
+not a `RunResult` JSON document. Anonymous export is refused. Demo metadata is at
+`GET /api/v1/demos`; use each run's Markdown report for its reproduction recipe.
