@@ -17,7 +17,7 @@ use bb_app::{
     DISCLAIMER,
     config::{AppConfig, Profile},
     datasets::{self, DatasetCache, DatasetCtx},
-    demos, export_static, pipeline, presets, runtime,
+    demos, pipeline, presets, runtime,
     server::{self, AppState},
     store::{FsRunStore, RunStore},
 };
@@ -127,9 +127,6 @@ enum Command {
     /// `demo`: the legacy all-in-one local server (file store, `/api`), creating the default
     /// synthetic dataset if none exists. `demo seed`: seed the public demo workspace.
     Demo(DemoArgs),
-    /// Precompute the canonical runs of a synthetic dataset and write them as static files for
-    /// the hosted read-only viewer. Recorded market data is refused.
-    ExportStatic(ExportStaticArgs),
 }
 
 #[derive(Args)]
@@ -248,20 +245,6 @@ enum KeysCommand {
     },
 }
 
-#[derive(Args)]
-struct ExportStaticArgs {
-    /// Output directory. An earlier bundle in it is replaced; any other non-empty directory is
-    /// refused.
-    #[arg(long)]
-    out: PathBuf,
-    /// Synthetic dataset to export.
-    #[arg(long, default_value = export_static::DEFAULT_DATASET)]
-    dataset: String,
-    /// Worker threads for the sensitivity grid. Default: the number of available CPUs.
-    #[arg(long)]
-    threads: Option<usize>,
-}
-
 /// Where things live under `--data-dir`.
 struct Paths {
     datasets: PathBuf,
@@ -314,7 +297,6 @@ fn run(cli: Cli) -> Result<()> {
             command: None,
             serve,
         }) => cmd_demo(&paths, serve),
-        Command::ExportStatic(args) => cmd_export_static(&paths, args),
     }
 }
 
@@ -1559,42 +1541,4 @@ fn cmd_demo(paths: &Paths, args: ServeArgs) -> Result<()> {
         server::serve(listener, app).await.context("serving HTTP")?;
         Ok::<(), anyhow::Error>(())
     })
-}
-
-// ----- static viewer -----
-
-fn cmd_export_static(paths: &Paths, args: ExportStaticArgs) -> Result<()> {
-    let store = FsRunStore::open(&paths.runs)?;
-    let summary = export_static::export_static(
-        &paths.datasets,
-        &store,
-        &args.dataset,
-        &args.out,
-        args.threads.unwrap_or_else(default_threads),
-    )?;
-    let mb = |bytes: u64| bytes as f64 / 1_048_576.0;
-    println!(
-        "Exported {} simulated runs, {} comparisons and a {}-cell sensitivity grid of synthetic \
-         dataset '{}' to {}.",
-        summary.runs.len(),
-        summary.comparisons,
-        summary.grid_cells,
-        summary.dataset_id,
-        args.out.display()
-    );
-    if summary.failed_grid_cells > 0 {
-        println!(
-            "{} grid cells failed to simulate; the grid shows them as missing.",
-            summary.failed_grid_cells
-        );
-    }
-    println!(
-        "{} files, {:.1} MiB on disk (gzip), {:.1} MiB of JSON and Markdown before compression.",
-        summary.files,
-        mb(summary.bytes),
-        mb(summary.content_bytes)
-    );
-    println!("{}", export_static::NOTICE);
-    println!("{SIMULATED_NOTE}");
-    Ok(())
 }

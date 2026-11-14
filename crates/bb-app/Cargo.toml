@@ -30,7 +30,7 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 anyhow.workspace = true
 thiserror.workspace = true
-# Gzip and the content-hash root of the static viewer bundle (`blackbox export-static`).
+# Gzip for report and export payloads; sha2/hex for content hashes.
 flate2.workspace = true
 sha2.workspace = true
 hex.workspace = true

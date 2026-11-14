@@ -20,7 +20,6 @@ pub mod config;
 pub mod datasets;
 pub mod demos;
 pub mod error;
-pub mod export_static;
 pub mod metrics;
 pub mod pipeline;
 pub mod presets;

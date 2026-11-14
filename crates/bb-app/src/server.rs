@@ -521,8 +521,7 @@ async fn get_tape(
     .map(Json)
 }
 
-/// Selects inclusive windows without assuming the tape's two clocks are time-sorted. Shared with
-/// [`crate::export_static`], which precomputes the same responses.
+/// Selects inclusive windows without assuming the tape's two clocks are time-sorted.
 pub fn timeline(run: &RunResult, query: &TimelineQuery) -> Result<RunTimeline, AppError> {
     let run_start = run.equity.first().map_or(0, |s| s.ts);
     let run_end = run.equity.last().map_or(0, |s| s.ts);

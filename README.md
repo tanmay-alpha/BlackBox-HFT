@@ -1,6 +1,6 @@
 # BlackBox HFT
 
-An execution-forensics and simulation platform for high-frequency trading research.
+A market-microstructure and execution research laboratory for high-frequency trading research.
 
 Most backtesters answer "how much would this strategy have made?". BlackBox is built to answer
 the question underneath it:
@@ -16,19 +16,27 @@ deterministic rules that cite their evidence, and compares scenarios decision by
 trading credentials and cannot place an order. Everything it reports is simulated on historical
 replay; simulated orders do not affect historical prices. See [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
-**Live viewer: https://blackbox-hft.vercel.app** shows precomputed simulations on synthetic data
-and is read-only. To run your own simulations, see Quick start below. How the viewer is built:
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#hosted-viewer-static).
+**Live system.** Console: **https://blackbox-hft.vercel.app** · API:
+**https://blackbox-hft-api.onrender.com/api/v1** (OpenAPI at `/api/v1/openapi.json`). Anonymous
+visitors get the read-only demo workspace; experiments are submitted as background jobs with an
+API key and run on the hosted worker. Everything hosted is synthetic data on free tiers (cold
+start ~1 minute after idle). Architecture and limits: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md),
+[docs/engineering/TARGET_ARCHITECTURE.md](docs/engineering/TARGET_ARCHITECTURE.md).
+
+| What is real | What is simulated or modeled |
+|---|---|
+| The replay engine (hftbacktest 0.9.4), the recorded tape of every simulated order, the accounting, the job queue, persistence and integrity checks | Every order, fill and P&L figure; queue position (L2 data cannot reveal it); latency; no market impact; hosted data is synthetic |
 
 ## What it does
 
 | Area | What you get |
 |---|---|
-| **Market Replay** | Order-book heatmap reconstructed from L2 updates, best bid/ask, trades, a depth ladder at the cursor, and a data-quality report per dataset. |
-| **Strategy Laboratory** | Pick a dataset and a strategy, set every execution assumption (exchange model, queue model, order and feed latency, fees, risk limits, seed), run. |
-| **Execution Forensics** | Click any order and ask *why did this fill?* or *why did this not fill?* A two-clock timeline (strategy host and exchange), the modeled queue trajectory, and a step-by-step explanation in which every statement is tagged Observed, Modeled, Derived or Unobservable and linked to the recorded events it rests on. |
-| **Scenario Comparison** | Run the same strategy under two sets of assumptions. Orders are aligned by stable decision id; the first divergence is identified exactly; P&L differences are attributed to a cause only when that is arithmetically certain. |
-| **Sensitivity Grid** | A bounded two-parameter sweep. Every heatmap cell is one completed simulation with its own run id and result hash. |
+| **Market Data Explorer / Order Book Lab** | Order-book heatmap reconstructed from L2 updates, best bid/ask, trades, a depth ladder, market microstructure metrics (spread, depth, imbalance, microprice, order-flow imbalance, realised volatility) and a data-quality report per dataset version. |
+| **Strategy Lab / Simulation Workbench** | Configure a strategy (touch maker, Avellaneda-Stoikov, GLFT, imbalance taker, scripted) and every execution assumption (exchange and queue model, constant / jittered / log-normal / heavy-tailed latency with separate cancel legs, think time, fees, risk limits, seed); submit it as a background job and follow it through queued, running and completed, or cancel it. |
+| **Execution Forensics** | Click any order and ask *why did this fill?* or *why did this not fill?* A two-clock timeline, the modeled queue trajectory, and a step-by-step explanation in which every statement is tagged Observed, Modeled, Derived or Unobservable. |
+| **Risk & Performance** | Equity, inventory, drawdown, fees and execution analytics (effective and realised spread, adverse selection, implementation shortfall, fill probability by queue position) with units and caveats; no annualised Sharpe on samples where it would be meaningless. |
+| **Experiment Comparison** | Comparison eligibility first (dataset, instrument, strategy, decision grid); then decision-aligned, timing-aware pair classes and the exact first divergence. Sweeps (grid or seeded random, optional in-/out-of-sample split) report how many configurations were tried, selection-bias caveats and, where the data allows, the probability of backtest overfitting. |
+| **Research Reports / System** | Exportable reports with configuration fingerprint, dataset version hash, platform class and result hash; worker, queue and readiness status. |
 
 ## Screens
 
@@ -80,29 +88,32 @@ Prerequisites and platform notes are in [docs/BUILDING.md](docs/BUILDING.md).
 
 ```
 cargo build --release
-cd web && npm install && npm run build && cd ..
+cd web && npm ci && npm run build && cd ..
 
-# Generates a synthetic dataset if none exists, then serves the UI and API.
-cargo run --release --bin blackbox -- demo
+# Quickest look, no database: generates a synthetic dataset and serves the legacy file-based UI/API.
+target/release/blackbox demo
 ```
 
-Open the printed address. The default demo needs no market-data subscription, no account and no
-network access.
+The full research stack (Postgres job queue, `/api/v1`, API keys, worker) is described in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#local): `migrate`, `demo seed`, `keys mint`, `serve`.
 
 ### Command line
 
 ```
+blackbox serve | worker             API with in-process worker, or a worker only
+blackbox migrate                    apply database migrations
+blackbox keys mint|revoke|list      API keys (only their hash is stored)
+blackbox demo seed                  register the synthetic dataset and queue the demo experiments
+blackbox openapi --out spec.json    write the OpenAPI document
 blackbox synth                      generate the deterministic synthetic dataset
-blackbox ingest-tardis ...          convert Tardis.dev CSV files into a dataset
-blackbox datasets                   list datasets
-blackbox quality <dataset>          print a dataset's quality report
-blackbox presets                    list curated demonstrations
-blackbox run --preset <id>          run a simulation
+blackbox ingest-tardis ...          convert Tardis.dev CSV files into a dataset (local use only)
+blackbox run --preset <id>          run a simulation offline (no database)
 blackbox explain <run> <order>      explain one order
 blackbox compare <run_a> <run_b>    compare two runs
-blackbox grid --spec grid.json      run a sensitivity grid
-blackbox serve                      serve the API and web UI
 ```
+
+Tests: `cargo test --workspace` (set `BLACKBOX_TEST_DATABASE_URL` to a Postgres database to run the
+database and API suites), `cd web && npx vitest run && npx playwright test`.
 
 ### Real market data (optional)
 
@@ -135,14 +146,17 @@ Linux. Details and evidence: [docs/EXPERIMENT_REPRODUCIBILITY.md](docs/EXPERIMEN
 ## Repository layout
 
 ```
-crates/bb-core        shared type contract: configs, flight events, results, manifests
-crates/bb-data        ingestion, validation, book reconstruction, synthetic generator
-crates/bb-strategies  deterministic strategies (touch maker, Avellaneda-Stoikov, imbalance taker, scripted)
-crates/bb-sim         engine adapter, flight recorder, ledger, risk harness
-crates/bb-forensics   order records, explanations, metrics, scenario comparison
-crates/bb-app         pipeline, run store, HTTP API, CLI (binary: blackbox)
-web/                  React + TypeScript UI
-docs/                 design, models, data, testing, sources and licences (list below)
+crates/bb-core        shared type contract: configs, flight events, results, manifests, limits, sweeps
+crates/bb-data        ingestion, validation, book reconstruction, quality reports, synthetic generator, slicing
+crates/bb-strategies  deterministic strategies (touch maker, Avellaneda-Stoikov, GLFT, imbalance taker, scripted)
+crates/bb-sim         engine adapter, flight recorder, ledger, risk harness, run control and budgets
+crates/bb-forensics   order records, explanations, metrics, comparison eligibility, sweep analysis
+crates/bb-analytics   market microstructure, execution and risk analytics with documented fixtures
+crates/bb-db          Postgres migrations, repositories, leased job queue
+crates/bb-artifacts   verified paged run bundles; filesystem and Vercel Blob stores
+crates/bb-app         /api/v1, auth, worker, CLI (binary: blackbox)
+web/                  React + TypeScript research console
+docs/                 design, models, data, testing, sources and licences; docs/engineering and docs/research
 ```
 
 ## Documentation
