@@ -123,7 +123,7 @@ function Experiments({ datasetId }: { datasetId: string }) {
         navigate(paths.compareSet({ runs: ids, demo: demo.id }));
       } else {
         const queued = results.filter((r) => r.job !== null).length;
-        const text = `${queued} of ${ids.length} runs of ${demo.title} were submitted as jobs; the rest are stored. Follow them in the Simulation Workbench, then open the results.`;
+        const text = `${queued} of ${ids.length} runs of ${demo.title} were submitted as jobs; the rest are stored. Follow them in Jobs & Sweeps, then open the results.`;
         setNote(text);
         announce(text);
         demos.reload();

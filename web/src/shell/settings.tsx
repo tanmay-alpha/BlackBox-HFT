@@ -16,15 +16,16 @@ export interface Settings {
   inspectorOpen: boolean;
 }
 
-const SETTINGS_KEY = 'bb.settings.v1';
+const SETTINGS_KEY = 'bb.settings.v2';
 const DENSITY_KEY = 'bb.density.v1';
 
-// Below the 1280 px minimum desktop width the inspector starts closed (§5.1); `i` opens it.
+// The labelled rail starts open on desktop widths; the inspector starts closed everywhere and
+// opens on demand (`i`, or a selection that publishes inspector content).
 const DEFAULTS: Settings = {
   singleKeys: true,
   sidePalette: 'default',
-  railOpen: false,
-  inspectorOpen: window.innerWidth >= 1280,
+  railOpen: window.innerWidth >= 1280,
+  inspectorOpen: false,
 };
 
 function read<T>(key: string, fallback: T): T {

@@ -1,7 +1,7 @@
 // Strategy Lab (UI_DESIGN_SPEC.md §11.4): presets on the left, the configuration in tabs (one per
 // section of `fields.ts`) in the centre, validation, the diff against the loaded values, the
 // optional baseline run ("Compare with…") and the submission on the right. Submitting enqueues an
-// experiment job (`POST /api/v1/experiments`) and opens it in the Simulation Workbench; the same
+// experiment job (`POST /api/v1/experiments`) and opens it in Jobs & Sweeps; the same
 // configuration returns the live job or the stored run instead of a duplicate.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -511,7 +511,7 @@ export default function LabPage() {
                 ) : (
                   'No current version. '
                 )}
-                <Link to={paths.bookDataset(dataset.id)}>Open in Order Book Lab</Link>
+                <Link to={paths.bookDataset(dataset.id)}>Open in Order Book Replay</Link>
               </>
             ) : (
               'This dataset is not installed on the server; a run on it will be rejected.'
@@ -636,7 +636,7 @@ export default function LabPage() {
             </p>
           ) : null}
           <p className="note">
-            Submitting enqueues an experiment job and opens it in the Simulation Workbench. It is idempotent: the
+            Submitting enqueues an experiment job and opens it in Jobs &amp; Sweeps. It is idempotent: the
             same configuration returns the live job, or the stored run with the same run id and result hash, instead
             of simulating twice. Results are simulated on historical replay and are never exchange executions.
           </p>
@@ -664,7 +664,7 @@ export default function LabPage() {
         <p>No datasets are installed, so there is nothing to replay.</p>
         <p>
           Create one with <code>blackbox synth</code> or <code>blackbox ingest-tardis</code>; see{' '}
-          <Link to={paths.datasets()}>Market Data Explorer</Link>.
+          <Link to={paths.datasets()}>Datasets</Link>.
         </p>
       </Empty>
     );

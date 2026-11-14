@@ -19,10 +19,22 @@ import type { LucideIcon } from 'lucide-react';
 
 import { paths } from './paths';
 
+/** The five navigation sections (docs/rebuild/TARGET_PRODUCT_ARCHITECTURE.md §2). */
+export type SectionId = 'explore' | 'studio' | 'market' | 'execution' | 'system';
+
+export const SECTIONS: { id: SectionId; name: string }[] = [
+  { id: 'explore', name: 'Explore' },
+  { id: 'studio', name: 'Research Studio' },
+  { id: 'market', name: 'Market Lab' },
+  { id: 'execution', name: 'Execution Analysis' },
+  { id: 'system', name: 'System' },
+];
+
 export interface WorkspaceDef {
   id: 'overview' | 'data' | 'book' | 'strategy' | 'sim' | 'forensics' | 'risk' | 'compare' | 'reports' | 'system';
   name: string;
-  /** Two-letter rail mnemonic. */
+  section: SectionId;
+  /** Two-letter mnemonic, shown only in the collapsed rail. */
   mnemonic: string;
   /** Second key of the `g` chord. */
   chord: string;
@@ -35,16 +47,16 @@ export interface WorkspaceDef {
 const under = (prefix: string) => (p: string) => p === prefix || p.startsWith(`${prefix}/`);
 
 export const WORKSPACES: WorkspaceDef[] = [
-  { id: 'overview', name: 'Overview', mnemonic: 'OV', chord: 'o', path: paths.overview(), icon: LayoutDashboard, owns: (p) => p === '/' },
-  { id: 'data', name: 'Market Data Explorer', mnemonic: 'MD', chord: 'm', path: paths.datasets(), icon: Database, owns: under('/data') },
-  { id: 'book', name: 'Order Book Lab', mnemonic: 'OB', chord: 'b', path: paths.book(), icon: BookOpen, owns: under('/book') },
-  { id: 'strategy', name: 'Strategy Lab', mnemonic: 'SL', chord: 'l', path: paths.strategy(), icon: SlidersHorizontal, owns: under('/strategy') },
-  { id: 'sim', name: 'Simulation Workbench', mnemonic: 'SW', chord: 'w', path: paths.sim(), icon: Cpu, owns: under('/sim') },
-  { id: 'forensics', name: 'Execution Forensics', mnemonic: 'EF', chord: 'f', path: paths.runs(), icon: Microscope, owns: under('/forensics') },
-  { id: 'risk', name: 'Risk & Performance', mnemonic: 'RP', chord: 'r', path: paths.risk(), icon: LineChart, owns: under('/risk') },
-  { id: 'compare', name: 'Experiment Comparison', mnemonic: 'EC', chord: 'c', path: paths.compare(), icon: GitCompareArrows, owns: under('/compare') },
-  { id: 'reports', name: 'Research Reports', mnemonic: 'RR', chord: 'p', path: paths.reports(), icon: FileText, owns: under('/reports') },
-  { id: 'system', name: 'System', mnemonic: 'SA', chord: 'a', path: paths.system(), icon: Server, owns: under('/system') },
+  { id: 'overview', name: 'Experiments', section: 'explore', mnemonic: 'EX', chord: 'o', path: paths.overview(), icon: LayoutDashboard, owns: (p) => p === '/' },
+  { id: 'strategy', name: 'Strategy Lab', section: 'studio', mnemonic: 'SL', chord: 'l', path: paths.strategy(), icon: SlidersHorizontal, owns: under('/strategy') },
+  { id: 'sim', name: 'Jobs & Sweeps', section: 'studio', mnemonic: 'JS', chord: 'w', path: paths.sim(), icon: Cpu, owns: under('/sim') },
+  { id: 'reports', name: 'Reports', section: 'studio', mnemonic: 'RE', chord: 'p', path: paths.reports(), icon: FileText, owns: under('/reports') },
+  { id: 'data', name: 'Datasets', section: 'market', mnemonic: 'DS', chord: 'm', path: paths.datasets(), icon: Database, owns: under('/data') },
+  { id: 'book', name: 'Order Book Replay', section: 'market', mnemonic: 'OB', chord: 'b', path: paths.book(), icon: BookOpen, owns: under('/book') },
+  { id: 'forensics', name: 'Runs & Forensics', section: 'execution', mnemonic: 'RF', chord: 'f', path: paths.runs(), icon: Microscope, owns: under('/forensics') },
+  { id: 'compare', name: 'Comparisons', section: 'execution', mnemonic: 'CO', chord: 'c', path: paths.compare(), icon: GitCompareArrows, owns: under('/compare') },
+  { id: 'risk', name: 'Risk & P&L', section: 'execution', mnemonic: 'RP', chord: 'r', path: paths.risk(), icon: LineChart, owns: under('/risk') },
+  { id: 'system', name: 'System status', section: 'system', mnemonic: 'SY', chord: 'a', path: paths.system(), icon: Server, owns: under('/system') },
 ];
 
 export function workspaceFor(pathname: string): WorkspaceDef | undefined {

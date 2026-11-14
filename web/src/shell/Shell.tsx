@@ -21,7 +21,7 @@ import { InspectorProvider, useInspectorContent } from './inspector';
 import { paths } from './paths';
 import { SettingsProvider, useSettings } from './settings';
 import { StatusBar } from './StatusBar';
-import { WORKSPACES, workspaceFor } from './workspaces';
+import { SECTIONS, WORKSPACES, workspaceFor } from './workspaces';
 
 const ICON = { size: 16, strokeWidth: 1.5, 'aria-hidden': true } as const;
 
@@ -249,26 +249,31 @@ function Rail() {
   const { settings } = useSettings();
   return (
     <nav aria-label="Workspaces" className={settings.railOpen ? 'rail rail-open' : 'rail'}>
-      <ul>
-        {WORKSPACES.map((w) => {
-          const Icon = w.icon;
-          return (
-            <li key={w.id}>
-              <NavLink
-                to={w.path}
-                end={w.id === 'overview'}
-                className={({ isActive }) => (isActive ? 'rail-item active' : 'rail-item')}
-                title={`${w.name} (g ${w.chord})`}
-                aria-label={w.name}
-              >
-                <Icon {...ICON} />
-                <span className="rail-mnemonic">{w.mnemonic}</span>
-                {settings.railOpen ? <span className="rail-name">{w.name}</span> : null}
-              </NavLink>
-            </li>
-          );
-        })}
-      </ul>
+      {SECTIONS.map((s) => (
+        <div key={s.id} className="rail-section" role="group" aria-label={s.name}>
+          {settings.railOpen ? <h2 className="rail-section-name">{s.name}</h2> : null}
+          <ul>
+            {WORKSPACES.filter((w) => w.section === s.id).map((w) => {
+              const Icon = w.icon;
+              return (
+                <li key={w.id}>
+                  <NavLink
+                    to={w.path}
+                    end={w.id === 'overview'}
+                    className={({ isActive }) => (isActive ? 'rail-item active' : 'rail-item')}
+                    title={`${s.name}: ${w.name} (g ${w.chord})`}
+                    aria-label={w.name}
+                  >
+                    <Icon {...ICON} />
+                    <span className="rail-mnemonic">{w.mnemonic}</span>
+                    {settings.railOpen ? <span className="rail-name">{w.name}</span> : null}
+                  </NavLink>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
     </nav>
   );
 }

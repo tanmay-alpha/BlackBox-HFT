@@ -107,7 +107,7 @@ function OrderForensics({ runId, orderId }: { runId: string; orderId: number }) 
               className="btn btn-primary"
               to={paths.bookRun(runId, { t: data ? data.order.decision_ts : null, order: orderId })}
             >
-              Open in Order Book Lab
+              Open in Order Book Replay
             </Link>
           </>
         }

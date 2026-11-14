@@ -91,7 +91,7 @@ function RunOverview({ runId }: { runId: string }) {
             <HashText hash={runId} />
             {label ? <span className="run-context-label">{label}</span> : null}
           </span>
-          <Link className="btn btn-primary" to={paths.bookRun(runId)}>Open in Order Book Lab</Link>
+          <Link className="btn btn-primary" to={paths.bookRun(runId)}>Open in Order Book Replay</Link>
           <DownloadButtons runId={runId} />
           <Link className="btn" to={paths.comparePair(runId)}>Compare with…</Link>
           <Link className="btn" to={paths.sweepForm(runId)}>Sweep from this run</Link>

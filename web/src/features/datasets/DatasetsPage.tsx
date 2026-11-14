@@ -556,7 +556,7 @@ export default function DatasetsPage() {
       {selected ? (
         <>
           <Link className="btn" to={paths.bookDataset(selected.id)}>
-            Open in Order Book Lab
+            Open in Order Book Replay
           </Link>
           <Link className="btn btn-primary" to={paths.strategy({ dataset: selected.id })}>
             Open in Strategy Lab
@@ -565,7 +565,7 @@ export default function DatasetsPage() {
       ) : (
         <>
           <button type="button" disabled title="Select a dataset first.">
-            Open in Order Book Lab
+            Open in Order Book Replay
           </button>
           <button type="button" className="btn-primary" disabled title="Select a dataset first.">
             Open in Strategy Lab
