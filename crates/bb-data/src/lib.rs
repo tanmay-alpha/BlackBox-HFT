@@ -17,6 +17,7 @@ pub mod book;
 mod decimal;
 pub mod normalize;
 pub mod quality;
+pub mod slice;
 pub mod store;
 pub mod synthetic;
 pub mod tardis;
