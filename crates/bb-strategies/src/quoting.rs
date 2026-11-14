@@ -14,6 +14,25 @@ pub(crate) const BID_SLOT: u8 = 0;
 /// Slot of the ask quote placed on a tick.
 pub(crate) const ASK_SLOT: u8 = 1;
 
+/// Relative tolerance, in ticks, within which a price is treated as lying exactly on the grid.
+/// Without it `8.2 / 0.01` evaluating to `819.9999999999999` would floor a whole tick low.
+const GRID_TOLERANCE: f64 = 1e-11;
+
+fn on_grid(ticks: f64) -> Option<f64> {
+    let nearest = ticks.round();
+    ((ticks - nearest).abs() <= GRID_TOLERANCE * ticks.abs().max(1.0)).then_some(nearest)
+}
+
+/// A bid price in ticks rounded away from the reference (down), exact grid prices kept.
+pub(crate) fn floor_tick(ticks: f64) -> i64 {
+    on_grid(ticks).unwrap_or_else(|| ticks.floor()) as i64
+}
+
+/// An ask price in ticks rounded away from the reference (up), exact grid prices kept.
+pub(crate) fn ceil_tick(ticks: f64) -> i64 {
+    on_grid(ticks).unwrap_or_else(|| ticks.ceil()) as i64
+}
+
 /// The parts of a market maker's configuration the shared logic needs.
 pub(crate) struct QuoteRules<'a> {
     /// Strategy label that prefixes every reason.
@@ -260,5 +279,19 @@ mod tests {
         // An ask at or through the bid is pushed up to one tick above it.
         let ask_through = Quotes::clamped(95, 100, 100, 103);
         assert_eq!((ask_through.bid_tick, ask_through.ask_tick), (95, 101));
+    }
+
+    #[test]
+    fn prices_on_the_grid_are_not_rounded_a_tick_away() {
+        // 8.2 / 0.01 is 819.9999999999999 and 0.07 / 0.01 is 7.000000000000001 in binary
+        // floating point.
+        assert_eq!(floor_tick(8.2 / 0.01), 820);
+        assert_eq!(ceil_tick(8.2 / 0.01), 820);
+        assert_eq!(floor_tick(0.07 / 0.01), 7);
+        assert_eq!(ceil_tick(0.07 / 0.01), 7);
+        assert_eq!(floor_tick(10_006.4), 10_006);
+        assert_eq!(ceil_tick(10_006.4), 10_007);
+        assert_eq!(floor_tick(-0.5), -1);
+        assert_eq!(ceil_tick(-0.5), 0);
     }
 }

@@ -52,7 +52,7 @@ workaround.
 | 3. Local account under-counts partial fills | `upstream_local_account_undercounts_partial_fills` | `engine_adapter.rs::partial_maker_fills_are_all_counted_and_the_engine_gap_is_reported` |
 | 4. `submit_order` ignores the side | `upstream_submit_order_ignores_the_requested_side` | (the adapter never calls it) |
 | 5. Market orders: sentinel price, 100-tick sweep | `upstream_market_buy_on_empty_ask_fills_at_the_sentinel_tick`, `upstream_partial_fill_market_order_scans_only_100_ticks` | `adapter_blocks_market_orders_before_the_engine`, `properties.rs::market_intents_are_blocked_before_the_engine` |
-| 6. A rejected cancel of a filled order books the fill twice in the engine's account | `upstream_rejected_cancel_of_a_filled_order_double_counts_the_fill` | `adapter_ledger_counts_the_fill_once_when_a_filled_order_is_cancelled`; `properties.rs::instrumentation_matches_the_unwrapped_engine` expects exactly one duplicate per rejected-and-filled response |
+| 6. A rejected cancel of a filled order books the fill twice in the engine's account | `upstream_rejected_cancel_of_a_filled_order_double_counts_the_fill` | `adapter_ledger_counts_the_fill_once_when_a_filled_order_is_cancelled` (the cross-check's "Expected" note); `latency_lab.rs::think_time_applies_to_cancels` (the think-time trigger); `properties.rs::instrumentation_matches_the_unwrapped_engine` expects exactly one duplicate per rejected-and-filled response |
 
 ## Determinism
 

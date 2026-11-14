@@ -51,7 +51,7 @@ use std::{
 
 use bb_core::{
     compare::{GridAxis, GridResult, GridSpec},
-    config::{OrderLatencyConfig, QueueModelConfig, RunConfig},
+    config::{QueueModelConfig, RunConfig},
     dataset::{DatasetKind, DatasetManifest},
     result::{RunResult, RunSummary},
     time::NS_PER_S,
@@ -357,10 +357,7 @@ fn load(store: &dyn RunStore, run_id: &str) -> Result<std::sync::Arc<RunResult>,
 }
 
 fn entry_latency(config: &RunConfig) -> i64 {
-    match config.execution.order_latency {
-        OrderLatencyConfig::Constant { entry_ns, .. }
-        | OrderLatencyConfig::Jitter { entry_ns, .. } => entry_ns,
-    }
+    config.execution.order_latency.base_entry_ns()
 }
 
 /// The precomputed grid: the touch-maker baseline under the two order latencies of the "cost
@@ -792,8 +789,8 @@ mod tests {
         let out = dir.0.join("bundle");
 
         let summary = export_static(&root, &store, "it-synth", &out, 2).unwrap();
-        // 7 presets, 2 demo-only variants, 2 grid-only cells.
-        assert_eq!(summary.runs.len(), 11, "{:?}", summary.runs);
+        // 10 presets, 2 demo-only variants, 2 grid-only cells.
+        assert_eq!(summary.runs.len(), 14, "{:?}", summary.runs);
         assert_eq!(summary.comparisons, 10);
         assert_eq!(summary.grid_cells, 6);
         assert_eq!(summary.failed_grid_cells, 0);
@@ -802,7 +799,7 @@ mod tests {
         let marker: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join(MARKER_FILE)).unwrap()).unwrap();
         assert_eq!(marker["dataset_id"], "it-synth");
-        assert_eq!(marker["runs"].as_array().unwrap().len(), 11);
+        assert_eq!(marker["runs"].as_array().unwrap().len(), 14);
         let bundle_root = marker["root"].as_str().unwrap();
         assert_eq!(bundle_root.len(), 16);
         let base = out.join(bundle_root);
@@ -814,7 +811,7 @@ mod tests {
         let listed: Vec<DatasetManifest> = read_gz(&api.join("datasets.json.gz"));
         assert_eq!(listed, vec![manifest.clone()]);
         let runs: Vec<RunSummary> = read_gz(&api.join("runs.json.gz"));
-        assert_eq!(runs.len(), 11);
+        assert_eq!(runs.len(), 14);
         assert!(runs.iter().all(|r| r.manifest.dataset.id == "it-synth"));
         let _: Vec<crate::api::Preset> = read_gz(&api.join("presets.json.gz"));
         let _: Vec<crate::api::Demo> = read_gz(&api.join("demos.json.gz"));
@@ -891,7 +888,7 @@ mod tests {
         // Exporting again simulates nothing and replaces the bundle.
         let again = export_static(&root, &store, "it-synth", &out, 2).unwrap();
         assert_eq!(again.runs, summary.runs);
-        assert_eq!(store.list().unwrap().len(), 11);
+        assert_eq!(store.list().unwrap().len(), 14);
         let marker: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join(MARKER_FILE)).unwrap()).unwrap();
         let entries = fs::read_dir(&out).unwrap().count();

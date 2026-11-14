@@ -261,11 +261,12 @@ pub struct Comparison {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GridAxis {
-    /// Sets both entry and response order latency to each value.
+    /// Sets both entry and response order latency to each value: the location parameter of the
+    /// model (`OrderLatencyConfig::with_base_ns`), keeping jitter and shape parameters.
     OrderLatencyNs {
         values: Vec<i64>,
     },
-    /// Sets only the entry latency.
+    /// Sets only the entry latency (new orders and cancels), the same way.
     EntryLatencyNs {
         values: Vec<i64>,
     },
@@ -339,40 +340,16 @@ impl GridAxis {
 
     /// Returns `config` with this axis' `i`-th value applied.
     pub fn apply(&self, config: &RunConfig, i: usize) -> RunConfig {
-        use crate::config::OrderLatencyConfig as L;
         let mut c = config.clone();
         match self {
             GridAxis::OrderLatencyNs { values } => {
                 let v = values[i];
-                c.execution.order_latency = match c.execution.order_latency {
-                    L::Constant { .. } => L::Constant {
-                        entry_ns: v,
-                        response_ns: v,
-                    },
-                    L::Jitter { jitter_ns, .. } => L::Jitter {
-                        entry_ns: v,
-                        response_ns: v,
-                        jitter_ns,
-                    },
-                };
+                c.execution.order_latency =
+                    c.execution.order_latency.with_base_ns(Some(v), Some(v));
             }
             GridAxis::EntryLatencyNs { values } => {
                 let v = values[i];
-                c.execution.order_latency = match c.execution.order_latency {
-                    L::Constant { response_ns, .. } => L::Constant {
-                        entry_ns: v,
-                        response_ns,
-                    },
-                    L::Jitter {
-                        response_ns,
-                        jitter_ns,
-                        ..
-                    } => L::Jitter {
-                        entry_ns: v,
-                        response_ns,
-                        jitter_ns,
-                    },
-                };
+                c.execution.order_latency = c.execution.order_latency.with_base_ns(Some(v), None);
             }
             GridAxis::FeedLatencyOffsetNs { values } => {
                 c.execution.feed_latency_offset_ns = values[i];

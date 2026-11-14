@@ -106,8 +106,9 @@ sweep leaves it at 3. Still present on upstream `master`.
 
 **Handling.** BlackBox never reports the engine's account. Its own ledger is fed by the
 exchange-side execution hook, which sees every fill. The engine's figures are shown next to the
-ledger's in each run's "engine cross-check": they must agree under `NoPartialFillExchange` and are
-expected to disagree under `PartialFillExchange`, with the reason stated.
+ledger's in each run's "engine cross-check": they must agree under `NoPartialFillExchange` (except
+for the double counts of defect 6, which the check identifies) and are expected to disagree under
+`PartialFillExchange`, with the reason stated.
 
 The strategy's *known* position (what it may act on) is the ledger restricted to fills whose
 response has reached the local side.
@@ -159,25 +160,34 @@ still carrying the clone's `status = Filled`, `exec_qty` and `exec_price_tick`.
 order whose status is `Filled` before it looks at `req`, so the echo books the execution again:
 position, balance, fee and `num_trades` all count it twice. Upstream `master` was not checked.
 
-Found by the property-based tests (`instrumentation_matches_the_unwrapped_engine`, regression
-`cc a2fd814d…` in `crates/bb-sim/tests/properties.proptest-regressions`: zero response latency,
-10.001 ms entry latency, a resting buy filled while a first cancel is in flight, then a second
-cancel of the now-filled order; the raw engine reports position 0.2 against one 0.1 execution).
+Found twice, independently: by the property-based tests (`instrumentation_matches_the_unwrapped_engine`,
+regression `cc a2fd814d…` in `crates/bb-sim/tests/properties.proptest-regressions`: zero response
+latency, 10.001 ms entry latency, a resting buy filled while a first cancel is in flight, then a
+second cancel of the now-filled order; the raw engine reports position 0.2 against one 0.1
+execution), and when strategy think time was added
+([LATENCY_MODEL.md](LATENCY_MODEL.md#think-time-decision-latency)): a cancel decided before a fill
+notice arrives is sent after it, as decided.
+
+**How BlackBox reaches it.** Only when the host sends a cancel for an order it already knows is
+filled *and* the engine still holds the order (clearing is deferred while an earlier cancel of it
+is in flight, or the order is not cleared until the next tick). Without think time the bundled
+strategies never do this: they cancel only `cancellable()` orders (new or partially filled, no
+request pending). With think time they can, because the order was cancellable at the decision and
+the fill notice arrived during the think time; a custom script can at any time.
 
 **Handling.** BlackBox's results are unaffected: its ledger is fed by the exchange-side fill hook,
 which fires once per execution, and the echo is recorded faithfully on the tape as a rejected
-`local_response` with status `filled` and `exec_qty` 0. The adapter reaches the engine with such a
-cancel only when a strategy cancels an order it already knows is filled *and* the engine still
-holds it (clearing is deferred while an earlier cancel of it is in flight). The bundled strategies
-never do this: they cancel only orders that are `cancellable()` (new or partially filled, no
-request pending). A custom strategy that does sees the engine cross-check disagree (engine position
-and trade count doubled) under the "unexpected" note, although the ledger is correct. The
-property test now requires the raw engine's account to equal the ledger plus exactly one
-duplicate per such echo.
+`local_response` with status `filled` and `exec_qty` 0. The receive wrapper
+(`RecLocal::process_recv_order`) counts the executions the engine's account applies beyond the fill
+reports it delivered; when that count reconciles the difference exactly, the engine cross-check
+reads "Expected: The engine's local account also applied N fill(s) a second time…" instead of the
+"unexpected" note. The property test requires the raw engine's account to equal the ledger plus
+exactly one duplicate per such echo.
 
 Pinned by `upstream_rejected_cancel_of_a_filled_order_double_counts_the_fill` and
 `adapter_ledger_counts_the_fill_once_when_a_filled_order_is_cancelled` in
-`crates/bb-sim/tests/engine_defects.rs`.
+`crates/bb-sim/tests/engine_defects.rs`; the think-time trigger by `think_time_applies_to_cancels`
+in `crates/bb-sim/tests/latency_lab.rs`.
 
 ## Recorder pitfalls found in review
 

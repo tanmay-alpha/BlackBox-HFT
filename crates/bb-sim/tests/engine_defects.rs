@@ -326,10 +326,12 @@ fn upstream_rejected_cancel_of_a_filled_order_double_counts_the_fill() {
 }
 
 /// The adapter's ledger is fed by the exchange-side fill hook and counts the execution once. It
-/// can only reach the defect when a strategy cancels an order it already knows is filled, which
-/// requires the engine to still hold the order: clearing is deferred while an earlier cancel is in
-/// flight. The bundled strategies never do this (they cancel only `cancellable()` orders); a
-/// custom script can, and then the engine cross-check reports the engine's doubled figure.
+/// can only reach the defect when the host sends a cancel for an order it already knows is
+/// filled while the engine still holds it (clearing is deferred while an earlier cancel is in
+/// flight). Without think time the bundled strategies never do this (they cancel only
+/// `cancellable()` orders); with think time they can (`latency_lab.rs`,
+/// `think_time_applies_to_cancels`), and a custom script can at any time. The engine cross-check
+/// then reports the engine's doubled figure and names the cause.
 #[test]
 fn adapter_ledger_counts_the_fill_once_when_a_filled_order_is_cancelled() {
     let mut m = Mkt::standard();
@@ -376,4 +378,12 @@ fn adapter_ledger_counts_the_fill_once_when_a_filled_order_is_cancelled() {
     assert_eq!(check.engine_position, 2.0);
     assert_eq!((check.ledger_fills, check.engine_num_trades), (1, 2));
     assert!(!check.agrees);
+    // ... and names the cause instead of flagging the ledger as suspect.
+    assert!(
+        check
+            .note
+            .starts_with("Expected: The engine's local account also applied 1 fill(s)"),
+        "{}",
+        check.note
+    );
 }

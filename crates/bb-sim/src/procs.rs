@@ -109,6 +109,11 @@ where
     ) -> Result<bool, BacktestError> {
         let tape = self.tape.clone();
         tape.begin_step(None);
+        let trades_before = self.inner.state_values().num_trades;
+        // Fill responses the engine's local account applies as executions; a rejected response
+        // is not one, yet 0.9.4 applies it too when it carries status `Filled` (see
+        // `Tape::engine_refills_add`).
+        let mut fill_reports: i64 = 0;
         // `process_recv_order_` is the engine's own receive routine with its optional observer
         // enabled; the default trait method calls the same routine with the observer disabled.
         let result = self.inner.process_recv_order_::<true, _>(
@@ -119,6 +124,9 @@ where
                 // the order's previous execution fields unchanged; it reports no execution.
                 let is_fill_report = order.req != Status::Rejected
                     && matches!(order.status, Status::Filled | Status::PartiallyFilled);
+                if order.req != Status::Rejected && order.status == Status::Filled {
+                    fill_reports += 1;
+                }
                 tape.local_response(
                     timestamp,
                     order.order_id,
@@ -137,6 +145,10 @@ where
                 );
             },
         );
+        let refills = self.inner.state_values().num_trades - trades_before - fill_reports;
+        if refills > 0 {
+            tape.engine_refills_add(refills as u64);
+        }
         tape.end_step();
         result
     }

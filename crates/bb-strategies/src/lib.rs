@@ -19,6 +19,7 @@
 //! [`cancellable`]: bb_core::strategy::OpenOrder::cancellable
 
 mod avellaneda_stoikov;
+mod glft;
 mod imbalance_taker;
 mod quoting;
 mod scripted;
@@ -33,6 +34,7 @@ use bb_core::dataset::InstrumentMeta;
 use bb_core::strategy::Strategy;
 
 pub use avellaneda_stoikov::AvellanedaStoikov;
+pub use glft::Glft;
 pub use imbalance_taker::ImbalanceTaker;
 pub use scripted::Scripted;
 pub use touch_maker::TouchMaker;
@@ -44,6 +46,7 @@ pub fn build(cfg: &StrategyConfig, instrument: &InstrumentMeta) -> Box<dyn Strat
         StrategyKind::AvellanedaStoikov(params) => {
             Box::new(AvellanedaStoikov::new(*params, cfg.interval_ns, instrument))
         }
+        StrategyKind::Glft(params) => Box::new(Glft::new(*params, cfg.interval_ns, instrument)),
         StrategyKind::ImbalanceTaker(params) => Box::new(ImbalanceTaker::new(*params, instrument)),
         StrategyKind::Scripted(params) => Box::new(Scripted::new(params, instrument)),
     }

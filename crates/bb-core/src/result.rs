@@ -40,8 +40,10 @@ pub struct RunManifest {
     pub simulation_revision: u32,
     pub engine: EngineInfo,
     /// Platform class of the binary that ran the simulation ([`crate::platform::platform_class`],
-    /// e.g. `"linux-x86_64"`, `"windows-x86_64-gnu"`). Runs stored before platform classes
-    /// existed hold `"<os>-<arch>"`. A stored result is reused only on the same class.
+    /// `<os>-<arch>[-<env>]+libm-<fingerprint>`, e.g. `"windows-x86_64-gnu+libm-e9b26b47"`).
+    /// Runs stored before libm fingerprints existed hold `"linux-x86_64"` or
+    /// `"windows-x86_64-gnu"`, and before platform classes `"<os>-<arch>"`. A stored result is
+    /// reused only on the same class.
     pub platform: String,
     /// `"debug"` or `"release"`.
     pub profile: String,
