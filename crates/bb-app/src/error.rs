@@ -23,6 +23,17 @@ pub enum AppError {
     /// problem, not just the first.
     #[error("invalid configuration: {}", .0.join("; "))]
     InvalidConfig(Vec<String>),
+    /// `budget_exceeded` (422): the run is predicted to exceed, or exceeded while running, a
+    /// limit of the server's execution profile. Nothing was stored.
+    #[error("budget exceeded: {0}")]
+    BudgetExceeded(String),
+    /// `cancelled` (409): the run was cancelled before it finished. Nothing was stored.
+    #[error("{0}")]
+    Cancelled(String),
+    /// `platform_mismatch` (409): the stored result for this experiment was computed on another
+    /// platform class and is not reused as this platform's result.
+    #[error("{0}")]
+    PlatformMismatch(String),
     /// `simulation_failed` (500).
     #[error("simulation failed: {0}")]
     SimulationFailed(String),
@@ -38,6 +49,9 @@ impl AppError {
             AppError::NotFound(_) => "not_found",
             AppError::InvalidRequest(_) => "invalid_request",
             AppError::InvalidConfig(_) => "invalid_config",
+            AppError::BudgetExceeded(_) => "budget_exceeded",
+            AppError::Cancelled(_) => "cancelled",
+            AppError::PlatformMismatch(_) => "platform_mismatch",
             AppError::SimulationFailed(_) => "simulation_failed",
             AppError::Internal(_) => "internal",
         }
@@ -47,7 +61,10 @@ impl AppError {
         match self {
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            AppError::InvalidConfig(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::InvalidConfig(_) | AppError::BudgetExceeded(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            AppError::Cancelled(_) | AppError::PlatformMismatch(_) => StatusCode::CONFLICT,
             AppError::SimulationFailed(_) | AppError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -98,8 +115,21 @@ impl From<bb_sim::SimError> for AppError {
     fn from(err: bb_sim::SimError) -> Self {
         match err {
             bb_sim::SimError::InvalidConfig(problems) => AppError::InvalidConfig(problems),
+            bb_sim::SimError::BudgetExceeded { what, limit } => AppError::BudgetExceeded(format!(
+                "the run stopped after exceeding the limit of {limit} {what} for this server; \
+                 use a longer strategy interval, a shorter dataset or a less active strategy"
+            )),
+            bb_sim::SimError::Cancelled => {
+                AppError::Cancelled("the run was cancelled before it finished".to_string())
+            }
             other => AppError::SimulationFailed(other.to_string()),
         }
+    }
+}
+
+impl From<bb_core::limits::BudgetViolation> for AppError {
+    fn from(violation: bb_core::limits::BudgetViolation) -> Self {
+        AppError::BudgetExceeded(violation.to_string())
     }
 }
 
@@ -154,6 +184,13 @@ mod tests {
                 AppError::SimulationFailed("x".into()),
                 "simulation_failed",
                 500,
+            ),
+            (AppError::BudgetExceeded("x".into()), "budget_exceeded", 422),
+            (AppError::Cancelled("x".into()), "cancelled", 409),
+            (
+                AppError::PlatformMismatch("x".into()),
+                "platform_mismatch",
+                409,
             ),
             (AppError::Internal("x".into()), "internal", 500),
         ];

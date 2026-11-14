@@ -448,6 +448,77 @@ Three quantities drive cost; which one dominates depends on the operation (read 
 So a shorter interval multiplies tick costs, a busier strategy multiplies tape costs, and a longer
 dataset multiplies everything.
 
+## Run control overhead
+
+Measured 2026-11-14 on the machine above (other agents' builds running; not controlled) for the
+run-control change (`bb_sim::simulate_with`: progress, cooperative cancel and budget checks every
+1,000 ticks and once at the end). `bench-before.exe` was built from the parent commit and
+`bench-after.exe` from the change, both `cargo build --release -p bb-sim --example bench`; they were
+then run interleaved (before, after, before, after, …) three times each with
+`--no-sweep` (100 ms interval, 5 reps) and `--no-sweep --interval-ms 1 --reps 3` (600,002 ticks,
+600 checks). Synthetic 600 s dataset. Best of 3 (smallest minimum and smallest median) per workload:
+
+| workload | 100 ms before min / median | 100 ms after min / median | 1 ms before min / median | 1 ms after min / median |
+|---|---:|---:|---:|---:|
+| raw engine (no orders; code unchanged) | 22.3 / 22.9 | 22.7 / 22.8 | 27.6 / 27.8 | 26.9 / 27.0 |
+| adapter, idle strategy | 26.3 / 26.6 | 25.8 / 26.0 | 82.5 / 83.1 | 80.6 / 81.4 |
+| adapter, TouchMaker, no-partial | 77.4 / 78.3 | 76.4 / 77.2 | 266.2 / 296.3 | 264.8 / 265.5 |
+| adapter, TouchMaker, partial | 77.3 / 88.2 | 76.3 / 77.2 | 268.5 / 280.1 | 264.3 / 266.1 |
+| adapter, AvellanedaStoikov, no-partial | 72.9 / 86.0 | 70.1 / 71.1 | 293.0 / 299.8 | 283.6 / 294.1 |
+| adapter, AvellanedaStoikov, partial | 70.3 / 76.6 | 70.6 / 72.0 | 286.2 / 295.2 | 286.8 / 289.1 |
+
+(milliseconds). Every difference is within −3.8 % … +1.8 % on the minimum, the same band the
+unchanged raw engine moved by (−2.5 % … +1.8 %), so the control cost is below what this machine can
+resolve. A first, non-interleaved set of runs showed the raw engine itself 6 % slower in the
+"after" batch, which is why the interleaved figures are the ones reported. All output hashes were
+identical before and after (e.g. TouchMaker partial at 100 ms `56d8a1bc6ced…`), and `golden.rs`
+passes unchanged, so the change does not alter any result and `SIMULATION_REVISION` stays 2.
+
+## Execution budgets
+
+Sizing data for `ExecutionLimits::hosted()` (`crates/bb-core/src/limits.rs`). Release
+`blackbox.exe` of this change, one process per run (`blackbox run --config`, which includes
+forensics and writing the run to the store), peak working set and peak private bytes read with
+`K32GetProcessMemoryInfo` on the exited process's handle. Synthetic datasets of 120 s (62,929 rows),
+600 s (317,644) and 1,800 s (953,910 rows); preset configurations with the interval overridden.
+
+| run | ticks | tape events | `run.json` MB | peak WS MiB | peak private MiB | hosted |
+|---|---:|---:|---:|---:|---:|---|
+| maker_baseline 120 s, 1 ms | 120,001 | 76,696 | 62.8 | 109 | 147 | admitted |
+| maker_slow 120 s, 1 ms | 120,001 | 61,131 | 63.3 | 110 | 139 | admitted |
+| avellaneda_stoikov 120 s, 1 ms | 120,001 | 64,908 | 52.3 | 109 | 137 | admitted |
+| imbalance_taker 120 s, 1 ms | 120,001 | 36,583 | 49.1 | 100 | 133 | refused (tape prediction) |
+| forensics_probe 120 s, 1 ms | 120,001 | 46 | 28.3 | 55 | 67 | admitted |
+| maker_baseline 120 s, 10 ms | 12,000 | 60,382 | 24.9 | 62 | 74 | admitted |
+| maker_baseline 120 s, 100 ms | 1,200 | 25,242 | 9.0 | 27 | 28 | admitted |
+| imbalance_taker 600 s, 10 ms | 60,000 | 26,259 | 28.9 | 78 | 94 | admitted |
+| forensics_probe 600 s, 10 ms | 60,000 | 83 | 14.4 | 56 | 58 | admitted |
+| maker_baseline 600 s, 100 ms | 6,000 | 126,567 | 45.6 | 128 | 159 | refused (tape prediction) |
+| maker_baseline 600 s, 10 ms | 60,000 | 309,872 | 129.0 | 245 | 347 | refused |
+| forensics_probe 600 s, 1 ms | 600,002 | 46 | 142.5 | 341 | 508 | refused (ticks) |
+| maker_baseline 600 s, 1 ms | 600,002 | 391,876 | 319.4 | 701 | 1,023 | refused |
+| maker_baseline 1,800 s, 100 ms | 18,000 | 380,773 | 138.2 | 303 | 394 | refused |
+| maker_baseline 1,800 s, 1 ms (the audit case) | 1,800,000 | 1,175,531 | 962.5 | 1,576 | 2,281 | refused (rows, ticks) |
+
+(34 runs were measured: every preset of five at 1, 10 and 100 ms on 120 s and 600 s, plus four on
+1,800 s; the table is a subset. One `avellaneda_stoikov` 1,800 s / 1 ms run exited non-zero with no
+output once and succeeded on rerun: 1,595 MiB WS, 990,487 tape events; cause not investigated.)
+
+Derived costs (least squares over the 34 runs): stored bytes ≈ 400 per tape event + 295 per equity
+sample (largest per-event figure 574 bytes, imbalance taker); peak working set ≈ 25 MiB + 70 B per
+dataset row + 615 B per tape event + 537 B per equity sample, under-predicting the largest runs by up
+to 175 MiB (vector growth). The admission prediction (`estimate_work`) bounded every measured run's
+ticks, tape events and stored bytes.
+
+Chosen hosted limits: 500,000 dataset rows, 150,000 ticks, 150,000 equity samples, 150,000 tape
+events, 128 MiB stored result. Every preset of the 120 s demo dataset is admitted down to 1 ms
+except `imbalance_taker` at 1 ms; the largest admitted measured run peaked at **110 MiB** working set
+(147 MiB private). A run whose prediction is wrong is stopped by the hard tape and sample budgets at
+about 25 + 33 + 88 + 77 ≈ 225 MiB working set by the fitted costs. `tests/hosted_peak_memory.rs`
+re-measures the largest admitted maker job in CI: 110.1 MiB peak working set on this machine (test
+profile); Linux `VmHWM` is to be confirmed by the CI `rust` job, which asserts it stays under
+300 MB.
+
 ## What we do not claim
 
 - No live-trading or order-to-exchange latency figures: nothing here sends orders anywhere. The

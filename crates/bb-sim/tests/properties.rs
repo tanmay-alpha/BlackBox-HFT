@@ -146,7 +146,15 @@ fn assumptions() -> impl Strategy<Value = Assumptions> {
             prop_oneof![Just(0u16), 1u16..5_001],
             prop_oneof![Just(0i16), 1i16..501],
         ),
-        (-5i8..11, -5i8..11, 1u8..31, 1u8..16, 1u8..9, any::<u64>()),
+        // Seeds above 2^53 - 1 are refused by validation (JSON clients would round them).
+        (
+            -5i8..11,
+            -5i8..11,
+            1u8..31,
+            1u8..16,
+            1u8..9,
+            0u64..=bb_core::time::MAX_SAFE_INTEGER as u64,
+        ),
     )
         .prop_map(
             |(

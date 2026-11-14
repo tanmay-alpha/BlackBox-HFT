@@ -73,6 +73,53 @@ pub fn is_plausible_epoch_ns(ns: Ns) -> bool {
     (MIN_PLAUSIBLE_NS..MAX_PLAUSIBLE_NS).contains(&ns)
 }
 
+/// Largest integer a JSON reader using IEEE-754 doubles (JavaScript's `Number`) represents
+/// exactly: 2^53 − 1 (`Number.MAX_SAFE_INTEGER`).
+pub const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
+
+/// Longest dataset span, in nanoseconds, whose relative timestamps all stay exact as JSON
+/// numbers: 2^53 − 1 ns, about 104.2 days. Ingest and generation refuse anything longer.
+pub const MAX_SPAN_NS: i64 = MAX_SAFE_INTEGER;
+
+/// Serde adapter for absolute epoch nanoseconds (or any integer that may exceed 2^53 − 1).
+/// Writes a decimal string; reads a decimal string or, for files written before this adapter
+/// existed, a JSON integer.
+///
+/// ```ignore
+/// #[serde(with = "bb_core::time::int_string")]
+/// pub origin_ns: i64,
+/// ```
+pub mod int_string {
+    use std::{fmt::Display, str::FromStr};
+
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<T: Display, S: Serializer>(value: &T, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(value)
+    }
+
+    pub fn deserialize<'de, T, D>(d: D) -> Result<T, D::Error>
+    where
+        T: FromStr + TryFrom<i64> + TryFrom<u64>,
+        <T as FromStr>::Err: Display,
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Str(String),
+            Signed(i64),
+            Unsigned(u64),
+        }
+        let out_of_range = || D::Error::custom("integer out of range");
+        match Repr::deserialize(d)? {
+            Repr::Str(s) => s.parse().map_err(D::Error::custom),
+            Repr::Signed(v) => T::try_from(v).map_err(|_| out_of_range()),
+            Repr::Unsigned(v) => T::try_from(v).map_err(|_| out_of_range()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +155,33 @@ mod tests {
     #[test]
     fn overflow_is_an_error() {
         assert_eq!(TimeUnit::Seconds.to_ns(i64::MAX / 2), None);
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Abs {
+        #[serde(with = "int_string")]
+        ns: i64,
+    }
+
+    #[test]
+    fn absolute_ns_are_written_as_strings_and_read_in_either_form() {
+        let v = Abs {
+            ns: 1_700_000_000_000_000_001,
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, r#"{"ns":"1700000000000000001"}"#);
+        assert_eq!(serde_json::from_str::<Abs>(&json).unwrap(), v);
+        // Files written before the adapter existed hold a JSON number.
+        assert_eq!(
+            serde_json::from_str::<Abs>(r#"{"ns":1700000000000000001}"#).unwrap(),
+            v
+        );
+        assert_eq!(
+            serde_json::from_str::<Abs>(r#"{"ns":-5}"#).unwrap(),
+            Abs { ns: -5 }
+        );
+        assert!(serde_json::from_str::<Abs>(r#"{"ns":"x"}"#).is_err());
+        assert!(serde_json::from_str::<Abs>(r#"{"ns":18446744073709551615}"#).is_err());
+        assert_eq!(MAX_SAFE_INTEGER, 9_007_199_254_740_991);
     }
 }

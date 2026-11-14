@@ -39,7 +39,9 @@ pub struct RunManifest {
     #[serde(default)]
     pub simulation_revision: u32,
     pub engine: EngineInfo,
-    /// `"<os>-<arch>"` of the binary that ran the simulation.
+    /// Platform class of the binary that ran the simulation ([`crate::platform::platform_class`],
+    /// e.g. `"linux-x86_64"`, `"windows-x86_64-gnu"`). Runs stored before platform classes
+    /// existed hold `"<os>-<arch>"`. A stored result is reused only on the same class.
     pub platform: String,
     /// `"debug"` or `"release"`.
     pub profile: String,
@@ -50,7 +52,7 @@ pub struct RunManifest {
     /// cover platform, profile or timing.
     pub config_sha256: String,
     /// SHA-256 over the flight tape, fills and equity samples. Two runs with equal
-    /// `config_sha256` on the same platform must have equal `result_sha256`.
+    /// `config_sha256` on the same platform class must have equal `result_sha256`.
     pub result_sha256: String,
     /// Wall-clock facts. Informational only; excluded from both hashes.
     pub created_unix_ms: u64,

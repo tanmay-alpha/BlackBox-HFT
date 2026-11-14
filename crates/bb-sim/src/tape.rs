@@ -117,6 +117,11 @@ impl Tape {
         abs - self.0.borrow().origin
     }
 
+    /// Events committed to the tape so far.
+    pub fn event_count(&self) -> usize {
+        self.0.borrow().events.len()
+    }
+
     /// Marks the start of one engine processing step. Local-side steps leave the last exchange
     /// timestamp unchanged.
     pub fn begin_step(&self, exch_now: Option<i64>) {

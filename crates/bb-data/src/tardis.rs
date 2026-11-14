@@ -812,6 +812,7 @@ pub fn ingest(cfg: &TardisIngestConfig) -> Result<BuiltDataset, DataError> {
     }
 
     let origin_ns = analysis.first_exch_ts;
+    crate::check_span(&normalized.events, origin_ns)?;
     let manifest = DatasetManifest {
         contract_version: CONTRACT_VERSION,
         id: cfg.id.clone(),

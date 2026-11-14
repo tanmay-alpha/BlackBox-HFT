@@ -19,19 +19,44 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets --locked
       - name: Test
-        # Includes the determinism tests and the pinned upstream-engine defect tests.
-        run: cargo test --workspace --locked
+        # Includes the determinism tests, the pinned upstream-engine defect tests, the
+        # linux-x86_64 golden pins and the hosted peak-memory check (VmHWM < 300 MB).
+        run: cargo test --workspace --locked -- --nocapture
       - name: Determinism across processes
         # The same preset simulated in two separate processes must give the same result hash.
         run: |
           set -euo pipefail
           tmp=$(mktemp -d)
           cargo run --release --locked --bin blackbox -- --data-dir "$tmp" synth
+          # Precision (AT-9): no JSON number in the dataset manifest beyond 2^53 - 1.
+          unsafe=$(jq '[.. | numbers | select(. > 9007199254740991 or . < -9007199254740991)] | length' "$tmp"/datasets/*/dataset.json)
+          echo "manifest numbers beyond 2^53 - 1: $unsafe"
+          test "$unsafe" = 0
           a=$(cargo run --release --locked --bin blackbox -- --data-dir "$tmp" run --preset maker_baseline | grep '^result sha256')
           rm -rf "$tmp/runs"
           b=$(cargo run --release --locked --bin blackbox -- --data-dir "$tmp" run --preset maker_baseline | grep '^result sha256')
           echo "$a"; echo "$b"
           test -n "$a" && test "$a" = "$b"
+
+  golden-windows:
+    # Platform policy (docs/EXPERIMENT_REPRODUCIBILITY.md): linux-x86_64 is canonical; the
+    # windows-x86_64-gnu pins in golden.rs are checked here with the GNU toolchain and the
+    # runner's preinstalled MinGW-w64 GCC, the setup docs/BUILDING.md documents.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: GNU toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
+          rustup default stable-x86_64-pc-windows-gnu
+          rustc -vV
+          gcc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Golden results (windows-x86_64-gnu pins)
+        run: cargo test --locked -p bb-app --test golden
+      - name: Hosted peak memory (Windows peak working set)
+        run: cargo test --locked -p bb-app --test hosted_peak_memory -- --nocapture
 
   web:
     runs-on: ubuntu-24.04
