@@ -111,6 +111,9 @@ pub struct AppConfig {
     pub idle_poll_max: Duration,
     pub artifact_disk_cache_bytes: u64,
     pub max_response_bytes: usize,
+    /// Request timeout of `POST /api/v1/comparisons` (`BB_COMPARISON_TIMEOUT_S`, default 60 s);
+    /// other mutations have 10 s.
+    pub comparison_timeout: Duration,
     pub rate_limits: RateLimits,
     pub heavy_read_concurrency: usize,
     /// Requests in flight across the whole server before new ones get 503 `busy`.
@@ -237,14 +240,15 @@ impl AppConfig {
             );
         }
         // SEC-27: the hosted profile only talks to Postgres over TLS with a verified certificate
-        // and host name.
+        // and host name. The effective mode is the one SQLx parses (the last `sslmode` wins; a
+        // `sslmode=` text inside another parameter's value does not count).
         if hosted {
             for (name, url) in [
                 ("DATABASE_URL", &database_url),
                 ("DATABASE_URL_UNPOOLED", &database_url_unpooled),
             ] {
                 if let Some(url) = url
-                    && !url.expose().contains("sslmode=verify-full")
+                    && !verifies_full(url.expose())
                 {
                     problem(
                         name,
@@ -440,6 +444,18 @@ impl AppConfig {
                 "must be positive and longer than BB_HEARTBEAT_INTERVAL_MS".into(),
             );
         }
+        let comparison_timeout_s = parse(
+            &get("BB_COMPARISON_TIMEOUT_S"),
+            "BB_COMPARISON_TIMEOUT_S",
+            60u64,
+            &mut problem,
+        );
+        if !(1..=600).contains(&comparison_timeout_s) {
+            problem(
+                "BB_COMPARISON_TIMEOUT_S",
+                "must be between 1 and 600 seconds".into(),
+            );
+        }
 
         let (limits, max_sweep_cells, rate_limits) = if hosted {
             (
@@ -493,6 +509,7 @@ impl AppConfig {
             idle_poll_max: Duration::from_secs(30),
             artifact_disk_cache_bytes,
             max_response_bytes,
+            comparison_timeout: Duration::from_secs(comparison_timeout_s),
             rate_limits,
             heavy_read_concurrency: 4,
             max_in_flight: if hosted { 32 } else { 256 },
@@ -619,6 +636,12 @@ pub fn is_platform(value: &str) -> bool {
         && parts.all(ok_part)
 }
 
+/// Whether a Postgres URL's effective SSL mode, as SQLx parses it, is `verify-full`.
+fn verifies_full(url: &str) -> bool {
+    url.parse::<sqlx::postgres::PgConnectOptions>()
+        .is_ok_and(|o| matches!(o.get_ssl_mode(), sqlx::postgres::PgSslMode::VerifyFull))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,5 +739,40 @@ mod tests {
         assert!(!is_platform("linux-x86_64+libm-53154A4E"));
         assert!(!is_platform("linux-x86_64+libm-123"));
         assert!(!is_platform("Linux"));
+    }
+
+    #[test]
+    fn hosted_database_urls_need_the_effective_verify_full_mode() {
+        assert!(verifies_full(
+            "postgres://u:p@db.example/x?sslmode=verify-full"
+        ));
+        assert!(verifies_full(
+            "postgres://u:p@db.example/x?application_name=bb&sslmode=verify-full"
+        ));
+        assert!(!verifies_full(
+            "postgres://u:p@db.example/x?sslmode=require&application_name=sslmode=verify-full"
+        ));
+        assert!(!verifies_full(
+            "postgres://u:p@db.example/x?sslmode=verify-full&sslmode=disable"
+        ));
+        assert!(!verifies_full(
+            "postgres://u:p@db.example/x?application_name=sslmode%3Dverify-full"
+        ));
+        assert!(!verifies_full("not a url sslmode=verify-full"));
+        let hosted = |url: &str| {
+            config(&[
+                ("BB_PROFILE", "hosted"),
+                ("DATABASE_URL", url),
+                ("DATABASE_URL_UNPOOLED", url),
+            ])
+            .unwrap_err()
+            .0
+            .iter()
+            .any(|p| p.variable == "DATABASE_URL")
+        };
+        assert!(hosted(
+            "postgres://u:p@db.example/x?sslmode=require&application_name=sslmode=verify-full"
+        ));
+        assert!(!hosted("postgres://u:p@db.example/x?sslmode=verify-full"));
     }
 }

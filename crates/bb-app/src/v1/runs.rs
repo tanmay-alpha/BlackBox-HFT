@@ -56,6 +56,7 @@ pub fn routes() -> OpenApiRouter<Shared> {
         .routes(routes!(report))
         .routes(routes!(export))
         .routes(routes!(run_analytics))
+        .routes(routes!(run_analytics_series))
 }
 
 /// 16- or 64-character lowercase hex.
@@ -954,7 +955,8 @@ pub async fn export(
 }
 
 /// Execution (E1–E10) and risk analytics of a run, with units, unavailability reasons and
-/// caveats; verified against the stored digest.
+/// caveats; verified against the stored digest. Aggregates are complete; series longer than
+/// 100 points are downsampled and listed in `downsampled` (page them with `/analytics/series`).
 #[utoipa::path(get, path = "/runs/{run_id}/analytics", tag = "runs", security((), ("bearer" = [])),
     params(("run_id" = String, Path), PlatformQuery),
     responses((status = 200, body = RunAnalytics), (status = 404, body = ErrorEnvelope),
@@ -967,16 +969,88 @@ pub async fn run_analytics(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let view = resolve_run(&state, &caller, &run_id, q.platform.as_deref()).await?;
-    verified_summary(&state, &view, false).await?;
-    verify_bundle(&state, &view).await?;
-    let json_text = match state.db.run_analytics(view.run.id).await? {
+    let mut value: Value = serde_json::from_str(&run_analytics_json(&state, &view).await?)?;
+    analytics::downsample(&mut value, analytics::MAX_SERIES_POINTS);
+    wire::to_wire(&mut value).map_err(ApiError::internal)?;
+    immutable_value(&headers, &value)
+}
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct SeriesQuery {
+    /// JSON Pointer of the series, as listed in `downsampled[].path`.
+    pub path: String,
+    /// First point (default 0).
+    pub offset: Option<i64>,
+    /// Points per page, ≤ 5000 (default 1000); a page also ends at the byte cap.
+    pub limit: Option<i64>,
+}
+
+/// One page of the complete points of an analytics series.
+#[utoipa::path(get, path = "/runs/{run_id}/analytics/series", tag = "runs", security((), ("bearer" = [])),
+    params(("run_id" = String, Path), SeriesQuery, PlatformQuery),
+    responses((status = 200, body = analytics::SeriesPage), (status = 400, body = ErrorEnvelope),
+              (status = 404, body = ErrorEnvelope)))]
+pub async fn run_analytics_series(
+    State(state): State<Shared>,
+    caller: Caller,
+    Path(run_id): Path<String>,
+    Query(q): Query<SeriesQuery>,
+    Query(p): Query<PlatformQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let view = resolve_run(&state, &caller, &run_id, p.platform.as_deref()).await?;
+    let report: Value = serde_json::from_str(&run_analytics_json(&state, &view).await?)?;
+    let page = series_page(&report, &q, byte_cap(&state, &caller))?;
+    immutable(&headers, &page)
+}
+
+/// A page of the series at `q.path` of a stored analytics report.
+pub fn series_page(
+    report: &Value,
+    q: &SeriesQuery,
+    cap: usize,
+) -> Result<analytics::SeriesPage, ApiError> {
+    let points = analytics::series(report, &q.path).ok_or_else(|| {
+        ApiError::invalid_field("path", "path must name a series listed in `downsampled`")
+    })?;
+    let offset = usize::try_from(q.offset.unwrap_or(0))
+        .map_err(|_| ApiError::invalid_field("offset", "offset must be ≥ 0"))?;
+    let limit = super::respond::limit_param(q.limit, 1000, 5000)? as usize;
+    let total = points.len();
+    let start = offset.min(total);
+    let end = start.saturating_add(limit).min(total);
+    let (items, by_bytes) = bounded(&points[start..end], cap)?;
+    let next = start + items.len();
+    Ok(analytics::SeriesPage {
+        path: q.path.clone(),
+        total,
+        offset: start,
+        next_offset: (next < total).then_some(next),
+        truncated_by: if by_bytes {
+            Some(TruncatedBy::Bytes)
+        } else if next < total {
+            Some(TruncatedBy::Limit)
+        } else {
+            None
+        },
+        items,
+    })
+}
+
+/// The stored analytics report of a verified run (exact JSON, digest checked). Computed and
+/// stored first if missing.
+async fn run_analytics_json(state: &Shared, view: &RunView) -> Result<String, ApiError> {
+    verified_summary(state, view, false).await?;
+    verify_bundle(state, view).await?;
+    Ok(match state.db.run_analytics(view.run.id).await? {
         Some(row) => {
             let digest = <sha2::Sha256 as sha2::Digest>::digest(row.report_json.as_bytes());
             if digest.as_slice() != row.report_sha256 {
                 return Err(quarantine(
                     &state.db,
                     &state.metrics,
-                    &view,
+                    view,
                     "analytics",
                     &hex::encode(&row.report_sha256),
                 )
@@ -987,8 +1061,8 @@ pub async fn run_analytics(
         None => {
             // Not stored (a completion that crashed before the analytics row, or an older
             // bundle): take it from the verified trailer, or compute it, and store it.
-            let _permit = heavy(&state).await?;
-            let run = open(&state, view.clone()).await?;
+            let _permit = heavy(state).await?;
+            let run = open(state, view.clone()).await?;
             let trailer = run.trailer().await?;
             let report: RunAnalytics = match trailer.analytics {
                 Some(v) => serde_json::from_value(v)?,
@@ -1022,10 +1096,7 @@ pub async fn run_analytics(
                 .await?;
             encoded.json
         }
-    };
-    let mut value: Value = serde_json::from_str(&json_text)?;
-    wire::to_wire(&mut value).map_err(ApiError::internal)?;
-    immutable_value(&headers, &value)
+    })
 }
 
 /// Rows to fetch for a page of `limit` (one extra to detect a next page; bb-db caps at 100).

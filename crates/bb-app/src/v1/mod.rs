@@ -54,8 +54,9 @@ pub struct AppState {
     pub workspaces: auth::WorkspaceCache,
     pub anon_cache: edge::AnonCache,
     pub egress: edge::Egress,
-    /// Concurrency limit of artefact-heavy routes (API_CONTRACT §5).
-    pub heavy: Semaphore,
+    /// Concurrency limit of artefact-heavy routes (API_CONTRACT §5). Shared so a permit can move
+    /// into blocking work and stay held until that work actually ends.
+    pub heavy: Arc<Semaphore>,
     /// Requests in flight across the server (SEC-9).
     pub inflight: Arc<Semaphore>,
     pub started: Instant,
@@ -77,7 +78,7 @@ impl AppState {
             workspaces: auth::WorkspaceCache::default(),
             anon_cache: edge::AnonCache::default(),
             egress: edge::Egress::default(),
-            heavy: Semaphore::new(cfg.heavy_read_concurrency),
+            heavy: Arc::new(Semaphore::new(cfg.heavy_read_concurrency)),
             inflight: Arc::new(Semaphore::new(cfg.max_in_flight)),
             db_ready: AtomicBool::new(false),
             started: Instant::now(),

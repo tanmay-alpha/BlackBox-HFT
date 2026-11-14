@@ -201,6 +201,9 @@ async fn guarded(state: Shared, request: Request, next: Next, origin: Option<Str
     }
 
     let mutation = !matches!(*request.method(), Method::GET | Method::HEAD);
+    // Creating a comparison may load and align two runs: it has its own bounded timeout
+    // (`BB_COMPARISON_TIMEOUT_S`); every other mutation keeps the short write timeout.
+    let comparison = request.method() == Method::POST && path == "/api/v1/comparisons";
     let mut response = if path == "/healthz" {
         next.run(request).await
     } else {
@@ -210,7 +213,9 @@ async fn guarded(state: Shared, request: Request, next: Next, origin: Option<Str
                 Ok(Ok(permit)) => permit,
                 _ => return ApiError::unavailable("busy", 2).into_response(),
             };
-        let limit = if mutation {
+        let limit = if comparison {
+            state.cfg.comparison_timeout
+        } else if mutation {
             WRITE_TIMEOUT
         } else {
             READ_TIMEOUT
@@ -313,22 +318,66 @@ impl Egress {
     }
 }
 
+/// The refusal of a response body above the caller's cap (API_CONTRACT §7): 500 `internal`
+/// with `details.reason = "response_too_large"`. Handlers bound their output (pages, downsampled
+/// series), so this is a server defect, never silently truncated JSON.
+pub fn response_too_large(cap: usize) -> ApiError {
+    tracing::error!(request_id = %super::error::request_id(), cap, "response body above the cap refused");
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal",
+        "the response would exceed the size limit for this caller; quote the request id when \
+         reporting it",
+    )
+    .with_details(json!({ "reason": "response_too_large", "limit_bytes": cap }))
+}
+
+/// Buffers `response` (every handler builds its body in memory) and returns it with its exact
+/// body length; `Err` when the body is longer than `cap`. Bundle exports
+/// (`application/gzip`, keyed only, bounded by the output limit) are measured but not capped.
+async fn measured(response: Response, cap: usize) -> Result<(Response, usize), ApiError> {
+    let (parts, body) = response.into_parts();
+    let export = parts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v.as_bytes() == b"application/gzip");
+    let limit = if export { usize::MAX } else { cap };
+    let bytes = axum::body::to_bytes(body, limit)
+        .await
+        .map_err(|_| response_too_large(cap))?;
+    let size = bytes.len();
+    Ok((Response::from_parts(parts, Body::from(bytes)), size))
+}
+
+/// The single response-size path of every route: enforces the per-class body cap (anonymous
+/// 1 MiB, keyed `BB_MAX_RESPONSE_BYTES`) on the serialized body itself, and adds the exact number
+/// of body bytes sent to the daily egress counter of the class (cached bodies included; it sits
+/// outside [`anon_cache`]).
 pub async fn egress(State(state): State<Shared>, request: Request, next: Next) -> Response {
     let anonymous = !request.headers().contains_key(header::AUTHORIZATION);
+    let head = request.method() == Method::HEAD;
     let (counter, class) = state.egress.class(anonymous);
     counter.roll();
-    let budget = if anonymous {
-        state.cfg.egress_anonymous_daily_bytes
+    let (budget, cap) = if anonymous {
+        (
+            state.cfg.egress_anonymous_daily_bytes,
+            state.cfg.anonymous_max_response_bytes,
+        )
     } else {
-        state.cfg.egress_keyed_daily_bytes
+        (
+            state.cfg.egress_keyed_daily_bytes,
+            state.cfg.max_response_bytes,
+        )
     };
     let response = next.run(request).await;
-    let size = response
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(0);
+    let (response, size) = match measured(response, cap).await {
+        Ok(measured) => measured,
+        Err(refusal) => measured(refusal.into_response(), cap)
+            .await
+            .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR.into_response(), 0)),
+    };
+    // A HEAD response carries no body on the wire.
+    let size = if head { 0 } else { size as i64 };
     if size as usize > EGRESS_SMALL_RESPONSE {
         // First heavy response after start: load today's persisted value once.
         if !counter.loaded.swap(true, Ordering::SeqCst)
@@ -412,12 +461,16 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         return response;
     }
     let response = next.run(request).await;
-    if response.status() != StatusCode::OK {
+    // Only bodies within the anonymous cap are cached; a longer one passes through to `egress`,
+    // which refuses it.
+    let within_cap = axum::body::HttpBody::size_hint(response.body())
+        .exact()
+        .is_some_and(|n| n <= state.cfg.anonymous_max_response_bytes as u64);
+    if response.status() != StatusCode::OK || !within_cap {
         return response;
     }
     let (parts, body) = response.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, state.cfg.anonymous_max_response_bytes * 4).await
-    else {
+    let Ok(bytes) = axum::body::to_bytes(body, state.cfg.anonymous_max_response_bytes).await else {
         return ApiError::internal("response body unreadable").into_response();
     };
     let headers: Vec<(HeaderName, HeaderValue)> = parts

@@ -14,7 +14,7 @@ use bb_core::{
     config::RunConfig,
     dataset::InstrumentMeta,
     flight::{FlightBody, FlightEvent},
-    result::{Metrics, OrderRecord, RunResult},
+    result::{Metrics, OrderRecord, RunManifest, RunResult},
 };
 use serde_json::{Value, json};
 
@@ -29,6 +29,50 @@ pub struct CompareInput<'a> {
     /// events no longer match the run; tick, lot and contract sizes are then reported as
     /// unverified rather than assumed equal.
     pub instrument: Option<&'a InstrumentMeta>,
+}
+
+/// One side of a comparison known only from its verified metadata (the bundle trailer): enough
+/// for the eligibility gate and the metric deltas, without orders or tape.
+#[derive(Copy, Clone, Debug)]
+pub struct MetadataInput<'a> {
+    pub manifest: &'a RunManifest,
+    pub metrics: &'a Metrics,
+    pub label: &'a str,
+    pub instrument: Option<&'a InstrumentMeta>,
+}
+
+/// What the gate and the interpretation read of one side.
+#[derive(Copy, Clone)]
+struct Side<'a> {
+    manifest: &'a RunManifest,
+    metrics: &'a Metrics,
+    orders: &'a [OrderRecord],
+    label: &'a str,
+    instrument: Option<&'a InstrumentMeta>,
+}
+
+impl<'a> From<CompareInput<'a>> for Side<'a> {
+    fn from(i: CompareInput<'a>) -> Self {
+        Self {
+            manifest: &i.run.manifest,
+            metrics: &i.run.metrics,
+            orders: &i.run.orders,
+            label: i.label,
+            instrument: i.instrument,
+        }
+    }
+}
+
+impl<'a> From<MetadataInput<'a>> for Side<'a> {
+    fn from(i: MetadataInput<'a>) -> Self {
+        Self {
+            manifest: i.manifest,
+            metrics: i.metrics,
+            orders: &[],
+            label: i.label,
+            instrument: i.instrument,
+        }
+    }
 }
 
 fn close(a: f64, b: f64) -> bool {
@@ -289,9 +333,9 @@ fn reason(
 }
 
 /// The identity checks made before any per-order alignment.
-fn eligibility(a: &CompareInput<'_>, b: &CompareInput<'_>) -> Eligibility {
+fn eligibility(a: &Side<'_>, b: &Side<'_>) -> Eligibility {
     use EligibilityEffect::{NoAlignment, NotLikeForLike};
-    let (ma, mb) = (&a.run.manifest, &b.run.manifest);
+    let (ma, mb) = (a.manifest, b.manifest);
     let mut out = Vec::new();
     reason(
         &mut out,
@@ -336,16 +380,15 @@ fn eligibility(a: &CompareInput<'_>, b: &CompareInput<'_>) -> Eligibility {
             explanation: "The instrument of at least one run could not be verified: its dataset manifest is unavailable or its events changed after the run. Tick, lot and contract sizes were not compared.".into(),
         }),
     }
-    let kind = |r: &RunResult| {
-        serde_json::to_value(&r.manifest.config.strategy.kind).expect("StrategyKind serializes")
-            ["type"]
+    let kind = |m: &RunManifest| {
+        serde_json::to_value(&m.config.strategy.kind).expect("StrategyKind serializes")["type"]
             .clone()
     };
     reason(
         &mut out,
         "strategy.kind",
-        kind(a.run),
-        kind(b.run),
+        kind(ma),
+        kind(mb),
         NoAlignment,
         "Different strategies: the same tick and slot holds unrelated decisions.",
     );
@@ -365,17 +408,12 @@ fn eligibility(a: &CompareInput<'_>, b: &CompareInput<'_>) -> Eligibility {
         NoAlignment,
         "Different simulator revisions may decide, sequence or record differently, so the same order id need not name the same decision and differences cannot be attributed to the configuration.",
     );
-    let engine = |r: &RunResult| {
-        json!(format!(
-            "{} {}",
-            r.manifest.engine.name, r.manifest.engine.version
-        ))
-    };
+    let engine = |m: &RunManifest| json!(format!("{} {}", m.engine.name, m.engine.version));
     reason(
         &mut out,
         "engine",
-        engine(a.run),
-        engine(b.run),
+        engine(ma),
+        engine(mb),
         NotLikeForLike,
         "A different matching-engine version can fill differently, so differences may come from the engine rather than the configuration.",
     );
@@ -693,7 +731,11 @@ fn leg<'r>(run: &'r RunResult, lifecycles: &Lifecycles<'r>, i: usize) -> Option<
 }
 
 /// Merges both runs' orders by id (decision order: tick, then slot) and classifies every pair.
-fn align(a: &RunResult, b: &RunResult) -> (Alignment, Benign) {
+fn align(
+    a: &RunResult,
+    b: &RunResult,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<(Alignment, Benign)> {
     let (la, lb) = (
         Lifecycles::new(&a.tape, &a.orders),
         Lifecycles::new(&b.tape, &b.orders),
@@ -723,7 +765,12 @@ fn align(a: &RunResult, b: &RunResult) -> (Alignment, Benign) {
     let mut before = Benign::default();
     let mut deltas: [Vec<i64>; 5] = Default::default();
     let (mut ai, mut bi) = (0, 0);
+    let mut step = 0u32;
     while ai < a.orders.len() || bi < b.orders.len() {
+        step = step.wrapping_add(1);
+        if step.is_multiple_of(4096) && cancelled() {
+            return None;
+        }
         let (x, y) = match (a.orders.get(ai), b.orders.get(bi)) {
             (Some(x), Some(y)) if x.order_id == y.order_id => {
                 ai += 1;
@@ -799,7 +846,7 @@ fn align(a: &RunResult, b: &RunResult) -> (Alignment, Benign) {
         first_fill,
         completion,
     };
-    (out, before)
+    Some((out, before))
 }
 
 fn describe(orders: &[OrderRecord], order_id: u64) -> String {
@@ -853,10 +900,42 @@ fn class_label(class: PairClass) -> &'static str {
 /// Compares two runs: identity checks first, then (only when order ids name the same decisions)
 /// a timing-aware per-order alignment. Never attributes later P&L to one assumption.
 pub fn compare_runs(a: CompareInput<'_>, b: CompareInput<'_>) -> Comparison {
-    let (ra, rb) = (a.run, b.run);
-    let config_diffs = config_diffs(&ra.manifest.config, &rb.manifest.config);
-    let eligibility = eligibility(&a, &b);
-    let aligned = eligibility.aligned.then(|| align(ra, rb));
+    compare_runs_until(a, b, &|| false).expect("an uncancelled comparison completes")
+}
+
+/// [`compare_runs`] that gives up (`None`) as soon as `cancelled()` returns true; it is polled
+/// during the per-order alignment, so abandoned work stops instead of running to the end.
+pub fn compare_runs_until(
+    a: CompareInput<'_>,
+    b: CompareInput<'_>,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Comparison> {
+    let (sa, sb) = (Side::from(a), Side::from(b));
+    let eligibility = eligibility(&sa, &sb);
+    let aligned = if eligibility.aligned {
+        Some(align(a.run, b.run, cancelled)?)
+    } else {
+        None
+    };
+    Some(assemble(sa, sb, eligibility, aligned))
+}
+
+/// The metrics-only comparison from verified metadata alone, or `None` when the pair passes the
+/// gate (then the full runs are needed: call [`compare_runs`]). Identical to what
+/// [`compare_runs`] returns for an ineligible pair, without loading any order or tape.
+pub fn compare_metadata(a: MetadataInput<'_>, b: MetadataInput<'_>) -> Option<Comparison> {
+    let (sa, sb) = (Side::from(a), Side::from(b));
+    let eligibility = eligibility(&sa, &sb);
+    (!eligibility.aligned).then(|| assemble(sa, sb, eligibility, None))
+}
+
+fn assemble(
+    a: Side<'_>,
+    b: Side<'_>,
+    eligibility: Eligibility,
+    aligned: Option<(Alignment, Benign)>,
+) -> Comparison {
+    let config_diffs = config_diffs(&a.manifest.config, &b.manifest.config);
     let mut interpretation = Vec::new();
     let mut note =
         |basis, statement: String| interpretation.push(InterpretationNote { basis, statement });
@@ -906,9 +985,9 @@ pub fn compare_runs(a: CompareInput<'_>, b: CompareInput<'_>) -> Comparison {
                     first.order_id,
                     class_label(first.class),
                     a.label,
-                    describe(&ra.orders, first.order_id),
+                    describe(a.orders, first.order_id),
                     b.label,
-                    describe(&rb.orders, first.order_id)
+                    describe(b.orders, first.order_id)
                 ),
             );
             match &al.first_outcome_divergence {
@@ -948,8 +1027,8 @@ pub fn compare_runs(a: CompareInput<'_>, b: CompareInput<'_>) -> Comparison {
             && al.same_outcome_different_timing == 0
             && al.same_fills_different_history == 0
         {
-            let fees = rb.metrics.fees - ra.metrics.fees;
-            let pnl = rb.metrics.net_pnl - ra.metrics.net_pnl;
+            let fees = b.metrics.fees - a.metrics.fees;
+            let pnl = b.metrics.net_pnl - a.metrics.net_pnl;
             if close(pnl, -fees) {
                 note(
                     Basis::Derived,
@@ -976,13 +1055,13 @@ pub fn compare_runs(a: CompareInput<'_>, b: CompareInput<'_>) -> Comparison {
     }
     note(Basis::Unobservable, "Both runs are historical replays without market impact, so neither shows how the market would have reacted to the simulated orders.".into());
     Comparison {
-        run_a: ra.manifest.run_id.clone(),
-        run_b: rb.manifest.run_id.clone(),
+        run_a: a.manifest.run_id.clone(),
+        run_b: b.manifest.run_id.clone(),
         label_a: a.label.into(),
         label_b: b.label.into(),
         eligibility,
         config_diffs,
-        metrics: metric_rows(&ra.metrics, &rb.metrics),
+        metrics: metric_rows(a.metrics, b.metrics),
         alignment: aligned.map(|(al, _)| al),
         interpretation,
     }
@@ -1210,6 +1289,41 @@ mod tests {
                     || n.statement.contains("same experiment"))
         );
         assert_eq!(c.config_diffs[0].path, "strategy.interval_ns");
+    }
+
+    #[test]
+    fn metadata_comparison_matches_the_full_one_for_ineligible_pairs_only() {
+        fn meta<'a>(r: &'a RunResult, label: &'a str) -> MetadataInput<'a> {
+            MetadataInput {
+                manifest: &r.manifest,
+                metrics: &r.metrics,
+                label,
+                instrument: Some(&INSTRUMENT),
+            }
+        }
+        let a = &run();
+        let mut b = a.clone();
+        b.manifest.config.strategy.interval_ns = 20 * MS;
+        let b = &b;
+        let quick = compare_metadata(meta(a, "A"), meta(b, "B")).expect("ineligible pair");
+        assert_eq!(
+            serde_json::to_value(&quick).unwrap(),
+            serde_json::to_value(cmp(a, b)).unwrap()
+        );
+        // An eligible pair needs the orders and tape.
+        assert!(compare_metadata(meta(a, "A"), meta(a, "B")).is_none());
+        // A cancelled alignment stops instead of producing a partial result.
+        let mut long = a.clone();
+        let order = long.orders[0].clone();
+        long.orders = (0..10_000u64)
+            .map(|i| {
+                let mut o = order.clone();
+                o.order_id = i;
+                o
+            })
+            .collect();
+        assert!(compare_runs_until(input(&long, "A"), input(&long, "B"), &|| true).is_none());
+        assert!(compare_runs_until(input(a, "A"), input(a, "B"), &|| false).is_some());
     }
 
     #[test]

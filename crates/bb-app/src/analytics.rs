@@ -30,6 +30,10 @@ pub struct RunAnalytics {
     pub risk: RiskReport,
     /// Present when execution analytics could not be computed (the reason; risk still is).
     pub execution_unavailable: Option<String>,
+    /// Series of the stored report that this response shortened (see [`downsample`]); the
+    /// complete points are paged by `GET /runs/{run_id}/analytics/series`. Never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downsampled: Vec<DownsampledSeries>,
 }
 
 /// `GET /api/v1/datasets/{id}/analytics`.
@@ -39,6 +43,117 @@ pub struct DatasetAnalytics {
     pub dataset_id: String,
     pub version: i32,
     pub market: MarketReport,
+    /// As [`RunAnalytics::downsampled`]; complete points via
+    /// `GET /datasets/{id}/versions/{version}/analytics/series`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downsampled: Vec<DownsampledSeries>,
+}
+
+/// Most points of one series in an analytics response. Aggregate scalars are never touched; a
+/// longer series is replaced by this many points evenly spaced by index (the first and last
+/// kept) and listed in `downsampled`.
+pub const MAX_SERIES_POINTS: usize = 100;
+
+/// Array fields that hold series: Kaplan–Meier curves, market series points and the interval
+/// views. Everything else in a report is a fixed-size aggregate.
+const SERIES_FIELDS: [&str; 4] = ["curve", "points", "ofi_intervals", "trade_intervals"];
+
+/// One series shortened in an analytics response.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DownsampledSeries {
+    /// JSON Pointer of the series in the report, e.g. `/execution/first_fill/km/curve`; pass it
+    /// as `path` to the series endpoint.
+    pub path: String,
+    /// Points of the complete series.
+    pub total: usize,
+    /// Points in this response.
+    pub returned: usize,
+}
+
+/// Bounds a stored report (as JSON) for serving: every series longer than `max_points` keeps
+/// `max_points` evenly spaced points, and `downsampled` lists what was shortened.
+pub fn downsample(report: &mut serde_json::Value, max_points: usize) {
+    fn walk(
+        v: &mut serde_json::Value,
+        path: &mut String,
+        max: usize,
+        out: &mut Vec<DownsampledSeries>,
+    ) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map.iter_mut() {
+                    let len = path.len();
+                    path.push('/');
+                    path.push_str(&key.replace('~', "~0").replace('/', "~1"));
+                    match child {
+                        serde_json::Value::Array(items)
+                            if SERIES_FIELDS.contains(&key.as_str()) && items.len() > max =>
+                        {
+                            let total = items.len();
+                            let kept: Vec<serde_json::Value> = evenly_spaced(total, max)
+                                .map(|i| std::mem::take(&mut items[i]))
+                                .collect();
+                            *items = kept;
+                            out.push(DownsampledSeries {
+                                path: path.clone(),
+                                total,
+                                returned: items.len(),
+                            });
+                        }
+                        _ => walk(child, path, max, out),
+                    }
+                    path.truncate(len);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, child) in items.iter_mut().enumerate() {
+                    let len = path.len();
+                    path.push('/');
+                    path.push_str(&i.to_string());
+                    walk(child, path, max, out);
+                    path.truncate(len);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(report, &mut String::new(), max_points.max(2), &mut out);
+    if let (false, Some(map)) = (out.is_empty(), report.as_object_mut()) {
+        map.insert(
+            "downsampled".into(),
+            serde_json::to_value(out).expect("plain data serializes"),
+        );
+    }
+}
+
+/// `max` distinct indices of `0..total` (`total > max >= 2`), evenly spaced, first and last
+/// included, ascending.
+fn evenly_spaced(total: usize, max: usize) -> impl Iterator<Item = usize> {
+    (0..max).map(move |i| i * (total - 1) / (max - 1))
+}
+
+/// The complete series at `path` (a JSON Pointer naming a series field) of a stored report.
+pub fn series<'a>(report: &'a serde_json::Value, path: &str) -> Option<&'a [serde_json::Value]> {
+    let field = path.rsplit('/').next()?;
+    if !SERIES_FIELDS.contains(&field) {
+        return None;
+    }
+    report.pointer(path)?.as_array().map(Vec::as_slice)
+}
+
+/// `GET …/analytics/series`: one page of the complete points of a downsampled series.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+pub struct SeriesPage {
+    pub path: String,
+    /// Points of the complete series.
+    pub total: usize,
+    pub offset: usize,
+    /// The points, as in the stored report.
+    #[schema(value_type = Vec<Object>)]
+    pub items: Vec<serde_json::Value>,
+    pub next_offset: Option<usize>,
+    pub truncated_by: Option<crate::v1::respond::TruncatedBy>,
 }
 
 /// Exact JSON bytes and their digest.
@@ -97,6 +212,7 @@ pub fn run_analytics(run: &RunResult, ctx: &DatasetCtx) -> Result<RunAnalytics, 
         execution,
         risk,
         execution_unavailable,
+        downsampled: Vec::new(),
     })
 }
 
@@ -119,5 +235,6 @@ pub fn dataset_analytics(ctx: &DatasetCtx, version_no: i32) -> Result<DatasetAna
         dataset_id: manifest.id.clone(),
         version: version_no,
         market,
+        downsampled: Vec::new(),
     })
 }

@@ -337,6 +337,7 @@ pub async fn run(ctx: Arc<WorkerCtx>, standalone: bool) {
     ctx.heartbeat_row("starting", None).await;
     ctx.reap().await;
     ctx.hub.set_state("idle");
+    let liveness = tokio::spawn(idle_liveness(ctx.hub.clone()));
     let mut loops = Vec::new();
     for slot in 0..ctx.hub.slots {
         let ctx = ctx.clone();
@@ -347,8 +348,27 @@ pub async fn run(ctx: Arc<WorkerCtx>, standalone: bool) {
     for handle in loops {
         let _ = handle.await;
     }
+    liveness.abort();
     ctx.hub.set_state("stopped");
     ctx.heartbeat_row("stopped", None).await;
+}
+
+/// Memory-only liveness while idle. An idle in-process worker parks without polling Postgres
+/// (Neon must be allowed to scale to zero), so its `/status` heartbeat is refreshed here, every
+/// heartbeat interval and without any database access: an idle worker reports `idle` with a
+/// fresh heartbeat instead of looking stale. A busy worker's heartbeat stays the job heartbeat
+/// (lease extension), so a stuck job still shows a stale age.
+async fn idle_liveness(hub: Arc<WorkerHub>) {
+    let mut tick = tokio::time::interval(hub.heartbeat_interval.max(Duration::from_millis(10)));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        hub.update(|s| {
+            if s.busy == 0 && s.state == "idle" {
+                s.last_heartbeat = Some(Instant::now());
+            }
+        });
+    }
 }
 
 async fn slot_loop(ctx: Arc<WorkerCtx>, slot: usize, standalone: bool) {

@@ -108,7 +108,7 @@ experiments are `pinned` (exempt from retention). Demo quotas are 0, so nothing 
 | Anonymous request rate | 120/min per client IP, burst 30 | `tower_governor`, IP from `X-Forwarded-For` (best effort; OSS evaluation §3.5) | 429 `rate_limited` |
 | Keyed request rate | 600/min per key, burst 100 | in-memory GCRA keyed by key id | 429 `rate_limited` |
 | Heavy read concurrency (artefact routes, replay, compare, report, export) | 4 in flight, 2 s queue | `ConcurrencyLimitLayer` + `LoadShedLayer` | 503 `unavailable` (`busy`) |
-| Request timeout | 30 s (reads), 10 s (submissions) | `TimeoutLayer` | 503 `unavailable` |
+| Request timeout | 30 s (reads), 10 s (submissions), `BB_COMPARISON_TIMEOUT_S` = 60 s (`POST /comparisons`, §8.6) | `TimeoutLayer` | 503 `unavailable` |
 | Experiments per key per day | 100 (workspace setting) | Postgres, in the submit transaction | 429 `quota_exceeded` |
 | Sweeps per key per day | 5 | Postgres | 429 `quota_exceeded` |
 | Live jobs per workspace | 50 | Postgres | 429 `quota_exceeded` |
@@ -136,7 +136,8 @@ quarantined, and a re-simulated run for the same identity has identical content 
 
 ## 7. Pagination and byte bounds
 
-Two styles, both with a hard response-size cap of **4 MiB of uncompressed JSON** (`BB_MAX_RESPONSE_BYTES`):
+Two styles, both with a hard response-size cap of **4 MiB of uncompressed JSON** for keyed callers
+(`BB_MAX_RESPONSE_BYTES`) and **1 MiB** for anonymous callers:
 
 - **Cursor** (all lists of DB resources and append-only run sections): `?limit=&cursor=`. The response is
   `{ "items": [...], "next_cursor": string | null, "truncated_by": "limit" | "bytes" | null }`. Cursors are opaque
@@ -148,6 +149,23 @@ Two styles, both with a hard response-size cap of **4 MiB of uncompressed JSON**
 If the byte cap is reached before `limit` items, the page ends early with `truncated_by: "bytes"`, and
 `next_cursor`/`next_offset` resumes exactly there. A single item larger than the cap (not possible under hosted
 limits) → 500 `internal`.
+
+**One enforcement point.** Every response passes the egress middleware, which buffers the serialized body (all
+bodies are built in memory), measures its exact length and refuses a body above the caller's cap (anonymous 1 MiB,
+keyed `BB_MAX_RESPONSE_BYTES`) with **500 `internal`, `details: {"reason": "response_too_large", "limit_bytes": n}`**.
+Handlers bound their output first (pages, downsampled series, replay windows answer 400 with advice), so this refusal
+signals a server defect, never silently truncated JSON. The only exempt body is the keyed bundle export
+(`application/gzip`, bounded by the output limit). The same measured length, not a `Content-Length` header, is added
+to the daily egress counter of the class (cached anonymous bodies included; `HEAD` counts 0).
+
+**Analytics series.** `GET /runs/{id}/analytics` and `GET /datasets/{id}[/versions/{v}]/analytics` return every
+aggregate in full; each series field (`curve`, `points`, `ofi_intervals`, `trade_intervals`) longer than 100 points
+is replaced by 100 points evenly spaced by index (first and last kept) and listed in
+`downsampled: [{ "path": "<JSON Pointer>", "total": n, "returned": 100 }]` (absent when nothing was shortened).
+The complete points are paged by `GET /runs/{id}/analytics/series?path=&offset=&limit≤5000` and
+`GET /datasets/{id}/versions/{v}/analytics/series?path=&offset=&limit≤5000` →
+`{ "path", "total", "offset", "items": [...], "next_offset": n | null, "truncated_by": … }` (offset style above). The
+stored report and its sha256 are unchanged; downsampling happens when serving.
 
 ## 8. Endpoints
 
@@ -238,8 +256,14 @@ keep the free instance busy. Polling payloads are small and `no-store`.
 ### 8.6 Comparisons
 
 `POST /api/v1/comparisons` — scope `run`; body `{ "run_a": "<run_id>", "run_b": "<run_id>", "label"?: string }`.
-Returns `201` (new) or `200` (existing for `(workspace, a, b, comparator_version)`) with a `Comparison`. Both runs must
-be visible; otherwise 404.
+Returns `201` (new) or `200` (existing for `(workspace, a, b, comparator_version)`, returned without recomputing)
+with a `Comparison`. Both runs must be visible; otherwise 404.
+
+Work: eligibility is decided from the verified bundle trailers (manifest + metrics) first. An ineligible pair gets
+its `metrics_only` result without decoding any order or tape; only an eligible pair loads both runs and aligns them,
+behind the heavy-read limit. This request has its own timeout, `BB_COMPARISON_TIMEOUT_S` (default 60 s, 1–600)
+instead of the 10 s of other mutations; on timeout it answers 503 `unavailable` (`busy`), the abandoned alignment
+stops at its next checkpoint (every 4,096 orders) and keeps its heavy-read permit until it has stopped.
 
 The eligibility contract (AT-1/AT-2; implemented in `bb-forensics` by the Phase 1 compare work) is part of the
 resource:
@@ -350,6 +374,13 @@ with ns fields as strings (TARGET_ARCHITECTURE §10).
 `status ∈ {ok, draining}`. `worker.state ∈ {starting, idle, busy, draining, stopped}`. `queue` comes from the worker's
 most recent poll (no extra DB query), and `as_of_ns` tells the UI how old it is. `limits` values are SimCore's; the
 numbers shown are placeholders.
+
+`last_heartbeat_age_ms` is a process-liveness signal, kept in memory. While `busy` it is the job heartbeat (each lease
+extension, so a stuck job shows a growing age). While `idle` the worker parks without polling Postgres (Neon scales to
+zero) and refreshes the heartbeat in memory every `heartbeat_interval_ms`, with no database access; an idle, live worker
+therefore never looks stale. The UI calls a worker stale only when the age exceeds 3 × `heartbeat_interval_ms`, which
+then means the process or a running job stopped reporting. The `worker_heartbeats` row (`GET /system/workers`) is
+written only on state transitions and job heartbeats, so its age during a long idle period is expected to grow.
 
 ### 9.2 `Whoami`
 

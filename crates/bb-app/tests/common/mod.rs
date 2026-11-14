@@ -122,6 +122,8 @@ pub struct Server {
     pub metrics: Arc<Metrics>,
     pub data_dir: PathBuf,
     pub hub: Arc<bb_app::worker::WorkerHub>,
+    /// The served state (egress counters, configuration).
+    pub state: Arc<bb_app::v1::AppState>,
     stop: CancellationToken,
     handle: tokio::task::JoinHandle<anyhow::Result<()>>,
     pub http: reqwest::Client,
@@ -171,6 +173,7 @@ impl Server {
         let stop = CancellationToken::new();
         let stop_signal = stop.clone();
         let hub = rt.hub.clone();
+        let served = state.clone();
         let handle = tokio::spawn(runtime::run_until_shutdown(
             rt,
             state,
@@ -185,6 +188,7 @@ impl Server {
             metrics,
             data_dir: data_dir.to_path_buf(),
             hub,
+            state: served,
             stop,
             handle,
             http: client(),

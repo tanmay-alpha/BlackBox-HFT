@@ -1,17 +1,23 @@
 //! Comparisons (API_CONTRACT §8.6): the bb-forensics comparison of two verified runs, stored per
 //! workspace; the eligibility gate (AT-1/AT-2) decides whether per-order pairs exist.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
 use bb_core::compare::{Comparison as CoreComparison, PairClass};
-use bb_db::{Comparison as Row, Cursor, NewComparison, Scope};
+use bb_db::{Comparison as Row, Cursor, NewComparison, RunView, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::IntoParams;
 use utoipa_axum::{router::OpenApiRouter, routes};
+use uuid::Uuid;
 
 use super::{
     Shared,
@@ -81,22 +87,68 @@ pub async fn create_comparison(
     let platform = body.platform.as_deref();
     let a = resolve_run(&state, &viewer, &body.run_a, platform).await?;
     let b = resolve_run(&state, &viewer, &body.run_b, platform).await?;
+    let (row, existed) =
+        compare_and_store(&state, workspace.id, &a, &b, label, caller.key_id()).await?;
+    json(
+        if existed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        &resource(&row, true)?,
+        Cache::NoStore,
+    )
+}
+
+/// Sets its flag when dropped: the request future was abandoned (timeout, client gone), so the
+/// blocking alignment it started should stop.
+struct AbandonOnDrop(Arc<AtomicBool>);
+
+impl Drop for AbandonOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Compares two runs visible to `workspace` and stores the result there; returns the row and
+/// whether it already existed (then nothing is recomputed). Used by `POST /comparisons` and by
+/// `blackbox demo seed`.
+///
+/// Eligibility is decided from the verified bundle trailers (manifest and metrics) first: an
+/// ineligible pair gets its metrics-only result without decoding any order or tape. Only an
+/// eligible pair loads both runs and aligns them, in blocking work that holds a heavy-read
+/// permit until it ends and stops at its next checkpoint once the request is abandoned.
+pub async fn compare_and_store(
+    state: &Shared,
+    workspace: Uuid,
+    a: &RunView,
+    b: &RunView,
+    label: String,
+    key: Option<Uuid>,
+) -> Result<(Row, bool), ApiError> {
     if a.run.id == b.run.id {
         return Err(ApiError::invalid_request(
             "run_a and run_b are the same run",
         ));
     }
-    let label_a = verified_summary(&state, &a, false)
+    let label_a = verified_summary(state, a, false)
         .await?
         .label
         .unwrap_or_default();
-    let label_b = verified_summary(&state, &b, false)
+    let label_b = verified_summary(state, b, false)
         .await?
         .label
         .unwrap_or_default();
-    let _permit = match tokio::time::timeout(
+    if let Some(row) = state
+        .db
+        .find_comparison(workspace, a.run.id, b.run.id, COMPARATOR_VERSION)
+        .await?
+    {
+        return Ok((row, true));
+    }
+    let permit = match tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        state.heavy.acquire(),
+        state.heavy.clone().acquire_owned(),
     )
     .await
     {
@@ -104,27 +156,21 @@ pub async fn create_comparison(
         _ => return Err(ApiError::unavailable("busy", 2)),
     };
     let limits = state.bundle_limits();
-    let open_a = open_run(
-        &state.db,
-        &state.storage,
-        &state.cache,
-        &state.metrics,
-        limits,
-        a.clone(),
-    )
-    .await?;
-    let open_b = open_run(
-        &state.db,
-        &state.storage,
-        &state.cache,
-        &state.metrics,
-        limits,
-        b.clone(),
-    )
-    .await?;
-    let run_a = open_a.full().await?;
-    let run_b = open_b.full().await?;
-    let instrument = |v: &bb_db::RunView| {
+    let open = |view: &RunView| {
+        open_run(
+            &state.db,
+            &state.storage,
+            &state.cache,
+            &state.metrics,
+            limits,
+            view.clone(),
+        )
+    };
+    let open_a = open(a).await?;
+    let open_b = open(b).await?;
+    let trailer_a = open_a.trailer().await?;
+    let trailer_b = open_b.trailer().await?;
+    let instrument = |v: &RunView| {
         let v = v.clone();
         let db = state.db.clone();
         async move {
@@ -135,44 +181,63 @@ pub async fn create_comparison(
                 .map(|m| m.instrument)
         }
     };
-    let inst_a = instrument(&a).await;
-    let inst_b = instrument(&b).await;
-    let comparison = tokio::task::spawn_blocking(move || {
-        bb_forensics::compare_runs(
-            bb_forensics::CompareInput {
-                run: &run_a,
-                label: &label_a,
-                instrument: inst_a.as_ref(),
-            },
-            bb_forensics::CompareInput {
-                run: &run_b,
-                label: &label_b,
-                instrument: inst_b.as_ref(),
-            },
-        )
-    })
-    .await
-    .map_err(|e| ApiError::internal(format!("comparison task: {e}")))?;
+    let inst_a = instrument(a).await;
+    let inst_b = instrument(b).await;
+    let metadata_only = bb_forensics::compare_metadata(
+        bb_forensics::MetadataInput {
+            manifest: &trailer_a.manifest,
+            metrics: &trailer_a.metrics,
+            label: &label_a,
+            instrument: inst_a.as_ref(),
+        },
+        bb_forensics::MetadataInput {
+            manifest: &trailer_b.manifest,
+            metrics: &trailer_b.metrics,
+            label: &label_b,
+            instrument: inst_b.as_ref(),
+        },
+    );
+    let comparison = match metadata_only {
+        Some(comparison) => {
+            drop(permit);
+            comparison
+        }
+        None => {
+            let run_a = open_a.full().await?;
+            let run_b = open_b.full().await?;
+            let abandoned = Arc::new(AtomicBool::new(false));
+            let _guard = AbandonOnDrop(abandoned.clone());
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                bb_forensics::compare_runs_until(
+                    bb_forensics::CompareInput {
+                        run: &run_a,
+                        label: &label_a,
+                        instrument: inst_a.as_ref(),
+                    },
+                    bb_forensics::CompareInput {
+                        run: &run_b,
+                        label: &label_b,
+                        instrument: inst_b.as_ref(),
+                    },
+                    &|| abandoned.load(Ordering::Relaxed),
+                )
+            })
+            .await
+            .map_err(|e| ApiError::internal(format!("comparison task: {e}")))?
+            .ok_or_else(|| ApiError::unavailable("busy", 5))?
+        }
+    };
     let summary = serde_json::to_value(&comparison)?;
     let reasons = if comparison.eligibility.aligned {
         json!([])
     } else {
         serde_json::to_value(&comparison.eligibility.reasons)?
     };
-    let existing = state
-        .db
-        .comparisons(workspace.id, None, 100)
-        .await?
-        .into_iter()
-        .any(|c| {
-            c.run_a_id == a.run.id
-                && c.run_b_id == b.run.id
-                && c.comparator_version == COMPARATOR_VERSION
-        });
     let row = state
         .db
         .create_comparison(&NewComparison {
-            workspace_id: workspace.id,
+            workspace_id: workspace,
             run_a_id: a.run.id,
             run_b_id: b.run.id,
             comparator_version: COMPARATOR_VERSION,
@@ -186,7 +251,7 @@ pub async fn create_comparison(
             summary_sha256: crate::canonical::sha256(&summary).to_vec(),
             summary,
             label,
-            created_by_key_id: caller.key_id(),
+            created_by_key_id: key,
         })
         .await
         .map_err(|e| match e {
@@ -194,15 +259,7 @@ pub async fn create_comparison(
             other => other.into(),
         })?;
     state.hub.bump();
-    json(
-        if existing {
-            StatusCode::OK
-        } else {
-            StatusCode::CREATED
-        },
-        &resource(&row, true)?,
-        Cache::NoStore,
-    )
+    Ok((row, false))
 }
 
 /// Comparisons of a workspace, newest first (without alignment).

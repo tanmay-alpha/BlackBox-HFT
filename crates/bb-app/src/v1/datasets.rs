@@ -21,7 +21,8 @@ use super::{
         DataSourceRef, Dataset, DatasetVersion, Demo, DemoRun, InstrumentRef, Preset, Quality,
         QualitySummary,
     },
-    respond::{Cache, Page, conditional, json, json_value, limit_param, ns_param},
+    respond::{Cache, Page, byte_cap, conditional, json, json_value, limit_param, ns_param},
+    runs::{SeriesQuery, series_page},
 };
 use crate::{
     analytics::{self, DatasetAnalytics},
@@ -43,6 +44,7 @@ pub fn routes() -> OpenApiRouter<Shared> {
         .routes(routes!(current_replay))
         .routes(routes!(version_analytics))
         .routes(routes!(current_analytics))
+        .routes(routes!(version_analytics_series))
         .routes(routes!(list_presets))
         .routes(routes!(list_demos))
 }
@@ -356,7 +358,12 @@ pub struct ReplayParams {
     pub max_trades: Option<u32>,
 }
 
-async fn replay(state: &Shared, v: &DbVersion, q: &ReplayParams) -> Result<Value, ApiError> {
+async fn replay(
+    state: &Shared,
+    v: &DbVersion,
+    q: &ReplayParams,
+    cap: usize,
+) -> Result<Value, ApiError> {
     let query = ReplayQuery {
         t0: ns_param("t0_ns", q.t0_ns.as_deref())?,
         t1: ns_param("t1_ns", q.t1_ns.as_deref())?,
@@ -389,11 +396,10 @@ async fn replay(state: &Shared, v: &DbVersion, q: &ReplayParams) -> Result<Value
     let mut value = serde_json::to_value(&window)?;
     wire::to_wire(&mut value).map_err(ApiError::internal)?;
     let size = serde_json::to_vec(&value)?.len();
-    if size > state.cfg.max_response_bytes {
+    if size > cap {
         return Err(ApiError::invalid_request(format!(
-            "the replay window is {size} bytes; the limit is {}. Shorten the window, increase \
-             step_ns or lower levels/max_trades",
-            state.cfg.max_response_bytes
+            "the replay window is {size} bytes; the limit for this caller is {cap}. Shorten the \
+             window, increase step_ns or lower levels/max_trades"
         )));
     }
     Ok(value)
@@ -413,7 +419,7 @@ pub async fn version_replay(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let v = visible_version(&state, &caller, &id, Some(version_param(&version)?)).await?;
-    let value = replay(&state, &v, &q).await?;
+    let value = replay(&state, &v, &q, byte_cap(&state, &caller)).await?;
     Ok(conditional(
         &headers,
         json_value(StatusCode::OK, &value, Cache::Immutable)?,
@@ -431,7 +437,7 @@ pub async fn current_replay(
     Query(q): Query<ReplayParams>,
 ) -> Result<Response, ApiError> {
     let v = visible_version(&state, &caller, &id, None).await?;
-    let value = replay(&state, &v, &q).await?;
+    let value = replay(&state, &v, &q, byte_cap(&state, &caller)).await?;
     let mut response = json_value(StatusCode::OK, &value, Cache::Revalidate)?;
     if let Ok(loc) = HeaderValue::from_str(&format!(
         "/api/v1/datasets/{}/versions/{}/replay",
@@ -442,7 +448,9 @@ pub async fn current_replay(
     Ok(response)
 }
 
-async fn market_analytics(state: &Shared, v: &DbVersion) -> Result<Value, ApiError> {
+/// The stored market analytics report of a version (exact JSON, digest checked), computed and
+/// stored first if missing.
+async fn market_analytics_report(state: &Shared, v: &DbVersion) -> Result<Value, ApiError> {
     let version_name = bb_analytics::ANALYTICS_VERSION;
     let text = match state.db.dataset_analytics(v.id, version_name).await? {
         Some(row) => {
@@ -479,7 +487,13 @@ async fn market_analytics(state: &Shared, v: &DbVersion) -> Result<Value, ApiErr
             encoded.json
         }
     };
-    let mut value: Value = serde_json::from_str(&text)?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+/// The report as served: series downsampled (`downsampled`), wire-encoded.
+async fn market_analytics(state: &Shared, v: &DbVersion) -> Result<Value, ApiError> {
+    let mut value = market_analytics_report(state, v).await?;
+    analytics::downsample(&mut value, analytics::MAX_SERIES_POINTS);
     wire::to_wire(&mut value).map_err(ApiError::internal)?;
     Ok(value)
 }
@@ -500,6 +514,28 @@ pub async fn version_analytics(
     Ok(conditional(
         &headers,
         json_value(StatusCode::OK, &value, Cache::Immutable)?,
+    ))
+}
+
+/// One page of the complete points of a market analytics series of one version.
+#[utoipa::path(get, path = "/datasets/{dataset_id}/versions/{version}/analytics/series", tag = "datasets",
+    security((), ("bearer" = [])),
+    params(("dataset_id" = String, Path), ("version" = i32, Path), SeriesQuery),
+    responses((status = 200, body = analytics::SeriesPage), (status = 400, body = ErrorEnvelope),
+              (status = 404, body = ErrorEnvelope)))]
+pub async fn version_analytics_series(
+    State(state): State<Shared>,
+    caller: Caller,
+    Path((id, version)): Path<(String, String)>,
+    Query(q): Query<SeriesQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let v = visible_version(&state, &caller, &id, Some(version_param(&version)?)).await?;
+    let report = market_analytics_report(&state, &v).await?;
+    let page = series_page(&report, &q, byte_cap(&state, &caller))?;
+    Ok(conditional(
+        &headers,
+        json(StatusCode::OK, &page, Cache::Immutable)?,
     ))
 }
 

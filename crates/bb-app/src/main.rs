@@ -208,8 +208,10 @@ struct DemoArgs {
 
 #[derive(Subcommand)]
 enum DemoCommand {
-    /// Register the synthetic demo dataset and queue the canonical demo experiments in the
-    /// public demo workspace (idempotent; needs DATABASE_URL).
+    /// Register the synthetic demo dataset, queue the canonical demo experiments in the public
+    /// demo workspace and, once their runs are completed, store the curated comparisons and
+    /// saved reports there (idempotent; needs DATABASE_URL). Prints what it created and what
+    /// is still pending.
     Seed {
         /// Full platform class the results are recorded for, e.g. `linux-x86_64+libm-53154a4e`
         /// (default BB_RESULT_PLATFORM or this build's class). Only a worker of exactly that
@@ -217,6 +219,10 @@ enum DemoCommand {
         /// seeding hosted data from another machine passes the Linux worker's class.
         #[arg(long)]
         platform: Option<String>,
+        /// Compute queued demo runs in this process (this machine's platform only) before
+        /// curating, instead of leaving them to `serve`/`worker`.
+        #[arg(long)]
+        wait: bool,
     },
 }
 
@@ -290,9 +296,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Openapi { out } => cmd_openapi(out),
         Command::RegisterDataset { id } => cmd_register_dataset(&paths, data_dir, &id),
         Command::Demo(DemoArgs {
-            command: Some(DemoCommand::Seed { platform }),
+            command: Some(DemoCommand::Seed { platform, wait }),
             ..
-        }) => cmd_demo_seed(data_dir, platform),
+        }) => cmd_demo_seed(data_dir, platform, wait),
         Command::Demo(DemoArgs {
             command: None,
             serve,
@@ -1482,7 +1488,7 @@ fn cmd_register_dataset(paths: &Paths, data_dir: &Path, id: &str) -> Result<()> 
     })
 }
 
-fn cmd_demo_seed(data_dir: &Path, platform: Option<String>) -> Result<()> {
+fn cmd_demo_seed(data_dir: &Path, platform: Option<String>, wait: bool) -> Result<()> {
     let cfg = app_config(data_dir)?;
     let platform = platform.unwrap_or_else(|| cfg.result_platform.clone());
     if !bb_app::config::is_platform(&platform) {
@@ -1492,17 +1498,35 @@ fn cmd_demo_seed(data_dir: &Path, platform: Option<String>) -> Result<()> {
         );
     }
     tokio_runtime()?.block_on(async move {
-        let rt = runtime::Runtime::build(cfg, "seed", 0).await?;
-        let report = bb_app::seed::seed(&rt, &platform).await?;
+        // With --wait this process runs a standalone worker loop (heartbeat mode `standalone`).
+        let (mode, slots) = if wait { ("standalone", 1) } else { ("seed", 0) };
+        let rt = runtime::Runtime::build(cfg, mode, slots).await?;
+        let report = bb_app::seed::seed(&rt, &platform, wait).await?;
         println!(
             "Demo dataset '{}' version {} (events sha256 {}).",
             report.dataset_id, report.version, report.events_sha256
         );
         println!("Demo experiments in workspace 'demo' (platform {platform}):");
         for (label, run_id, state) in &report.experiments {
-            println!("  {run_id}  {:<10}  {label}", state.as_deref().unwrap_or("-"));
+            println!(
+                "  {run_id}  {:<10}  {label}",
+                state.as_deref().unwrap_or("-")
+            );
         }
-        println!("A worker of platform {platform} computes the queued ones (`blackbox serve` or `blackbox worker`).");
+        println!("Curated comparisons and saved reports in workspace 'demo':");
+        for c in &report.curated {
+            println!(
+                "  {:<10}  {:<8}  {}  ({})",
+                c.kind, c.status, c.title, c.detail
+            );
+        }
+        if report.curated.iter().any(|c| c.status == "pending") {
+            println!(
+                "Pending items need completed runs: a worker of platform {platform} computes the \
+                 queued ones (`blackbox serve` or `blackbox worker`); then run `blackbox demo \
+                 seed` again, or use `blackbox demo seed --wait`."
+            );
+        }
         rt.db.pool().close().await;
         Ok(())
     })
@@ -1510,6 +1534,11 @@ fn cmd_demo_seed(data_dir: &Path, platform: Option<String>) -> Result<()> {
 
 /// `blackbox demo`: the legacy all-in-one local server (deprecated `/api`, file store).
 fn cmd_demo(paths: &Paths, args: ServeArgs) -> Result<()> {
+    println!(
+        "`blackbox demo` serves only the deprecated file-based /api. The bundled web console \
+         talks to /api/v1 and needs `blackbox serve` with Postgres (README Quick start: \
+         `docker compose up`, or migrate + demo seed + serve)."
+    );
     if datasets::list_manifests(&paths.datasets)?.is_empty() {
         let manifest = write_synthetic(paths, &SyntheticConfig::default())?;
         println!(
@@ -1527,8 +1556,7 @@ fn cmd_demo(paths: &Paths, args: ServeArgs) -> Result<()> {
             .await
             .with_context(|| format!("binding {addr}"))?;
         let local = listener.local_addr().context("reading the bound address")?;
-        println!("BlackBox HFT is running at http://{local}/");
-        println!("API: http://{local}/api/health");
+        println!("Legacy API running at http://{local}/api/health (not the web console's /api/v1)");
         if !local.ip().is_loopback() {
             println!(
                 "Warning: listening on a non-loopback address. The legacy API has no \

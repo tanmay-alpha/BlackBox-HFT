@@ -155,6 +155,16 @@ impl Database {
             .bind(c.workspace_id).bind(c.run_a_id).bind(c.run_b_id).bind(c.comparator_version).bind(&c.eligibility).bind(&c.reasons).bind(&c.summary).bind(&c.summary_sha256).bind(&c.label).bind(c.created_by_key_id).execute(&self.pool).await?;
         Ok(sqlx::query_as("SELECT * FROM bb.comparisons WHERE workspace_id=$1 AND run_a_id=$2 AND run_b_id=$3 AND comparator_version=$4").bind(c.workspace_id).bind(c.run_a_id).bind(c.run_b_id).bind(c.comparator_version).fetch_one(&self.pool).await?)
     }
+    /// The stored comparison of `run_a` with `run_b` in `workspace` by `comparator_version`.
+    pub async fn find_comparison(
+        &self,
+        workspace: Uuid,
+        run_a: Uuid,
+        run_b: Uuid,
+        comparator_version: i32,
+    ) -> Result<Option<Comparison>> {
+        Ok(sqlx::query_as("SELECT * FROM bb.comparisons WHERE workspace_id=$1 AND run_a_id=$2 AND run_b_id=$3 AND comparator_version=$4").bind(workspace).bind(run_a).bind(run_b).bind(comparator_version).fetch_optional(&self.pool).await?)
+    }
     pub async fn comparison(&self, workspace: Uuid, id: Uuid) -> Result<Comparison> {
         sqlx::query_as("SELECT c.* FROM bb.comparisons c JOIN bb.workspaces w ON w.id=c.workspace_id WHERE c.id=$1 AND (c.workspace_id=$2 OR w.is_public_read)").bind(id).bind(workspace).fetch_optional(&self.pool).await?.ok_or(Error::NotFound)
     }

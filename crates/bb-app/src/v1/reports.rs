@@ -115,9 +115,9 @@ pub async fn create_report(
             ));
         }
     };
-    let row = state
-        .db
-        .save_report(&NewReport {
+    let row = store(
+        &state,
+        NewReport {
             workspace_id: workspace.id,
             kind: body.kind.clone(),
             run_id,
@@ -128,14 +128,41 @@ pub async fn create_report(
             body_sha256: Sha256::digest(markdown.as_bytes()).to_vec(),
             body: markdown,
             created_by_key_id: caller.key_id(),
-        })
-        .await
-        .map_err(|e| match e {
-            bb_db::Error::NotFound => ApiError::not_found(&body.kind),
-            other => other.into(),
-        })?;
-    state.hub.bump();
+        },
+    )
+    .await?;
     json(StatusCode::CREATED, &resource(&row), Cache::NoStore)
+}
+
+/// Saves a report snapshot (`POST /reports`, `blackbox demo seed`).
+pub async fn store(state: &Shared, report: NewReport) -> Result<ResearchReport, ApiError> {
+    let row = state.db.save_report(&report).await.map_err(|e| match e {
+        bb_db::Error::NotFound => ApiError::not_found(&report.kind),
+        other => other.into(),
+    })?;
+    state.hub.bump();
+    Ok(row)
+}
+
+/// A saved snapshot of a stored comparison's Markdown report.
+pub fn comparison_snapshot(
+    workspace: uuid::Uuid,
+    comparison: &bb_db::Comparison,
+    title: String,
+) -> Result<NewReport, ApiError> {
+    let markdown = comparison_markdown(comparison)?;
+    Ok(NewReport {
+        workspace_id: workspace,
+        kind: "comparison".into(),
+        run_id: None,
+        comparison_id: Some(comparison.id),
+        sweep_id: None,
+        title,
+        generator_version: GENERATOR_VERSION,
+        body_sha256: Sha256::digest(markdown.as_bytes()).to_vec(),
+        body: markdown,
+        created_by_key_id: None,
+    })
 }
 
 /// Saved reports of a workspace, newest first.
