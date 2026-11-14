@@ -596,53 +596,6 @@ async fn http_api_end_to_end() {
             .is_none()
     );
 
-    // The access guard the binary installs: foreign origins and rebound hosts are refused before
-    // any handler runs, including mutations; the server's own names and origins are admitted.
-    let guarded = bb_app::access::guard(
-        app.clone(),
-        bb_app::access::AccessPolicy::for_listener("127.0.0.1:8787".parse().unwrap(), &[], &[]),
-    );
-    let req = |method: &str, uri: &str, host: &str, origin: Option<&str>| {
-        let mut b = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header(header::HOST, host);
-        if let Some(o) = origin {
-            b = b.header(header::ORIGIN, o);
-        }
-        b.body(Body::empty()).expect("valid request")
-    };
-    let (status, _) = send(&guarded, req("GET", "/api/health", "127.0.0.1:8787", None)).await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, _) = send(
-        &guarded,
-        req(
-            "GET",
-            "/api/runs",
-            "localhost:8787",
-            Some("http://localhost:8787"),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, body) = send(
-        &guarded,
-        req("GET", "/api/runs", "attacker.example:8787", None),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(decode::<ErrorBody>(&body).error.code, "forbidden");
-    let (status, _) = send(
-        &guarded,
-        req(
-            "DELETE",
-            "/api/runs/0123456789abcdef",
-            "127.0.0.1:8787",
-            Some("https://evil.example"),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
     let health: Health = ok(&app, get("/api/health")).await;
     assert_eq!(health.status, "ok");
     assert_eq!(health.contract_version, CONTRACT_VERSION);

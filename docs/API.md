@@ -21,5 +21,4 @@ BB_CORS_ALLOWED_ORIGINS=http://localhost:5173 blackbox serve
 ```
 
 The web client already uses `/api/v1`. The unversioned `/api/*` router remains only as deprecated
-file-store tooling (`blackbox demo`, and the local-profile fallback of `serve`); hosted `serve` does not expose it.
-`blackbox demo` alone cannot serve the current console's API. Use the [local v1 stack](DEPLOYMENT.md#local).
+file-store tooling (the local-profile fallback of `serve`); hosted `serve` does not expose it.

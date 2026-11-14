@@ -25,7 +25,9 @@ saved reports; idempotent), mints one research key for workspace `lab` on the fi
 `docker compose down -v` deletes the data. CI's `docker` job runs exactly this file and checks the console, the
 five curated comparisons, the three saved reports and the printed key.
 
-Without Docker (build requirements in [BUILDING.md](BUILDING.md)):
+Without Docker (build requirements in [BUILDING.md](BUILDING.md)), against an existing Postgres database:
+`scripts/local-stack.sh` (bash) or `scripts/local-stack.ps1` (Windows PowerShell) runs the steps below except the key
+mint, reading `DATABASE_URL` and optionally `DATA_DIR` (default `data`) and `CARGO_TARGET_DIR`. The steps:
 
 ```
 cargo build --release
@@ -46,9 +48,7 @@ itself, so warm anonymous traffic leaves Postgres idle. Rows written by another 
 commands, a separate `worker`) appear in anonymous lists after the snapshot's next rebuild: the next change made by
 `serve`, at most one hour, or a restart. Keyed reads always use the database.
 
-`blackbox demo` still starts the deprecated file-based `/api` server without Postgres. The bundled console talks to
-`/api/v1` and does not work with it; the command says so when it starts. The `hosted` Docker target is the API image
-that CI publishes to `ghcr.io/tanmay-alpha/blackbox-hft`.
+The `hosted` Docker target is the API image that CI publishes to `ghcr.io/tanmay-alpha/blackbox-hft`.
 
 ## Free-tier limits that can affect the hosted demo
 

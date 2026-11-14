@@ -148,34 +148,6 @@ const DEFAULT_LOCAL_ADDR: &str = "127.0.0.1:8787";
 /// protects keys of a developer's own loopback server; the hosted profile requires a real one.
 pub const LOCAL_DEV_PEPPER: &str = "blackbox-local-development-pepper-not-secret";
 
-/// Listen address precedence for commands that do not need the full configuration (`demo`):
-/// `--addr` > `BB_ADDR` > `0.0.0.0:$PORT` > `127.0.0.1:8787`.
-pub fn listen_addr(cli: Option<SocketAddr>) -> Result<SocketAddr, ConfigError> {
-    if let Some(addr) = cli {
-        return Ok(addr);
-    }
-    let problem = |variable: &'static str, problem: String| {
-        ConfigError(vec![ConfigProblem { variable, problem }])
-    };
-    if let Some(addr) = std::env::var("BB_ADDR")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-    {
-        return addr
-            .trim()
-            .parse()
-            .map_err(|_| problem("BB_ADDR", format!("`{addr}` is not a socket address")));
-    }
-    if let Some(port) = std::env::var("PORT").ok().filter(|v| !v.trim().is_empty()) {
-        return port
-            .trim()
-            .parse::<u16>()
-            .map(|p| SocketAddr::from(([0, 0, 0, 0], p)))
-            .map_err(|_| problem("PORT", format!("`{port}` is not a TCP port")));
-    }
-    Ok(DEFAULT_LOCAL_ADDR.parse().expect("constant address"))
-}
-
 impl AppConfig {
     /// Reads the process environment.
     pub fn from_env(data_dir: PathBuf) -> Result<Self, ConfigError> {

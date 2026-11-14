@@ -3,7 +3,6 @@
 //! Offline commands (`synth`, `run`, `explain`, `compare`, `grid`, …) work on local files under
 //! `--data-dir` and need no database. `serve`, `worker`, `migrate`, `keys`, `register-dataset`
 //! and `demo seed` use Postgres (`DATABASE_URL`, see docs/engineering/DEPLOYMENT.md §5).
-//! `demo` without a subcommand is the legacy all-in-one local server.
 
 use std::{
     net::SocketAddr,
@@ -127,9 +126,9 @@ enum Command {
         /// Dataset id.
         id: String,
     },
-    /// `demo`: the legacy all-in-one local server (file store, `/api`), creating the default
-    /// synthetic dataset if none exists. `demo seed`: seed the public demo workspace.
-    Demo(DemoArgs),
+    /// Demo workspace commands (`demo seed`).
+    #[command(subcommand)]
+    Demo(DemoCommand),
 }
 
 #[derive(Args)]
@@ -210,24 +209,6 @@ struct ServeArgs {
     /// Directory of the built web UI. Served when it contains an `index.html`.
     #[arg(long, default_value = "web/dist")]
     web_dir: PathBuf,
-    /// Extra `host:port` the legacy server answers to (repeatable). Its own loopback names on
-    /// the listening port are always allowed; any other Host header is refused (DNS
-    /// rebinding). `serve` uses BB_ALLOWED_HOSTS instead.
-    #[arg(long = "allow-host")]
-    allow_host: Vec<String>,
-    /// Extra origin allowed to call the legacy API (repeatable), e.g. `http://localhost:5173`
-    /// for the Vite development server. `serve` uses BB_CORS_ALLOWED_ORIGINS instead.
-    #[arg(long = "allow-origin")]
-    allow_origin: Vec<String>,
-}
-
-#[derive(Args)]
-#[command(args_conflicts_with_subcommands = true)]
-struct DemoArgs {
-    #[command(subcommand)]
-    command: Option<DemoCommand>,
-    #[command(flatten)]
-    serve: ServeArgs,
 }
 
 #[derive(Subcommand)]
@@ -320,14 +301,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Keys(command) => cmd_keys(data_dir, command),
         Command::Openapi { out } => cmd_openapi(out),
         Command::RegisterDataset { id } => cmd_register_dataset(&paths, data_dir, &id),
-        Command::Demo(DemoArgs {
-            command: Some(DemoCommand::Seed { platform, wait }),
-            ..
-        }) => cmd_demo_seed(data_dir, platform, wait),
-        Command::Demo(DemoArgs {
-            command: None,
-            serve,
-        }) => cmd_demo(&paths, serve),
+        Command::Demo(DemoCommand::Seed { platform, wait }) => {
+            cmd_demo_seed(data_dir, platform, wait)
+        }
     }
 }
 
@@ -1358,13 +1334,9 @@ fn app_config(cli_data_dir: &Path) -> Result<AppConfig> {
     Ok(cfg)
 }
 
-/// The legacy file-store router (deprecated `/api`) for the local profile and `demo`.
-fn legacy_router(
-    paths: &Paths,
-    args: &ServeArgs,
-    addr: SocketAddr,
-    guard: bool,
-) -> Result<axum::Router> {
+/// The legacy file-store router (deprecated `/api`) and the web UI, mounted as the local
+/// profile's `serve` fallback.
+fn legacy_router(paths: &Paths, args: &ServeArgs) -> Result<axum::Router> {
     let store: Arc<dyn RunStore> = Arc::new(FsRunStore::open(&paths.runs)?);
     let state = Arc::new(AppState {
         data_root: paths.datasets.clone(),
@@ -1381,17 +1353,7 @@ fn legacy_router(
         );
         None
     };
-    let router = server::router(state, web_dir);
-    if !guard {
-        return Ok(router);
-    }
-    let policy =
-        bb_app::access::AccessPolicy::for_listener(addr, &args.allow_host, &args.allow_origin);
-    println!(
-        "Accepting requests addressed to: {}",
-        policy.hosts().join(", ")
-    );
-    Ok(bb_app::access::guard(router, policy))
+    Ok(server::router(state, web_dir))
 }
 
 fn cmd_serve(paths: &Paths, data_dir: &Path, args: ServeArgs) -> Result<()> {
@@ -1403,7 +1365,7 @@ fn cmd_serve(paths: &Paths, data_dir: &Path, args: ServeArgs) -> Result<()> {
     // The deprecated `/api` router and the web UI stay available locally until the UI uses
     // `/api/v1`; the hosted profile never serves them (TARGET_ARCHITECTURE §11).
     let legacy = match cfg.profile {
-        Profile::Local => Some(legacy_router(paths, &args, addr, false)?),
+        Profile::Local => Some(legacy_router(paths, &args)?),
         Profile::Hosted => None,
     };
     let slots = cfg.worker_slots;
@@ -1639,44 +1601,5 @@ fn cmd_demo_seed(data_dir: &Path, platform: Option<String>, wait: bool) -> Resul
         }
         rt.db.pool().close().await;
         Ok(())
-    })
-}
-
-/// `blackbox demo`: the legacy all-in-one local server (deprecated `/api`, file store).
-fn cmd_demo(paths: &Paths, args: ServeArgs) -> Result<()> {
-    println!(
-        "`blackbox demo` serves only the deprecated file-based /api. The bundled web console \
-         talks to /api/v1 and needs `blackbox serve` with Postgres (README Quick start: \
-         `docker compose up`, or migrate + demo seed + serve)."
-    );
-    if datasets::list_manifests(&paths.datasets)?.is_empty() {
-        let manifest = write_synthetic(paths, &SyntheticConfig::default())?;
-        println!(
-            "No dataset found; generated the default synthetic dataset '{}' ({} rows, {:.0} s). \
-             It is generated from a seed, not recorded market data.",
-            manifest.id,
-            manifest.counts.rows,
-            seconds(manifest.end - manifest.start)
-        );
-    }
-    let addr = bb_app::config::listen_addr(args.addr)?;
-    let app = legacy_router(paths, &args, addr, true)?;
-    tokio_runtime()?.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("binding {addr}"))?;
-        let local = listener.local_addr().context("reading the bound address")?;
-        println!("Legacy API running at http://{local}/api/health (not the web console's /api/v1)");
-        if !local.ip().is_loopback() {
-            println!(
-                "Warning: listening on a non-loopback address. The legacy API has no \
-                 authentication; anyone who can reach it can run simulations and read or delete \
-                 stored runs."
-            );
-        }
-        println!("{DISCLAIMER}");
-        println!("Press Ctrl-C to stop.");
-        server::serve(listener, app).await.context("serving HTTP")?;
-        Ok::<(), anyhow::Error>(())
     })
 }

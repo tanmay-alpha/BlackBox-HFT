@@ -146,7 +146,6 @@ Details and licences: [OPEN_SOURCE_RESEARCH.md](OPEN_SOURCE_RESEARCH.md#reuse-bo
 Use https://blackbox-hft.vercel.app for the read-only synthetic demo, or start the supported
 local v1 stack with `docker compose up --build` and open http://127.0.0.1:8787
 ([DEPLOYMENT.md](DEPLOYMENT.md#local)). A research key is needed only to create experiments.
-`blackbox demo` is the deprecated `/api` server and cannot populate this console.
 
 | Time | Screen (route) | Do | Say |
 |---|---|---|---|

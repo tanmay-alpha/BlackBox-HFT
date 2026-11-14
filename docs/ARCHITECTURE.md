@@ -152,8 +152,7 @@ by every run, replay request and grid cell (`crates/bb-app/src/datasets.rs`).
 - **Local v1:** `blackbox serve` uses Postgres plus filesystem artefacts and serves `web/dist`.
   [Docker Compose or the local commands](DEPLOYMENT.md#local) start this supported console stack.
 - **Offline/legacy:** `blackbox run`, `explain`, `compare` and `grid` use local files without a
-  database. `blackbox demo` starts only deprecated `/api`, which cannot populate the current console.
-  The local `serve` profile retains that router as a fallback; hosted `serve` does not.
+  database. The deprecated `/api` router is only a local-profile `serve` fallback.
 - **Network:** hosted storage and database connections are outbound network traffic. The engine
   has no `live` feature or exchange trading connectivity.
 - **Threads:** each simulation is single-threaded; queued sweeps fan out into ordinary jobs on

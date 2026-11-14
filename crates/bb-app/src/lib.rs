@@ -10,7 +10,6 @@
 //! Nothing in this crate talks to an exchange. Every number it returns comes from a simulation
 //! over historical or synthetic data.
 
-pub mod access;
 pub mod admission;
 pub mod analytics;
 pub mod api;

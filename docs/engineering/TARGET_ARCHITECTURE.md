@@ -125,8 +125,8 @@ Rules (checked by `cargo tree -e normal -i <crate>` in CI **[INFERENCE: check to
    `rust-version` ≥ 1.94 and the Dockerfile builder image ≥ 1.94 (OSS evaluation §3.5).
 
 **Cutover status:** the static exporter, static client mode and static build script are removed.
-The web client uses `/api/v1`. `bb-app::store`, the `/api` router, `access.rs` and its old semaphores
-remain for DB-free offline commands / deprecated `blackbox demo` and the local `serve` fallback;
+The web client uses `/api/v1`. `bb-app::store`, the `/api` router and its old semaphores
+remain for DB-free offline commands and the local `serve` fallback (`blackbox demo` and `access.rs` are removed);
 they are not the hosted architecture. Local `blackbox serve` uses Postgres plus filesystem
 artefact storage. `blackbox run` stays DB-free and writes the legacy file-store result.
 
@@ -427,9 +427,8 @@ disjoint.
 | – | `/api/v1/jobs…`, `/api/v1/whoami`, `/api/v1/reports…`, `/api/v1/system/…`, `/api/v1/openapi.json` |
 
 **Current boundary:** the generated v1 web client has already replaced the old client. The legacy
-router remains in `blackbox demo` and as a local-profile `serve` fallback; hosted `serve` never
-mounts it (`main.rs::cmd_serve`). Do not use `blackbox demo` as a quick start for the current console,
-or expose its unauthenticated `/api` routes as the public service.
+router remains only as a local-profile `serve` fallback; hosted `serve` never
+mounts it (`main.rs::cmd_serve`). Do not expose its unauthenticated `/api` routes as the public service.
 
 ## 12. Graceful shutdown (SIGTERM)
 
