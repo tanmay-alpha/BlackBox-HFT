@@ -12,6 +12,18 @@ IMPLEMENTATION_TRACKER (T16).
 | 4 | Low | `max_events=0` returns the same `next_cursor` forever | `v1/runs.rs` `timeline_page` | Follow cursors with `max_events=0` | No cursor for count-only requests, or reject 0 on cursor pages |
 | 5 | Low | The anonymous cache key includes unknown query parameters, and the whole cache is cleared at 512 entries / 32 MiB, so unique `?x=N` requests evict the demo cache | `v1/edge.rs:484`, ~`:550` | Send 512 distinct `?x=` requests | Normalize the key to known parameters; evict per entry |
 
+## Fix status
+
+| # | Status | Commit |
+|---|---|---|
+| 1 | fixed | `7e2889b` (merge in `rebuild/explore`) |
+| 2 | fixed | `7e2889b`; follow-up `50c7a54` (byte-bounded single-flight parsed-run cache) |
+| 3 | fixed | `7e2889b`; follow-up `50c7a54` (list cursors bind documented params only) |
+| 4 | fixed | `7e2889b` |
+| 5 | fixed | `7e2889b` |
+
+Production deployment evidence pending.
+
 Checked with no finding: ITCH decoder length checks before field reads (`itch/decode.rs:404-418`);
 execute/cancel quarantine prevents underflow (`itch/book.rs:880,930`); API key kept in
 `sessionStorage` and cleared on 401; no `dangerouslySetInnerHTML`/`innerHTML`/`eval` in `web/src`.

@@ -24,4 +24,4 @@ Screenshots: `docs/rebuild/img/responsive-<route>-<width>.webp`.
 
 All 24 narrow measurements equal the viewport width; no element in `#main`, the top bar or the status bar overflows an `overflow: hidden` ancestor at 768 or 390 (one 9 px badge clip in a panel title on `/data` at 390).
 
-Known gaps: workspaces built from stacked resizable split panes (`/book/runs/…`, `/forensics/…/orders/…`) keep their split layout on narrow screens, so some panes are short at 390×844 (each pane scrolls internally).
+Known gaps: none open. Workspaces built from stacked resizable split panes (`/book/runs/…`, `/forensics/…/orders/…`) previously kept their split layout on narrow screens (short panes at 390×844); fixed by `b7cb1b0`, which stacks split panes below 960 px. Production deployment evidence pending.
