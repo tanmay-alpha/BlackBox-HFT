@@ -79,7 +79,7 @@ erDiagram
 | `dataset_versions` | uuid; `(dataset_id, version_no)`, `(dataset_id, events_sha256)` unique | **immutable** except `retired_at` | span `< 2^53` ns CHECK (AT-9); `storage = regenerate` for synthetic (rebuilt on cold start, sha-verified, no Blob ops) |
 | `dataset_quality_reports` | `(dataset_version_id, checker_version)` | immutable | re-runnable with a newer checker without touching the version |
 | `experiment_configs` | uuid; **`fingerprint` unique**; `short_id` (16 hex, generated) unique | **immutable** | `strategy_kind`, `interval_ns` generated from `config`; `est_*` from `estimate_work` fixed at admission |
-| `runs` | uuid; **`(experiment_config_id, platform)` unique where not quarantined** | **immutable** except quarantine | `is_canonical` generated (`linux-x86_64`); promoted metrics generated from `metrics` jsonb; `summary_sha256` re-checked on serve |
+| `runs` | uuid; **`(experiment_config_id, platform)` unique where not quarantined** | **immutable** except quarantine | `is_canonical` written at insert from bb-core `platform::is_canonical` (libm fingerprint = `CANONICAL_LIBM`; migration 0007); promoted metrics generated from `metrics` jsonb; `summary_sha256` re-checked on serve |
 | `run_artifacts` | uuid; `(run_id, kind)`, `(storage_backend, storage_key)` unique | **immutable** | sha256, size, format version, page index + its sha256; delete enqueues `blob_gc` |
 | `blob_gc` | `(storage_backend, storage_key)` | work queue | upload-intent log + deletion outbox (§6.6) |
 | `storage_usage_monthly` | `(month, storage_backend)` | counters | Vercel Blob Hobby allowance accounting [V1] |

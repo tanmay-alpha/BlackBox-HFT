@@ -403,7 +403,7 @@ impl AppConfig {
         if !is_platform(&result_platform) {
             problem(
                 "BB_RESULT_PLATFORM",
-                format!("`{result_platform}` is not a platform class like linux-x86_64"),
+                format!("`{result_platform}` is not a platform class like {worker_platform}"),
             );
         }
 
@@ -593,15 +593,27 @@ pub fn is_origin(value: &str) -> bool {
         && !rest.contains(['/', '?', '#', '*', '@', ' '])
 }
 
-/// Same shape as the database constraint (`0006_api.sql`).
+/// Same shape as the database constraint (`0007_platform_libm.sql`):
+/// `<os>-<arch>[-<env>][+libm-<8 lowercase hex>]`. Classes without the libm suffix were recorded
+/// before fingerprints existed and remain valid for reading old rows.
 pub fn is_platform(value: &str) -> bool {
-    let mut parts = value.split('-');
+    let (target, libm) = match value.split_once("+libm-") {
+        Some((target, fp)) => (target, Some(fp)),
+        None => (value, None),
+    };
+    let mut parts = target.split('-');
     let ok_part = |p: &str| {
         !p.is_empty()
             && p.bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
     };
     value.len() <= 64
+        && libm.is_none_or(|fp| {
+            fp.len() == 8
+                && fp
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
         && parts.next().is_some_and(|p| ok_part(p) && !p.contains('_'))
         && parts.clone().count() >= 1
         && parts.all(ok_part)
@@ -698,6 +710,11 @@ mod tests {
         );
         assert!(is_platform("windows-x86_64-gnu"));
         assert!(is_platform("linux-x86_64"));
+        assert!(is_platform("linux-x86_64+libm-53154a4e"));
+        assert!(is_platform("windows-x86_64-gnu+libm-e9b26b47"));
+        assert!(is_platform(&bb_core::platform::platform_class()));
+        assert!(!is_platform("linux-x86_64+libm-53154A4E"));
+        assert!(!is_platform("linux-x86_64+libm-123"));
         assert!(!is_platform("Linux"));
     }
 }

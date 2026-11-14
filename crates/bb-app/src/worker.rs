@@ -751,7 +751,7 @@ async fn persist(
     let key = format!(
         "runs/{}/{}/{}.bbz",
         hex::encode(fingerprint),
-        job.platform,
+        bb_core::platform::storage_segment(&job.platform),
         run_uuid
     );
     // 4a: upload intent (own transaction) so an orphaned object is garbage collected.

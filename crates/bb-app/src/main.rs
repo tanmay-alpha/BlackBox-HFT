@@ -214,8 +214,10 @@ enum DemoCommand {
     /// Register the synthetic demo dataset and queue the canonical demo experiments in the
     /// public demo workspace (idempotent; needs DATABASE_URL).
     Seed {
-        /// Platform class the results are recorded for (default BB_RESULT_PLATFORM or this
-        /// build's class). Seeding hosted data from another machine: `linux-x86_64`.
+        /// Full platform class the results are recorded for, e.g. `linux-x86_64+libm-53154a4e`
+        /// (default BB_RESULT_PLATFORM or this build's class). Only a worker of exactly that
+        /// class computes the queued jobs; hosted results are produced by the Linux worker, so
+        /// seeding hosted data from another machine passes the Linux worker's class.
         #[arg(long)]
         platform: Option<String>,
     },
@@ -1501,6 +1503,12 @@ fn cmd_register_dataset(paths: &Paths, data_dir: &Path, id: &str) -> Result<()> 
 fn cmd_demo_seed(data_dir: &Path, platform: Option<String>) -> Result<()> {
     let cfg = app_config(data_dir)?;
     let platform = platform.unwrap_or_else(|| cfg.result_platform.clone());
+    if !bb_app::config::is_platform(&platform) {
+        bail!(
+            "`{platform}` is not a platform class like {}",
+            bb_core::platform::platform_class()
+        );
+    }
     tokio_runtime()?.block_on(async move {
         let rt = runtime::Runtime::build(cfg, "seed", 0).await?;
         let report = bb_app::seed::seed(&rt, &platform).await?;

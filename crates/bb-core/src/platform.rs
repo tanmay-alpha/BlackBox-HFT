@@ -63,6 +63,14 @@ pub fn is_canonical(platform: &str) -> bool {
     CANONICAL_LIBM.is_some() && libm_of(platform) == CANONICAL_LIBM
 }
 
+/// `platform` as one storage-key path segment: `+` becomes `.`, so
+/// `linux-x86_64+libm-53154a4e` is stored under `linux-x86_64.libm-53154a4e`. Artifact keys
+/// allow only ASCII alphanumerics, `-`, `_` and `.`; the worker and the database's completion
+/// check both build keys with this.
+pub fn storage_segment(platform: &str) -> String {
+    platform.replace('+', ".")
+}
+
 /// First 8 hex digits of the SHA-256 of the bit patterns of [`libm_probe`]'s results.
 /// Computed once per process.
 pub fn libm_fingerprint() -> &'static str {
