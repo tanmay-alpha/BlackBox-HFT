@@ -831,8 +831,9 @@ pub struct TimelineQuery {
     pub t0_ns: Option<String>,
     /// Inclusive window end (default: `min(run end, t0 + 60 s)`).
     pub t1_ns: Option<String>,
-    /// Events per page: default 5000, values above 50000 are capped. `0` returns no events
-    /// (counts and context only) with `next_cursor` at the window's first event.
+    /// Events per page: default 5000; values below 100 are raised to 100 and values above
+    /// 50000 are capped. `0` returns no events (counts and context only) and no `next_cursor`;
+    /// it is refused on `cursor` pages.
     pub max_events: Option<u32>,
     /// `next_cursor` of the previous page; `t0_ns`, `t1_ns` and `platform` must be unchanged.
     pub cursor: Option<String>,
@@ -891,9 +892,20 @@ pub async fn timeline(
 ) -> Result<Response, ApiError> {
     let _permit = heavy(&state).await?;
     let run = run_data(&state, &caller, &run_id, q.platform.as_deref()).await?;
-    let full = run.full().await?;
+    let full = run.full_shared().await?;
     let page = timeline_page(&full, &run.view.short_id, &q, byte_cap(&state, &caller))?;
     immutable_value(&headers, &serde_json::to_value(&page)?)
+}
+
+/// Smallest number of events on a timeline page (except count-only first pages).
+const MIN_TIMELINE_PAGE: u32 = 100;
+
+/// Position of a timeline cursor page: the next event's `seq` and the window's event count
+/// (carried so cursor pages do not recount the window).
+#[derive(Serialize, Deserialize)]
+struct TimelineCursor {
+    row: u64,
+    total: u64,
 }
 
 /// One page of [`timeline`] over a loaded run, bounded to `cap` response bytes.
@@ -905,19 +917,32 @@ pub fn timeline_page(
 ) -> Result<RunTimeline, ApiError> {
     let t0 = ns_param("t0_ns", q.t0_ns.as_deref())?;
     let t1 = ns_param("t1_ns", q.t1_ns.as_deref())?;
-    let filters = format!("timeline|{t0:?}|{t1:?}|{:?}", q.platform);
-    let from_seq = q
+    let filters = format!("timeline|{run_id}|{t0:?}|{t1:?}|{:?}", q.platform);
+    let cursor = q
         .cursor
         .as_deref()
-        .map(|c| decode_cursor::<RowCursor>(c, &filters))
-        .transpose()?
-        .map(|c| c.row);
-    let limit = q.max_events.unwrap_or(5_000).min(50_000) as usize;
+        .map(|c| decode_cursor::<TimelineCursor>(c, &filters))
+        .transpose()?;
+    let limit = match (q.max_events, &cursor) {
+        (Some(0), Some(_)) => {
+            return Err(ApiError::invalid_field(
+                "max_events",
+                "max_events must be at least 1 on cursor pages",
+            ));
+        }
+        (Some(0), None) => 0,
+        (Some(n), _) => n.clamp(MIN_TIMELINE_PAGE, 50_000) as usize,
+        (None, _) => 5_000,
+    };
+    let from_seq = cursor.as_ref().map(|c| c.row);
     let w = crate::server::timeline_window(run, t0, t1)?;
-    let events_total = crate::server::timeline_events(run, w, 0).count() as u64;
+    let events_total = match &cursor {
+        Some(c) => c.total,
+        None => crate::server::timeline_events(run, w, 0).count() as u64,
+    };
 
     let (mut fills, mut equity, mut orders, mut context_bytes) = (vec![], vec![], vec![], 0);
-    if from_seq.is_none() {
+    if cursor.is_none() {
         let context = crate::server::timeline_context(run, w);
         for (out, items) in [
             (&mut fills, wire_items(&context.fills)?),
@@ -941,7 +966,9 @@ pub fn timeline_page(
     let mut events = Vec::new();
     let mut used = 0usize;
     let mut stop = None;
-    for event in crate::server::timeline_events(run, w, from_seq.unwrap_or(0)) {
+    // Count-only pages (`max_events = 0`) read no events and end without a cursor.
+    let events_from = crate::server::timeline_events(run, w, from_seq.unwrap_or(0));
+    for event in events_from.take_while(|_| limit > 0) {
         if events.len() == limit {
             stop = Some((event.seq, TruncatedBy::Limit));
             break;
@@ -968,7 +995,15 @@ pub fn timeline_page(
         t1_ns: w.t1.to_string(),
         events,
         events_total,
-        next_cursor: stop.map(|(row, _)| encode_cursor(&RowCursor { row }, &filters)),
+        next_cursor: stop.map(|(row, _)| {
+            encode_cursor(
+                &TimelineCursor {
+                    row,
+                    total: events_total,
+                },
+                &filters,
+            )
+        }),
         truncated_by: stop.map(|(_, why)| why),
         fills,
         equity,

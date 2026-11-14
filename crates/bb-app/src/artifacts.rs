@@ -183,12 +183,17 @@ impl Storage {
     }
 }
 
-/// Byte-bounded LRU of verified bundle files.
+/// Parsed runs kept in memory for paged whole-run reads (timeline cursor pages).
+const PARSED_RUNS: usize = 2;
+
+/// Byte-bounded LRU of verified bundle files, plus the last few parsed runs.
 pub struct BundleCache {
     dir: PathBuf,
     capacity: u64,
     entries: Mutex<HashMap<String, (u64, u64)>>,
     clock: std::sync::atomic::AtomicU64,
+    /// Most recently used last, keyed by bundle sha256 (content-addressed, so never stale).
+    parsed: Mutex<Vec<(String, Arc<RunResult>)>>,
 }
 
 impl BundleCache {
@@ -204,6 +209,7 @@ impl BundleCache {
             capacity: capacity.max(1),
             entries: Mutex::new(HashMap::new()),
             clock: Default::default(),
+            parsed: Mutex::new(Vec::new()),
         })
     }
 
@@ -569,6 +575,38 @@ impl OpenRun {
             })
         })
         .await
+    }
+
+    /// [`Self::full`], shared through a small in-memory cache keyed by the bundle digest, so
+    /// paging over one run (timeline cursor pages) decodes it once rather than per page.
+    pub async fn full_shared(&self) -> Result<Arc<RunResult>, ApiError> {
+        let sha = &self.trust.sha256;
+        {
+            let mut parsed = self
+                .cache
+                .parsed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(i) = parsed.iter().position(|(k, _)| k == sha) {
+                let hit = parsed.remove(i);
+                let run = hit.1.clone();
+                parsed.push(hit);
+                return Ok(run);
+            }
+        }
+        let run = Arc::new(self.full().await?);
+        let mut parsed = self
+            .cache
+            .parsed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !parsed.iter().any(|(k, _)| k == sha) {
+            if parsed.len() >= PARSED_RUNS {
+                parsed.remove(0);
+            }
+            parsed.push((sha.clone(), run.clone()));
+        }
+        Ok(run)
     }
 
     /// Path of the verified cached bundle (export).

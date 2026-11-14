@@ -297,6 +297,7 @@ dependencies = [
  "flate2",
  "governor",
  "hex",
+ "hmac 0.12.1",
  "reqwest",
  "rustls",
  "serde",

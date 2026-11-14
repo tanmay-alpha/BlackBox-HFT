@@ -150,8 +150,9 @@ Two styles, both with a hard response-size cap of **4 MiB of uncompressed JSON**
 
 - **Cursor** (all lists of DB resources and append-only run sections): `?limit=&cursor=`. The response is
   `{ "items": [...], "next_cursor": string | null, "truncated_by": "limit" | "bytes" | null }`. Cursors are opaque
-  base64url strings encoding the keyset (`created_at`, `id`, or the section row index) and a hash of the filters. A
-  cursor reused with different filters → 400.
+  strings: the base64url keyset (`created_at`, `id`, or the section row index) and an HMAC-SHA-256 (keyed from the
+  API key pepper) of that keyset and the filters (for the timeline also the run id). A cursor reused with different
+  filters, or altered → 400.
 - **Offset** (only where the UI needs random access and totals: `orders`): `?offset=&limit=` →
   `{ "items": [...], "offset": n, "total": n, "next_offset": n | null, "truncated_by": … }`.
 
@@ -167,10 +168,11 @@ Handlers bound their output first (pages, analytics series downsampled to fit, r
 advice), so a client sees it only when even the smallest representation does not fit; never silently truncated
 JSON. The only exempt body is the keyed bundle export (`application/gzip`, bounded by the output limit). The same
 measured length, not a `Content-Length` header, is added to the daily egress counter of the class (cached anonymous
-bodies included; `HEAD` counts 0). Today's persisted counter is added once per class: read before the first body
-above 64 KiB (if that read fails, the body is refused with 503 `unavailable` `database`, fail closed) or taken from
-the first 5 MB flush; a body above 64 KiB reserves its bytes atomically and is refused with 503 `unavailable`
-(`details.budget = "egress"`) when the daily budget would be exceeded.
+bodies included; `HEAD` counts 0). Today's persisted counter is added once per class: read before the first
+non-error body above 2 KiB (if that read fails, the body is refused with 503 `unavailable` `database`, fail closed)
+or taken from the first 5 MB flush; a non-error body above 2 KiB reserves its bytes atomically and is refused with
+503 `unavailable` (`details.budget = "egress"`) when the daily budget would be exceeded, so once the budget is spent
+only tiny bodies and errors are served.
 
 **Analytics series.** `GET /runs/{id}/analytics` and `GET /datasets/{id}[/versions/{v}]/analytics` return every
 aggregate in full; each series field (`curve`, `points`, `ofi_intervals`, `trade_intervals`) longer than 100 points
@@ -253,7 +255,7 @@ experiment in the caller's workspace or in demo. A run that fails verification a
 | `GET /runs/{run_id}/fills` | read | `t0_ns`, `t1_ns`, `cursor`, `limit ≤ 5000` | cursor page of `FillRecord` |
 | `GET /runs/{run_id}/equity` | read | `t0_ns`, `t1_ns`, `max_points ≤ 5000` (default 2000), `cursor` | `{items: EquitySample[] \| EquityBucket[], downsampled: bool, bucket_ns: string \| null, next_cursor, truncated_by}`. When the window has more than `max_points` samples, buckets carry `{t0_ns, t1_ns, first, last, min_equity, max_equity, n}` and the UI shows `DOWNSAMPLED` |
 | `GET /runs/{run_id}/tape` | read | `from_seq`, `order_id`, `limit ≤ 5000` (default 500) | cursor page of `FlightEvent` (cursor = next seq) |
-| `GET /runs/{run_id}/timeline` | read | `t0_ns`, `t1_ns`, `max_events ≤ 50000` (events per page, default 5000), `cursor` | `RunTimeline` (ns as strings): one page of the window's events in tape `seq` order plus `events_total`, `next_cursor` (`null` when the window is complete) and `truncated_by`. Pages fit the caller's response cap. `fills`/`equity`/`orders` come on the first page only (empty on `cursor` pages); if they alone exceed the cap: 400 `invalid_request`, `details.reason = "window_too_large"` |
+| `GET /runs/{run_id}/timeline` | read | `t0_ns`, `t1_ns`, `max_events` (events per page, default 5000; raised to ≥ 100, capped at 50000; `0` = counts and context only, no `next_cursor`, refused on `cursor` pages), `cursor` (bound to the run and window; carries `events_total`) | `RunTimeline` (ns as strings): one page of the window's events in tape `seq` order plus `events_total`, `next_cursor` (`null` when the window is complete) and `truncated_by`. Pages fit the caller's response cap. `fills`/`equity`/`orders` come on the first page only (empty on `cursor` pages); if they alone exceed the cap: 400 `invalid_request`, `details.reason = "window_too_large"` |
 | `GET /runs/{run_id}/report` | read | | `text/markdown` research report, deterministic |
 | `GET /runs/{run_id}/export` | read | | `application/gzip`, `Content-Disposition: attachment; filename="run-<run_id>-<platform>.bbz"`: the verified bundle (gzip-member NDJSON, format v1; `blackbox verify-bundle` checks it offline). Bounded by `max_output_bytes` |
 

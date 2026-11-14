@@ -1,6 +1,8 @@
 //! Response and request plumbing shared by the handlers: wire-encoded JSON with caching
 //! headers, byte-bounded pages, opaque cursors and the strict JSON body extractor.
 
+use std::sync::OnceLock;
+
 use axum::{
     body::Body,
     extract::{FromRequest, Request},
@@ -8,6 +10,7 @@ use axum::{
     response::Response,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -156,32 +159,56 @@ pub fn bounded<T: Serialize>(items: &[T], cap: usize) -> Result<(Vec<Value>, boo
     Ok((out, false))
 }
 
-/// Opaque cursor: base64url JSON of a position plus a hash of the filters it belongs to.
+/// Key of the cursor MACs, derived from the API key pepper by [`set_cursor_key`] when the state
+/// is built (one pepper per process). Without it (unit tests of pure page functions) the MAC is
+/// keyed with zeros: still bound to the position and the filters, but forgeable.
+static CURSOR_KEY: OnceLock<[u8; 32]> = OnceLock::new();
+
+/// Keys every cursor with `secret` (the API key pepper); the first call wins.
+pub fn set_cursor_key(secret: &[u8]) {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(b"blackbox cursor v1");
+    let _ = CURSOR_KEY.set(mac.finalize().into_bytes().into());
+}
+
+/// HMAC-SHA-256 of a cursor's position bytes and the filters it belongs to.
+fn cursor_mac(position: &[u8], filters: &str) -> Hmac<Sha256> {
+    let key = CURSOR_KEY.get().copied().unwrap_or_default();
+    let mut mac = Hmac::<Sha256>::new_from_slice(&key).expect("HMAC accepts any key length");
+    mac.update(&(position.len() as u64).to_be_bytes());
+    mac.update(position);
+    mac.update(filters.as_bytes());
+    mac
+}
+
+/// Opaque cursor: base64url JSON of a position, `.`, and the base64url HMAC-SHA-256 (keyed with
+/// a server secret) of that position and the filters it belongs to, so a cursor can be neither
+/// forged nor reused with other filters (callers include the resource id in `filters`).
 pub fn encode_cursor<P: Serialize>(position: &P, filters: &str) -> String {
-    let data = serde_json::to_vec(&(position, filter_hash(filters))).unwrap_or_default();
-    URL_SAFE_NO_PAD.encode(data)
+    let data = serde_json::to_vec(position).unwrap_or_default();
+    let tag = cursor_mac(&data, filters).finalize().into_bytes();
+    format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(&data),
+        URL_SAFE_NO_PAD.encode(tag)
+    )
 }
 
 pub fn decode_cursor<P: DeserializeOwned>(cursor: &str, filters: &str) -> Result<P, ApiError> {
-    if cursor.len() > 512 {
-        return Err(ApiError::invalid_field("cursor", "invalid cursor"));
+    let invalid = || ApiError::invalid_field("cursor", "invalid cursor");
+    if cursor.len() > 1024 {
+        return Err(invalid());
     }
-    let data = URL_SAFE_NO_PAD
-        .decode(cursor)
-        .map_err(|_| ApiError::invalid_field("cursor", "invalid cursor"))?;
-    let (position, hash): (P, String) = serde_json::from_slice(&data)
-        .map_err(|_| ApiError::invalid_field("cursor", "invalid cursor"))?;
-    if hash != filter_hash(filters) {
+    let (data, tag) = cursor.split_once('.').ok_or_else(invalid)?;
+    let data = URL_SAFE_NO_PAD.decode(data).map_err(|_| invalid())?;
+    let tag = URL_SAFE_NO_PAD.decode(tag).map_err(|_| invalid())?;
+    if cursor_mac(&data, filters).verify_slice(&tag).is_err() {
         return Err(ApiError::invalid_field(
             "cursor",
             "the cursor belongs to different filters",
         ));
     }
-    Ok(position)
-}
-
-fn filter_hash(filters: &str) -> String {
-    hex::encode(&Sha256::digest(filters.as_bytes())[..8])
+    serde_json::from_slice(&data).map_err(|_| invalid())
 }
 
 /// A JSON request body: ≤ 1 MiB, `application/json`, nanosecond strings accepted, unknown

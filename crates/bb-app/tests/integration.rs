@@ -1500,10 +1500,10 @@ fn v1_timeline_pages_equal_the_unpaged_window() {
     );
     assert!(!unpaged.equity.is_empty());
 
-    // Seven per page splits groups of four identical timestamps across page boundaries
+    // 102 per page splits groups of four identical timestamps across page boundaries
     // without losing or repeating an event.
-    let pages = v1_all_pages(run, &v1_query(t0, t1, Some(7)), NO_CAP);
-    assert_eq!(pages.len(), 9_600_usize.div_ceil(7));
+    let pages = v1_all_pages(run, &v1_query(t0, t1, Some(102)), NO_CAP);
+    assert_eq!(pages.len(), 9_600_usize.div_ceil(102));
     assert_eq!(all_seqs(&pages), expected);
     let split = pages.windows(2).any(|w| {
         let a = w[0]["events"].as_array().unwrap();
@@ -1514,6 +1514,20 @@ fn v1_timeline_pages_equal_the_unpaged_window() {
         split,
         "no page boundary fell inside an identical-timestamp group"
     );
+}
+
+#[test]
+fn v1_timeline_pages_hold_at_least_100_events() {
+    let (run, t0, t1) = paging_fixture();
+    let (t0, t1) = (*t0, *t1);
+    // Smaller sizes are raised to 100 on every page, so `max_events = 1` cannot make paging
+    // over a large window quadratic.
+    let pages = v1_all_pages(run, &v1_query(t0, t1, Some(1)), NO_CAP);
+    assert_eq!(pages.len(), 96);
+    for page in &pages {
+        assert_eq!(page_seqs(page).len(), 100);
+    }
+    assert_eq!(all_seqs(&pages), window_seqs(run, t0, t1));
 }
 
 #[test]
@@ -1533,25 +1547,53 @@ fn v1_timeline_pages_reach_the_first_and_last_event_of_the_run() {
 fn v1_timeline_cursor_is_bound_to_the_window() {
     let (run, t0, t1) = paging_fixture();
     let (t0, t1) = (*t0, *t1);
-    let first = v1_page(run, &v1_query(t0, t1, Some(10)), NO_CAP).unwrap();
+    let first = v1_page(run, &v1_query(t0, t1, Some(100)), NO_CAP).unwrap();
     let cursor = first["next_cursor"].as_str().unwrap().to_string();
     let with = |mut q: V1TimelineQuery| {
         q.cursor = Some(cursor.clone());
         q
     };
     // The page size may change between pages; the window may not.
-    let next = v1_page(run, &with(v1_query(t0, t1, Some(3))), NO_CAP).unwrap();
-    assert_eq!(page_seqs(&next)[0], page_seqs(&first)[9] + 1);
+    let next = v1_page(run, &with(v1_query(t0, t1, Some(300))), NO_CAP).unwrap();
+    assert_eq!(page_seqs(&next), window_seqs(run, t0, t1)[100..400]);
+    // The cursor is bound to the run, and its position (next seq, window count) is keyed:
+    // a changed position is refused, so a cursor cannot be forged.
+    let other_run = timeline_page(run, "other-run", &with(v1_query(t0, t1, None)), NO_CAP)
+        .err()
+        .expect("a cursor of another run");
+    assert_eq!(other_run.details["field"], "cursor");
+    let (_, tag) = cursor.split_once('.').unwrap();
+    let forged = format!(
+        "{}.{tag}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            br#"{"row":5000,"total":1}"#
+        )
+    );
+    let err = v1_page(
+        run,
+        &V1TimelineQuery {
+            cursor: Some(forged),
+            ..v1_query(t0, t1, None)
+        },
+        NO_CAP,
+    )
+    .unwrap_err();
+    assert_eq!(err.details["field"], "cursor");
+    // `max_events = 0` (count only) is refused on cursor pages.
+    let err = v1_page(run, &with(v1_query(t0, t1, Some(0))), NO_CAP).unwrap_err();
+    assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    assert_eq!(err.details["field"], "max_events");
     for q in [
-        with(v1_query(t0 + 1, t1, Some(10))),
-        with(v1_query(t0, t1 - 1, Some(10))),
+        with(v1_query(t0 + 1, t1, Some(100))),
+        with(v1_query(t0, t1 - 1, Some(100))),
         with(V1TimelineQuery {
             platform: Some("other".into()),
-            ..v1_query(t0, t1, Some(10))
+            ..v1_query(t0, t1, Some(100))
         }),
         V1TimelineQuery {
             cursor: Some("not-a-cursor".into()),
-            ..v1_query(t0, t1, Some(10))
+            ..v1_query(t0, t1, Some(100))
         },
     ] {
         let err = v1_page(run, &q, NO_CAP).unwrap_err();
@@ -1611,12 +1653,12 @@ fn v1_timeline_refuses_a_window_whose_context_exceeds_the_cap() {
     assert_eq!(err.details["reason"], "window_too_large");
     assert_eq!(err.details["limit_bytes"], cap);
     // Cursor pages carry no context and still fit.
-    let first = v1_page(run, &v1_query(t0, t1, Some(5)), NO_CAP).unwrap();
+    let first = v1_page(run, &v1_query(t0, t1, Some(100)), NO_CAP).unwrap();
     let q = V1TimelineQuery {
         cursor: first["next_cursor"].as_str().map(str::to_string),
-        ..v1_query(t0, t1, Some(5))
+        ..v1_query(t0, t1, Some(100))
     };
-    assert_eq!(page_seqs(&v1_page(run, &q, cap).unwrap()).len(), 5);
+    assert!(!page_seqs(&v1_page(run, &q, cap).unwrap()).is_empty());
 }
 
 #[test]
@@ -1628,22 +1670,13 @@ fn v1_timeline_empty_window_has_no_cursor() {
     assert_eq!(page["events_total"], 0);
     assert!(page["next_cursor"].is_null());
     assert!(page["truncated_by"].is_null());
-    // `max_events = 0` on a non-empty window: counts only, with a cursor at its first event.
+    // `max_events = 0` on a non-empty window: counts only, and no cursor (a cursor would
+    // repeat the same empty page forever).
     let count = v1_page(run, &v1_query(*t0, t0 + 2, Some(0)), NO_CAP).unwrap();
     assert_eq!(count["events"], serde_json::json!([]));
     assert_eq!(count["events_total"], 4);
-    assert_eq!(count["truncated_by"], "limit");
-    let rest = v1_page(
-        run,
-        &V1TimelineQuery {
-            cursor: count["next_cursor"].as_str().map(str::to_string),
-            ..v1_query(*t0, t0 + 2, None)
-        },
-        NO_CAP,
-    )
-    .unwrap();
-    assert_eq!(page_seqs(&rest), [0, 1, 2, 3]);
-    assert!(rest["next_cursor"].is_null());
+    assert!(count["next_cursor"].is_null());
+    assert!(count["truncated_by"].is_null());
 }
 
 async fn attachment(app: &Router, uri: &str, content_type: &str, filename: &str) -> Vec<u8> {
