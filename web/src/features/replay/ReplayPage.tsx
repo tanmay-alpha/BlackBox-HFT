@@ -479,6 +479,7 @@ export default function ReplayPage() {
                   label: 'Order book heatmap',
                   defaultSize: '72%',
                   minSize: '40%',
+                  stackHeight: 'max(280px, 55dvh)',
                   content: (
                     <Panel
                       title="Order book heatmap"

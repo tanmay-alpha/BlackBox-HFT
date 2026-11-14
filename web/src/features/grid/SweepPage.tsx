@@ -28,7 +28,7 @@ import { paths } from "../../shell/paths";
 import { Workspace } from "../../shell/Workspace";
 import { CompareTabs } from "../experiments/CompareTabs";
 import { STATE_NOTE, STATE_TONE, pollInterval } from "../sim/jobs";
-import { METRICS, OBJECTIVES, axisValueLabels, buildScale, legendValues, scaleColor } from "./gridModel";
+import { METRICS, OBJECTIVES, axisValueLabels, buildScale, humanizeCaveat, legendValues, scaleColor } from "./gridModel";
 import type { MetricDef, Scale } from "./gridModel";
 import type { SweepNavState } from "./SweepFormPage";
 import { LIVE_SWEEP, SWEEP_TONE, axisName, designText, progressText } from "./SweepList";
@@ -282,7 +282,7 @@ function Caveats({ caveats }: { caveats: { code: string; text: string }[] }) {
       <ul className="grd-caveats">
         {caveats.map((c) => (
           <li key={c.code} data-code={c.code}>
-            {c.text}
+            {humanizeCaveat(c.text)}
           </li>
         ))}
       </ul>

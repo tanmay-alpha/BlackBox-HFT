@@ -343,6 +343,15 @@ export const OBJECTIVES: readonly { metric: ObjectiveMetric; label: string; addi
   { metric: "mean_abs_position", label: "Mean |position|", additive: false },
 ];
 
+const METRIC_KEY_LABELS: ReadonlyMap<string, string> = new Map(
+  OBJECTIVES.map((o) => [o.metric as string, o.label]),
+);
+
+/** Server caveat text with raw metric keys (`net_pnl`) replaced by their labels, for display only. */
+export function humanizeCaveat(text: string): string {
+  return text.replace(/`?\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b`?/g, (m, key: string) => METRIC_KEY_LABELS.get(key) ?? m);
+}
+
 /** Even block counts bb-core accepts for CSCV (`MIN_CSCV_BLOCKS..=MAX_CSCV_BLOCKS`). */
 export const CSCV_BLOCKS: readonly number[] = [4, 6, 8, 10, 12, 14, 16];
 

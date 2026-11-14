@@ -950,7 +950,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
                   <SplitPane
                     id="book.run.top"
                     panes={[
-                      { id: 'heatmap', label: 'Book heatmap', defaultSize: '68%', minSize: '35%', content: heatmapPanel },
+                      { id: 'heatmap', label: 'Book heatmap', defaultSize: '68%', minSize: '35%', stackHeight: 'max(280px, 55dvh)', content: heatmapPanel },
                       {
                         id: 'side',
                         label: 'Depth and account',
