@@ -35,7 +35,10 @@ export function useNow(intervalMs = 1000): Date {
 export interface WorkerHealth {
   /** `worker busy 1/1`. */
   text: string;
-  /** Heartbeat age now, seconds, extrapolated from the status response's age and when it arrived. */
+  /** Plain-language state: `Idle — waiting for jobs (in-process worker)`, `Busy …`, `Not responding …`. */
+  label: string;
+  tone: 'ok' | 'info' | 'warn' | 'error' | 'neutral';
+  /** Heartbeat age as reported at the last check, seconds; aged to now only once the worker is not responding. */
   heartbeatAgeS: number | null;
   /** Heartbeat older than 3x the declared interval (§10.4). */
   stale: boolean;
@@ -43,15 +46,46 @@ export interface WorkerHealth {
   running: number;
 }
 
+const WORKER_MODE: Record<string, string> = { in_process: 'in-process worker', standalone: 'standalone worker' };
+
 /** The worker facts of a status response, aged to `nowMs`. Nothing is inferred beyond them. */
 export function workerHealth(status: Status, checkedAt: number | null, nowMs: number): WorkerHealth {
   const w = status.worker;
   const since = checkedAt === null ? 0 : Math.max(0, nowMs - checkedAt);
-  const ageMs = w.last_heartbeat_age_ms === null ? null : w.last_heartbeat_age_ms + since;
+  const reported = w.last_heartbeat_age_ms;
+  // Judged on the age the API reported: an idle worker keeps beating between our 30 s polls, so
+  // extrapolating would flag (and age) a healthy worker. Only a missing heartbeat keeps aging.
+  const stale = w.state !== 'stopped' && reported !== null && reported > 3 * w.heartbeat_interval_ms;
+  const ageMs = reported === null ? null : stale ? reported + since : reported;
+  const heartbeatAgeS = ageMs === null ? null : Math.floor(ageMs / 1000);
+  const mode = WORKER_MODE[w.mode] ?? `${w.mode} worker`;
+  let label: string;
+  let tone: WorkerHealth['tone'];
+  if (stale) {
+    label = `Not responding (no heartbeat for ${heartbeatAgeS} s)`;
+    tone = 'warn';
+  } else if (w.state === 'idle') {
+    label = `Idle \u2014 waiting for jobs (${mode})`;
+    tone = 'ok';
+  } else if (w.state === 'busy') {
+    label = `Busy \u2014 ${w.busy} of ${w.slots} job slots in use (${mode})`;
+    tone = 'info';
+  } else if (w.state === 'starting') {
+    label = `Starting (${mode})`;
+    tone = 'neutral';
+  } else if (w.state === 'draining') {
+    label = `Draining \u2014 finishing current jobs, taking no new ones (${mode})`;
+    tone = 'warn';
+  } else {
+    label = `Stopped (${mode})`;
+    tone = 'error';
+  }
   return {
     text: `worker ${w.state} ${w.busy}/${w.slots}`,
-    heartbeatAgeS: ageMs === null ? null : Math.floor(ageMs / 1000),
-    stale: ageMs !== null && ageMs > 3 * w.heartbeat_interval_ms,
+    label,
+    tone,
+    heartbeatAgeS,
+    stale,
     queueDepth: status.queue.depth,
     running: status.queue.running,
   };
@@ -118,20 +152,19 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
       ) : null}
       {worker ? (
         <span
-          className={`sb-seg${worker.stale ? ' sb-warn' : ''}`}
+          className={`sb-seg sb-worker sb-${worker.tone === 'info' ? 'neutral' : worker.tone}`}
           tabIndex={0}
           data-testid="sb-worker"
-          title={`Worker and queue as reported by GET /api/v1/status (heartbeat every ${Math.round((s?.worker.heartbeat_interval_ms ?? 0) / 1000)} s).`}
+          title={`Worker and queue as reported by GET /api/v1/status: ${worker.text}, heartbeat ${worker.heartbeatAgeS === null ? 'not reported yet' : `${worker.heartbeatAgeS} s ago`} (expected every ${Math.round((s?.worker.heartbeat_interval_ms ?? 0) / 1000)} s; flagged as not responding after 3 missed).`}
         >
-          {worker.text} {'\u00b7'} queued {worker.queueDepth} {'\u00b7'} running {worker.running}
-          {worker.heartbeatAgeS !== null ? ` \u00b7 hb ${worker.heartbeatAgeS} s` : ' \u00b7 no heartbeat'}
-          {worker.stale ? ' STALE' : null}
+          <span className="sb-dot" aria-hidden="true" />
+          Worker: {worker.label} {'\u00b7'} queued {worker.queueDepth} {'\u00b7'} running {worker.running}
         </span>
       ) : null}
       {build ? (
         <button
           type="button"
-          className="sb-seg"
+          className="sb-seg sb-build"
           title="Build: BlackBox version, git commit, API contract, simulation engine. Activate to copy."
           onClick={() => void navigator.clipboard?.writeText(build).then(() => setCopied(true))}
         >
@@ -140,7 +173,7 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
       ) : null}
       <button
         type="button"
-        className="sb-seg"
+        className="sb-seg sb-mode"
         data-testid="sb-mode"
         title={access.mode === 'research' ? 'Research access. Activate to change the key.' : 'Public demo workspace, read-only. Activate to enter an API key.'}
         onClick={access.openKeyDialog}

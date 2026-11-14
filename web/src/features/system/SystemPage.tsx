@@ -97,9 +97,9 @@ function HealthTab() {
   if (s && w) {
     rows.push({
       component: 'Worker',
-      state: s.worker.state,
-      tone: w.stale ? 'warn' : s.worker.state === 'stopped' ? 'error' : 'ok',
-      detail: `${s.worker.mode} \u00b7 busy ${s.worker.busy}/${s.worker.slots} \u00b7 ${w.heartbeatAgeS === null ? 'no heartbeat' : `heartbeat ${fmtSeconds(w.heartbeatAgeS)} ago`} (every ${Math.round(s.worker.heartbeat_interval_ms / 1000)} s)${w.stale ? ' \u00b7 STALE' : ''}`,
+      state: w.label,
+      tone: w.tone,
+      detail: `${s.worker.mode} \u00b7 busy ${s.worker.busy}/${s.worker.slots} \u00b7 ${w.heartbeatAgeS === null ? 'no heartbeat yet' : `heartbeat ${fmtSeconds(w.heartbeatAgeS)} ago`} (expected every ${Math.round(s.worker.heartbeat_interval_ms / 1000)} s; not responding after ${Math.round((3 * s.worker.heartbeat_interval_ms) / 1000)} s without one)`,
       checked,
     });
     rows.push({

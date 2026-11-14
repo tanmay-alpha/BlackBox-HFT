@@ -7,13 +7,14 @@ import { Component, Suspense, useCallback, useEffect, useRef, useState } from 'r
 import type { ErrorInfo, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Group, Panel, Separator } from 'react-resizable-panels';
-import { ChevronDown, CircleHelp, PanelRightClose, PanelRightOpen, Search } from 'lucide-react';
+import { ChevronDown, CircleHelp, Menu, PanelRightClose, PanelRightOpen, Search } from 'lucide-react';
 
 import { BasisLegend, ErrorBox, Spinner } from '../components/ui';
 import { GLOSSARY } from '../components/glossary';
 import { fmtClock } from '../components/fmt';
 import { AccessProvider, useAccess } from './access';
 import { AnnounceContext } from './announce';
+import { Dialog } from './Dialog';
 import { CommandPalette, type PaletteCommand } from './CommandPalette';
 import { HelpDialog } from './HelpDialog';
 import { HealthProvider } from './health';
@@ -24,6 +25,20 @@ import { StatusBar } from './StatusBar';
 import { SECTIONS, WORKSPACES, workspaceFor } from './workspaces';
 
 const ICON = { size: 16, strokeWidth: 1.5, 'aria-hidden': true } as const;
+
+/** Below this width the rail becomes a menu and the inspector a full-screen sheet (shell.css). */
+const NARROW_QUERY = '(max-width: 959px)';
+
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW_QUERY);
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  return narrow;
+}
 
 // ----- error boundary ---------------------------------------------------------------------
 
@@ -196,11 +211,21 @@ function AccessBadge() {
   );
 }
 
-function TopBar({ onPalette, onHelp }: { onPalette: () => void; onHelp: () => void }) {
+function TopBar({
+  onPalette,
+  onHelp,
+  inspectorOpen,
+  onInspector,
+}: {
+  onPalette: () => void;
+  onHelp: () => void;
+  inspectorOpen: boolean;
+  onInspector: () => void;
+}) {
   const crumbs = useBreadcrumb();
-  const { settings, update } = useSettings();
   return (
     <header className="topbar">
+      <NavMenu />
       <Link to={paths.explore()} className="brand" aria-label="BlackBox HFT, latency experiment">
         <span className="brand-mark" aria-hidden="true" />
         <span className="brand-name">BlackBox HFT</span>
@@ -229,17 +254,56 @@ function TopBar({ onPalette, onHelp }: { onPalette: () => void; onHelp: () => vo
       <button
         type="button"
         className="btn-icon"
-        aria-pressed={settings.inspectorOpen}
+        aria-pressed={inspectorOpen}
         aria-label="Inspector"
         title="Show or hide the inspector (i)"
-        onClick={() => update({ inspectorOpen: !settings.inspectorOpen })}
+        onClick={onInspector}
       >
-        {settings.inspectorOpen ? <PanelRightClose {...ICON} /> : <PanelRightOpen {...ICON} />}
+        {inspectorOpen ? <PanelRightClose {...ICON} /> : <PanelRightOpen {...ICON} />}
       </button>
       <button type="button" className="btn-icon" aria-label="Help, shortcuts and settings" title="Help, shortcuts and settings (?)" onClick={onHelp}>
         <CircleHelp {...ICON} />
       </button>
     </header>
+  );
+}
+
+/** Narrow viewports: the rail's sections as a labelled list in a modal sheet (focus trapped, Esc closes). */
+function NavMenu() {
+  const { pathname } = useLocation();
+  const current = workspaceFor(pathname);
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className="nav-menu-button" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}>
+        <Menu {...ICON} />
+        <span>{current?.name ?? 'Workspaces'}</span>
+      </button>
+      <Dialog open={open} onClose={() => setOpen(false)} title="Workspaces" className="sheet nav-sheet">
+        <nav aria-label="Workspaces">
+          {SECTIONS.map((s) => (
+            <section key={s.id} className="nav-sheet-section" aria-labelledby={`nav-sheet-${s.id}`}>
+              <h3 id={`nav-sheet-${s.id}`} className="rail-section-name">
+                {s.name}
+              </h3>
+              <ul>
+                {WORKSPACES.filter((w) => w.section === s.id).map((w) => {
+                  const Icon = w.icon;
+                  return (
+                    <li key={w.id}>
+                      <NavLink to={w.path} end={w.id === 'explore'} className="nav-sheet-item" onClick={() => setOpen(false)}>
+                        <Icon {...ICON} />
+                        <span>{w.name}</span>
+                      </NavLink>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </nav>
+      </Dialog>
+    </>
   );
 }
 
@@ -280,6 +344,28 @@ function Rail() {
 
 // ----- inspector --------------------------------------------------------------------------
 
+function InspectorBody() {
+  const content = useInspectorContent();
+  return content ? (
+    content.body
+  ) : (
+    <div className="col">
+      <p className="note">Select a row or a chart marker to see its details here.</p>
+      <h3 className="inspector-heading">Evidence bases</h3>
+      <BasisLegend />
+      <h3 className="inspector-heading">Glossary</h3>
+      <dl className="glossary">
+        {Object.values(GLOSSARY).map((g) => (
+          <div key={g.term} className="glossary-entry">
+            <dt>{g.term}</dt>
+            <dd>{g.definition}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 function Inspector({ onClose }: { onClose: () => void }) {
   const content = useInspectorContent();
   return (
@@ -294,26 +380,19 @@ function Inspector({ onClose }: { onClose: () => void }) {
         </div>
       </header>
       <div className="inspector-body">
-        {content ? (
-          content.body
-        ) : (
-          <div className="col">
-            <p className="note">Select a row or a chart marker to see its details here.</p>
-            <h3 className="inspector-heading">Evidence bases</h3>
-            <BasisLegend />
-            <h3 className="inspector-heading">Glossary</h3>
-            <dl className="glossary">
-              {Object.values(GLOSSARY).map((g) => (
-                <div key={g.term} className="glossary-entry">
-                  <dt>{g.term}</dt>
-                  <dd>{g.definition}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-        )}
+        <InspectorBody />
       </div>
     </aside>
+  );
+}
+
+/** Narrow viewports: the inspector as a full-screen modal sheet. */
+function InspectorSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const content = useInspectorContent();
+  return (
+    <Dialog open={open} onClose={onClose} title={`Inspector \u00b7 ${content?.title ?? 'Reference'}`} className="sheet inspector-sheet">
+      <InspectorBody />
+    </Dialog>
   );
 }
 
@@ -340,7 +419,9 @@ function isTyping(el: EventTarget | null): boolean {
 }
 
 function focusRegion(step: 1 | -1) {
-  const regions = REGIONS.map((s) => document.querySelector<HTMLElement>(s)).filter((el): el is HTMLElement => el !== null);
+  const regions = REGIONS.map((s) => document.querySelector<HTMLElement>(s)).filter(
+    (el): el is HTMLElement => el !== null && el.getClientRects().length > 0,
+  );
   if (regions.length === 0) return;
   const current = regions.findIndex((r) => r.contains(document.activeElement));
   const next = regions[(current + step + regions.length) % regions.length];
@@ -379,13 +460,23 @@ function ShellFrame({ announce }: { announce: (text: string) => void }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const chord = useRef(0);
+  const narrow = useNarrow();
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const inspectorOpen = narrow ? sheetOpen : settings.inspectorOpen;
+  const toggleInspector = useCallback(() => {
+    if (narrow) setSheetOpen((o) => !o);
+    else update({ inspectorOpen: !settings.inspectorOpen });
+  }, [narrow, settings.inspectorOpen, update]);
+  useEffect(() => {
+    if (!narrow) setSheetOpen(false);
+  }, [narrow]);
 
   const copyLink = useCallback(() => {
     void navigator.clipboard?.writeText(window.location.href).then(() => announce('Link to this view copied'));
   }, [announce]);
 
   const commands: PaletteCommand[] = [
-    { id: 'inspector', label: 'Toggle inspector', hint: 'i', run: () => update({ inspectorOpen: !settings.inspectorOpen }) },
+    { id: 'inspector', label: 'Toggle inspector', hint: 'i', run: toggleInspector },
     { id: 'rail', label: 'Toggle rail', hint: '\\', run: () => update({ railOpen: !settings.railOpen }) },
     {
       id: 'cvd',
@@ -439,7 +530,7 @@ function ShellFrame({ announce }: { announce: (text: string) => void }) {
           update({ railOpen: !settings.railOpen });
           break;
         case 'i':
-          update({ inspectorOpen: !settings.inspectorOpen });
+          toggleInspector();
           break;
         case 'y':
           copyLink();
@@ -451,7 +542,7 @@ function ShellFrame({ announce }: { announce: (text: string) => void }) {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [settings, update, navigate, copyLink]);
+  }, [settings, update, navigate, copyLink, toggleInspector]);
 
   const [shellLayout] = useState(savedShellLayout);
 
@@ -460,13 +551,18 @@ function ShellFrame({ announce }: { announce: (text: string) => void }) {
       <a className="skip-link" href="#main">
         Skip to workspace
       </a>
-      <TopBar onPalette={() => setPaletteOpen(true)} onHelp={() => setHelpOpen(true)} />
+      <TopBar
+        onPalette={() => setPaletteOpen(true)}
+        onHelp={() => setHelpOpen(true)}
+        inspectorOpen={inspectorOpen}
+        onInspector={toggleInspector}
+      />
       <Rail />
       <Group
         className="shell-area"
         orientation="horizontal"
         id="shell"
-        defaultLayout={settings.inspectorOpen ? shellLayout : undefined}
+        defaultLayout={settings.inspectorOpen && !narrow ? shellLayout : undefined}
         onLayoutChanged={(layout, meta) => {
           if (meta.isUserInteraction) localStorage.setItem(INSPECTOR_LAYOUT_KEY, JSON.stringify(meta.requestedLayout ?? layout));
         }}
@@ -480,7 +576,7 @@ function ShellFrame({ announce }: { announce: (text: string) => void }) {
             </WorkspaceErrorBoundary>
           </main>
         </Panel>
-        {settings.inspectorOpen ? (
+        {settings.inspectorOpen && !narrow ? (
           <>
             <Separator className="split-separator" aria-label="Resize workspace and inspector" />
             <Panel id="inspector" defaultSize="320px" minSize="240px" maxSize="560px">
@@ -490,6 +586,7 @@ function ShellFrame({ announce }: { announce: (text: string) => void }) {
         ) : null}
       </Group>
       <StatusBar announce={announce} />
+      {narrow ? <InspectorSheet open={sheetOpen} onClose={() => setSheetOpen(false)} /> : null}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
       <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
