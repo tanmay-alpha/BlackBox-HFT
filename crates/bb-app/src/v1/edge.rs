@@ -396,6 +396,7 @@ pub async fn egress(State(state): State<Shared>, request: Request, next: Next) -
     if pending >= EGRESS_FLUSH_BYTES {
         let flush = counter.pending.swap(0, Ordering::SeqCst);
         if flush > 0 {
+            crate::metrics::Metrics::inc(&state.metrics.egress_flushes_total);
             let db = state.db.clone();
             tokio::spawn(async move {
                 if let Err(e) = db.add_egress(class, flush).await {
@@ -430,6 +431,22 @@ pub struct AnonCache {
     entries: Mutex<HashMap<String, Cached>>,
 }
 
+/// The cache key of an anonymous GET: the path and its query pairs in a canonical order (stable
+/// by parameter name, so repeated parameters keep their meaning), without empty pairs. Reordered
+/// or padded query strings share one entry.
+fn cache_key(uri: &axum::http::Uri) -> String {
+    let Some(query) = uri.query() else {
+        return uri.path().to_string();
+    };
+    let mut pairs: Vec<&str> = query.split('&').filter(|p| !p.is_empty()).collect();
+    pairs.sort_by_key(|p| p.split('=').next().unwrap_or(p));
+    if pairs.is_empty() {
+        uri.path().to_string()
+    } else {
+        format!("{}?{}", uri.path(), pairs.join("&"))
+    }
+}
+
 pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Next) -> Response {
     let cacheable = request.method() == Method::GET
         && !request.headers().contains_key(header::AUTHORIZATION)
@@ -437,7 +454,7 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
     if !cacheable {
         return next.run(request).await;
     }
-    let key = request.uri().to_string();
+    let key = cache_key(request.uri());
     let ttl = if request.uri().path().starts_with("/api/v1/jobs") {
         ANON_TTL_JOBS
     } else {
@@ -510,4 +527,29 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         );
     }
     Response::from_parts(parts, Body::from(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_key;
+
+    #[test]
+    fn anonymous_cache_keys_are_normalized() {
+        let key = |s: &str| cache_key(&s.parse().unwrap());
+        assert_eq!(key("/api/v1/runs"), "/api/v1/runs");
+        assert_eq!(key("/api/v1/runs?&&"), "/api/v1/runs");
+        assert_eq!(
+            key("/api/v1/runs?sort=net_pnl_desc&&limit=5"),
+            key("/api/v1/runs?limit=5&sort=net_pnl_desc")
+        );
+        // Repeated parameters keep their order: the first `limit` wins in the handlers.
+        assert_ne!(
+            key("/api/v1/runs?limit=1&limit=2"),
+            key("/api/v1/runs?limit=2&limit=1")
+        );
+        assert_eq!(
+            key("/api/v1/experiments?status=failed&b=1&status=completed"),
+            "/api/v1/experiments?b=1&status=failed&status=completed"
+        );
+    }
 }

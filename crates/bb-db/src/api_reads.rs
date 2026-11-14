@@ -411,6 +411,25 @@ impl Database {
             .fetch_all(&self.pool)
             .await?)
     }
+    /// Live runs listed in `workspace` on every platform, newest first, `count` after the
+    /// `(created_at, id)` position `after` (the anonymous demo snapshot).
+    pub async fn workspace_run_views(
+        &self,
+        workspace: Uuid,
+        after: Option<&Cursor>,
+        count: i64,
+    ) -> Result<Vec<RunView>> {
+        let sql = format!(
+            "{RUN_VIEW} WHERE r.quarantined_at IS NULL AND EXISTS (SELECT 1 FROM bb.experiments f WHERE f.workspace_id=$1 AND f.experiment_config_id=r.experiment_config_id AND f.platform=r.platform) AND ($2::timestamptz IS NULL OR (r.created_at,r.id)<($2,$3)) ORDER BY r.created_at DESC,r.id DESC LIMIT $4"
+        );
+        Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(workspace)
+            .bind(after.map(|c| c.created_at))
+            .bind(after.map(|c| c.id))
+            .bind(limit(count)?)
+            .fetch_all(&self.pool)
+            .await?)
+    }
     /// The live run of an identity (16-hex short id or 64-hex fingerprint) on `platform`,
     /// visible in `workspace` or the public demo workspace.
     pub async fn run_view(

@@ -289,10 +289,15 @@ pub async fn list_comparisons(
         .get("cursor")
         .map(|c| decode_cursor(c, &filters))
         .transpose()?;
-    let rows = state
-        .db
-        .comparisons(workspace.id, cursor.as_ref(), super::runs::peek(limit))
-        .await?;
+    let rows = match state.snapshot.for_read(&state, &caller).await {
+        Some(s) => s.comparisons(cursor.as_ref(), super::runs::peek(limit) as usize),
+        None => {
+            state
+                .db
+                .comparisons(workspace.id, cursor.as_ref(), super::runs::peek(limit))
+                .await?
+        }
+    };
     let more = super::runs::has_more(rows.len(), limit);
     let rows = &rows[..rows.len().min(limit as usize)];
     comparison_page(&state, &caller, rows, more, &filters)

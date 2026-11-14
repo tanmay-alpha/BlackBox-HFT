@@ -106,7 +106,7 @@ async fn version_resource(
     })
 }
 
-async fn dataset_resource(
+pub(super) async fn dataset_resource(
     state: &Shared,
     d: &bb_db::Dataset,
     with_manifest: bool,
@@ -186,19 +186,32 @@ pub async fn list_datasets(
         .as_deref()
         .map(|c| super::respond::decode_cursor::<String>(c, "datasets"))
         .transpose()?;
-    let rows = state
-        .db
-        .datasets(
-            caller.workspace.id,
-            after.as_deref(),
-            super::runs::peek(limit),
-        )
-        .await?;
-    let more = super::runs::has_more(rows.len(), limit);
-    let mut items = Vec::new();
-    for d in rows.iter().take(limit as usize) {
-        items.push(dataset_resource(&state, d, false).await?);
-    }
+    let snapshot = state.snapshot.for_read(&state, &caller).await;
+    let rendered: Vec<Dataset>;
+    let (items, more): (Vec<&Dataset>, bool) = match &snapshot {
+        Some(s) => {
+            let rows = s.datasets(after.as_deref(), super::runs::peek(limit) as usize);
+            let more = super::runs::has_more(rows.len(), limit);
+            (rows.into_iter().take(limit as usize).collect(), more)
+        }
+        None => {
+            let rows = state
+                .db
+                .datasets(
+                    caller.workspace.id,
+                    after.as_deref(),
+                    super::runs::peek(limit),
+                )
+                .await?;
+            let more = super::runs::has_more(rows.len(), limit);
+            let mut items = Vec::new();
+            for d in rows.iter().take(limit as usize) {
+                items.push(dataset_resource(&state, d, false).await?);
+            }
+            rendered = items;
+            (rendered.iter().collect(), more)
+        }
+    };
     let next = if more {
         items
             .last()
@@ -591,21 +604,41 @@ pub async fn list_presets(
     caller: Caller,
     Query(q): Query<CatalogueQuery>,
 ) -> Result<Response, ApiError> {
-    let presets: Vec<Preset> =
-        match catalogue_manifest(&state, &caller, q.dataset_id.as_deref()).await? {
-            None => Vec::new(),
-            Some((_, manifest)) => crate::presets::presets(&manifest)
-                .into_iter()
-                .map(|p| Preset {
-                    id: p.id,
-                    title: p.title,
-                    description: p.description,
-                    demonstrates: p.demonstrates,
-                    config: p.config,
-                })
-                .collect(),
-        };
-    json(StatusCode::OK, &presets, Cache::Revalidate)
+    let id = q.dataset_id.as_deref();
+    if let Some(s) = state.snapshot.for_read(&state, &caller).await {
+        if let Some(presets) = s.presets(id) {
+            return json(StatusCode::OK, presets, Cache::Revalidate);
+        }
+        if id.is_some_and(|id| !s.has_dataset(id)) {
+            return Err(ApiError::not_found("dataset"));
+        }
+    }
+    json(
+        StatusCode::OK,
+        &presets_for(&state, &caller, id).await?,
+        Cache::Revalidate,
+    )
+}
+
+/// The presets of `GET /presets` (database path; the demo snapshot keeps them).
+pub async fn presets_for(
+    state: &Shared,
+    caller: &Caller,
+    dataset_id: Option<&str>,
+) -> Result<Vec<Preset>, ApiError> {
+    Ok(match catalogue_manifest(state, caller, dataset_id).await? {
+        None => Vec::new(),
+        Some((_, manifest)) => crate::presets::presets(&manifest)
+            .into_iter()
+            .map(|p| Preset {
+                id: p.id,
+                title: p.title,
+                description: p.description,
+                demonstrates: p.demonstrates,
+                config: p.config,
+            })
+            .collect(),
+    })
 }
 
 /// Controlled experiments, each run linked to its simulated result when one is visible.
@@ -616,9 +649,30 @@ pub async fn list_demos(
     caller: Caller,
     Query(q): Query<CatalogueQuery>,
 ) -> Result<Response, ApiError> {
-    let Some((_, manifest)) = catalogue_manifest(&state, &caller, q.dataset_id.as_deref()).await?
-    else {
-        return json(StatusCode::OK, &Vec::<Demo>::new(), Cache::Revalidate);
+    let id = q.dataset_id.as_deref();
+    if let Some(s) = state.snapshot.for_read(&state, &caller).await {
+        if let Some(demos) = s.demos(id) {
+            return json(StatusCode::OK, demos, Cache::Revalidate);
+        }
+        if id.is_some_and(|id| !s.has_dataset(id)) {
+            return Err(ApiError::not_found("dataset"));
+        }
+    }
+    json(
+        StatusCode::OK,
+        &demos_for(&state, &caller, id).await?,
+        Cache::Revalidate,
+    )
+}
+
+/// The demos of `GET /demos` (database path; the demo snapshot keeps them).
+pub async fn demos_for(
+    state: &Shared,
+    caller: &Caller,
+    dataset_id: Option<&str>,
+) -> Result<Vec<Demo>, ApiError> {
+    let Some((_, manifest)) = catalogue_manifest(state, caller, dataset_id).await? else {
+        return Ok(Vec::new());
     };
     let demos = crate::demos::demos(&manifest);
     let fingerprints: Vec<Vec<u8>> = demos
@@ -636,7 +690,7 @@ pub async fn list_demos(
             &state.cfg.result_platform,
         )
         .await?;
-    let out: Vec<Demo> = demos
+    Ok(demos
         .into_iter()
         .map(|d| Demo {
             id: d.id,
@@ -661,8 +715,7 @@ pub async fn list_demos(
                 .collect(),
             reproduce: d.reproduce,
         })
-        .collect();
-    json(StatusCode::OK, &out, Cache::Revalidate)
+        .collect())
 }
 
 #[allow(dead_code)]

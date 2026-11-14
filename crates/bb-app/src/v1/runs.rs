@@ -276,17 +276,22 @@ pub async fn list_runs(
         .get("cursor")
         .map(|c| decode_cursor(c, &filters))
         .transpose()?;
-    let views = state
-        .db
-        .run_views(
-            workspace.id,
-            &platform,
-            &q,
-            sort,
-            after.as_ref(),
-            peek(limit),
-        )
-        .await?;
+    let views = match state.snapshot.for_read(&state, &caller).await {
+        Some(s) => s.run_views(&platform, &q, sort, after.as_ref(), peek(limit) as usize),
+        None => {
+            state
+                .db
+                .run_views(
+                    workspace.id,
+                    &platform,
+                    &q,
+                    sort,
+                    after.as_ref(),
+                    peek(limit),
+                )
+                .await?
+        }
+    };
     let more = has_more(views.len(), limit);
     let views = &views[..views.len().min(limit as usize)];
     // Lists come from Postgres only (AT-10): no artefact reads, so one unreadable bundle can

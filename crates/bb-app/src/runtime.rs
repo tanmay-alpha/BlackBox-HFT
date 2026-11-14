@@ -223,8 +223,9 @@ pub fn app(state: Arc<AppState>, legacy: Option<Router>) -> Router {
     }
 }
 
-/// Prepares the database for serving: optional migration, reachability, bootstrap key.
-pub async fn prepare(runtime: &Runtime, state: &AppState) -> Result<()> {
+/// Prepares the database for serving: optional migration, reachability, bootstrap key, and the
+/// demo snapshot prewarmed so the first anonymous reads need no database.
+pub async fn prepare(runtime: &Runtime, state: &Arc<AppState>) -> Result<()> {
     if runtime.cfg.migrate_on_start {
         migrate(&runtime.cfg).await?;
         tracing::info!("migrations applied");
@@ -236,6 +237,7 @@ pub async fn prepare(runtime: &Runtime, state: &AppState) -> Result<()> {
         .map_err(|e| anyhow!("database not ready (run `blackbox migrate`?): {e}"))?;
     state.db_ready.store(true, Ordering::SeqCst);
     bootstrap_admin_key(&runtime.cfg, &runtime.db).await?;
+    state.snapshot.get(state).await;
     Ok(())
 }
 
@@ -287,6 +289,7 @@ pub async fn run_until_shutdown(
         drained_signal.cancel();
     });
     let shutdown = drained.clone();
+    let snapshot = tokio::spawn(v1::snapshot::maintain(state.clone()));
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
@@ -308,6 +311,7 @@ pub async fn run_until_shutdown(
         Ok(Err(e)) => tracing::warn!(error = %e, "server task failed"),
         Err(_) => tracing::warn!("in-flight requests did not finish within the grace period"),
     }
+    snapshot.abort();
     let _ = state;
     runtime.db.pool().close().await;
     tracing::info!("stopped");

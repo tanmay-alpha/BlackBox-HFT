@@ -55,7 +55,10 @@ Opus agents hit one rate-limit window (HTTP 429) and were resumed on their own t
 
 ## Open items
 
-See `FINAL_AUDIT.md` for the ranked remaining defects. Known before the audit: SEC-9/11/12/17/18/25
-partially tested; AT-5 runtime-breach test
-missing; the debug `serve` binary on the dev machine reports libm fingerprint `0352e099` (its
+All ten ranked defects of `FINAL_AUDIT.md` §4 have source fixes on `main` (§7, with commits and
+tests); none is deployed yet, so production must be re-checked after the next deploy
+(`/api/v1/status` `git_sha`, then `demo seed`). Still open: SEC-9/11/12/17/18/25 partially tested;
+AT-5 runtime-breach test missing; `quota.exceeded` denial audit rows; anonymous detail reads and
+`/sweeps` still use Postgres on an anonymous-cache miss (lists and catalogues come from the demo
+snapshot); the debug `serve` binary on the dev machine reports libm fingerprint `0352e099` (its
 results are non-canonical; harmless).

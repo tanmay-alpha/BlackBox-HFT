@@ -26,6 +26,9 @@ pub struct Metrics {
     pub artifact_cache_misses_total: AtomicU64,
     /// Connections acquired from the Postgres pool (every query or transaction acquires one).
     pub db_acquires_total: AtomicU64,
+    /// Writes of the daily egress counter to Postgres (one per 5 MB of responses per class):
+    /// the only database work warm anonymous traffic causes (FINAL_AUDIT §4 item 6).
+    pub egress_flushes_total: AtomicU64,
     pub worker_busy: AtomicU64,
     pub queue_depth: AtomicU64,
     labelled: Mutex<BTreeMap<(String, String), u64>>,
@@ -95,6 +98,11 @@ impl Metrics {
                 "counter",
             ),
             ("db_acquires_total", &self.db_acquires_total, "counter"),
+            (
+                "egress_flushes_total",
+                &self.egress_flushes_total,
+                "counter",
+            ),
             ("worker_busy", &self.worker_busy, "gauge"),
             ("queue_depth", &self.queue_depth, "gauge"),
         ];

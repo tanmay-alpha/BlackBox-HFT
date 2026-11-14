@@ -14,6 +14,7 @@ pub mod model;
 pub mod reports;
 pub mod respond;
 pub mod runs;
+pub mod snapshot;
 pub mod sweeps;
 pub mod system;
 
@@ -53,6 +54,8 @@ pub struct AppState {
     pub limiters: auth::Limiters,
     pub workspaces: auth::WorkspaceCache,
     pub anon_cache: edge::AnonCache,
+    /// Anonymous demo lists and catalogues from memory (FINAL_AUDIT §4 item 6).
+    pub snapshot: snapshot::DemoSnapshot,
     pub egress: edge::Egress,
     /// Concurrency limit of artefact-heavy routes (API_CONTRACT §5). Shared so a permit can move
     /// into blocking work and stay held until that work actually ends.
@@ -77,6 +80,7 @@ impl AppState {
             limiters: auth::Limiters::new(&cfg),
             workspaces: auth::WorkspaceCache::default(),
             anon_cache: edge::AnonCache::default(),
+            snapshot: snapshot::DemoSnapshot::default(),
             egress: edge::Egress::default(),
             heavy: Arc::new(Semaphore::new(cfg.heavy_read_concurrency)),
             inflight: Arc::new(Semaphore::new(cfg.max_in_flight)),

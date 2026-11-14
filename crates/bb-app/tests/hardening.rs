@@ -248,6 +248,147 @@ async fn sweep_views_and_reports_leave_out_tampered_runs() {
     tdb.drop_db().await;
 }
 
+/// FINAL_AUDIT §4 item 6 (SEC-10): anonymous demo lists and catalogues are answered from the
+/// in-memory demo snapshot. Its pages equal the database path's for the same query, and after
+/// warm-up 1,000 anonymous requests with varied query strings (filters, sorts, cursors, limits,
+/// unknown parameters, missing datasets) add no database acquisition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn warm_anonymous_demo_reads_with_varied_queries_use_no_database() {
+    let tdb = db_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server::start(&tdb, dir.path(), Options::default()).await;
+    let manifest = register_dataset(&server.db, dir.path(), 20).await;
+    let (_, admin) = workspace_key(&server.db, "demo", &[Scope::Admin]).await;
+    let mut runs = Vec::new();
+    for (i, label) in ["demo a", "demo b", "other c"].into_iter().enumerate() {
+        let config = config_json(&manifest, 100 * (i as i64 + 1), 3);
+        runs.push(run(&server, &admin, config, label).await.0);
+    }
+    let (status, _, body) = server
+        .post(
+            "/api/v1/comparisons",
+            Some(&admin),
+            &json!({"run_a": runs[0], "run_b": runs[1]}),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let (status, _, body) = server
+        .post(
+            "/api/v1/reports",
+            Some(&admin),
+            &json!({"kind": "run", "subject_id": runs[0], "title": "A"}),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+
+    // The snapshot answers exactly what the database path answers (the admin key reads the
+    // demo workspace through the database).
+    for path in [
+        "/api/v1/runs?workspace=demo",
+        "/api/v1/runs?workspace=demo&sort=net_pnl_desc",
+        "/api/v1/runs?workspace=demo&sort=net_pnl_asc&limit=1",
+        "/api/v1/runs?workspace=demo&sort=max_drawdown_asc&limit=2",
+        "/api/v1/runs?workspace=demo&label_prefix=demo&limit=1",
+        "/api/v1/comparisons?workspace=demo",
+        "/api/v1/reports?workspace=demo",
+        "/api/v1/datasets",
+        "/api/v1/presets",
+        "/api/v1/demos",
+        "/api/v1/presets?dataset_id=test-synth",
+    ] {
+        let mut path = path.to_string();
+        loop {
+            let (status, _, anonymous) = server.get(&path, None).await;
+            let (_, _, keyed) = server.get(&path, Some(&admin)).await;
+            assert_eq!(status, 200, "{path}: {anonymous}");
+            assert_eq!(anonymous, keyed, "{path}");
+            match anonymous["next_cursor"].as_str() {
+                Some(c) => path = format!("{}&cursor={c}", path.split("&cursor=").next().unwrap()),
+                None => break,
+            }
+        }
+    }
+    let ids =
+        |page: &Value| -> Vec<Value> { items(page).iter().map(|e| e["id"].clone()).collect() };
+    for path in [
+        "/api/v1/experiments?workspace=demo",
+        "/api/v1/experiments?workspace=demo&status=completed&label_prefix=demo",
+    ] {
+        let (_, _, anonymous) = server.get(path, None).await;
+        let (_, _, keyed) = server.get(path, Some(&admin)).await;
+        assert_eq!(ids(&anonymous), ids(&keyed), "{path}");
+    }
+    let (_, _, page) = server.get("/api/v1/runs?limit=1", None).await;
+    assert_eq!(items(&page).len(), 1);
+    let cursor = page["next_cursor"].as_str().unwrap().to_string();
+
+    let path = |i: usize| -> String {
+        match i % 13 {
+            0 => format!("/api/v1/runs?limit={}&v={i}", 1 + i % 100),
+            1 => format!("/api/v1/runs?sort=net_pnl_desc&label_prefix=demo&n={i}"),
+            2 => format!("/api/v1/runs?run_id={i:016x}"),
+            3 => format!(
+                "/api/v1/runs?sort=max_drawdown_asc&dataset_id=test-synth&created_after_ns={i}"
+            ),
+            4 => format!(
+                "/api/v1/experiments?status=completed&limit={}&n={i}",
+                1 + i % 50
+            ),
+            5 => format!("/api/v1/experiments?label_prefix=x{i}"),
+            6 => format!("/api/v1/comparisons?limit={}&z={i}", 1 + i % 10),
+            7 => format!("/api/v1/reports?workspace=demo&n={i}"),
+            8 => format!("/api/v1/datasets?limit={}&n={i}", 1 + i % 100),
+            9 => format!("/api/v1/presets?dataset_id=test-synth&n={i}"),
+            10 => format!("/api/v1/demos?n={i}"),
+            11 => format!("/api/v1/demos?dataset_id=missing-{i}"),
+            _ => format!("/api/v1/runs?limit={}&cursor={cursor}", 1 + i % 3),
+        }
+    };
+    // Warm-up until a full round needs no database: background work after the last change
+    // (snapshot rebuild, egress counter load) has settled.
+    let metrics = &server.metrics;
+    let acquires = || bb_app::metrics::Metrics::get(&metrics.db_acquires_total);
+    let flushes = || bb_app::metrics::Metrics::get(&metrics.egress_flushes_total);
+    let mut settled = false;
+    for _ in 0..20 {
+        let (before, flushed) = (acquires(), flushes());
+        for i in 0..13 {
+            server.get(&path(i), None).await;
+        }
+        if acquires() == before && flushes() == flushed {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+    assert!(settled, "anonymous reads kept using the database");
+
+    let (before, flushed) = (acquires(), flushes());
+    let mut bytes = 0;
+    for i in 13..1013 {
+        let path = path(i);
+        let (status, _, body) = server.get(&path, None).await;
+        let expected = if i % 13 == 11 { 404 } else { 200 };
+        assert_eq!(status, expected, "{path}: {body}");
+        bytes += body.to_string().len();
+    }
+    // The one documented exception: the egress brake persists its daily counter once per 5 MB
+    // of responses (`egress_flushes_total`); a flush's write runs in the background.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let flushed = flushes() - flushed;
+    assert!(
+        flushed as usize <= bytes / 5_000_000 + 1,
+        "{flushed} flushes for {bytes} B"
+    );
+    assert_eq!(
+        acquires() - before,
+        flushed,
+        "warm anonymous reads with varied query strings used the database"
+    );
+    server.stop().await;
+    tdb.drop_db().await;
+}
+
 /// A filesystem store whose next `fail_puts` uploads answer 503, counting every PUT it sees.
 struct FlakyStore {
     inner: bb_artifacts::FsArtifactStore,

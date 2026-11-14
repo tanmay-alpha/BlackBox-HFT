@@ -25,6 +25,7 @@ use super::{
         encode_cursor, if_match, json, json_value, limit_param, uuid_param,
     },
     runs::listed_summary,
+    snapshot::Snapshot,
 };
 use crate::admission::{self, SubmitOptions};
 
@@ -133,38 +134,55 @@ pub fn experiment_query(p: &Params, caller: &Caller) -> Result<ExperimentQuery, 
     })
 }
 
-/// Experiment resources for views, with their jobs and runs (two batched queries). Each run row
-/// is checked against its stored digest (DB only); a changed one is quarantined and left out.
+/// Experiment resources for views, with their jobs and runs (two batched queries, or the demo
+/// snapshot's rows). Each run row is checked against its stored digest (DB only); a changed one
+/// is quarantined and left out.
 pub async fn experiment_resources(
     state: &Shared,
     caller: &Caller,
     views: &[ExperimentView],
     include_config: bool,
+    snapshot: Option<&Snapshot>,
 ) -> Result<Vec<Experiment>, ApiError> {
     let job_ids: Vec<Uuid> = views.iter().filter_map(|v| v.experiment.job_id).collect();
-    let jobs: HashMap<Uuid, bb_db::JobView> = if job_ids.is_empty() {
-        HashMap::new()
-    } else {
-        state
-            .db
-            .job_views_by_ids(&job_ids)
-            .await?
-            .into_iter()
-            .map(|j| (j.job.id, j))
-            .collect()
-    };
     let run_ids: Vec<Uuid> = views.iter().filter_map(|v| v.live_run_id).collect();
-    let runs: HashMap<Uuid, bb_db::RunView> = if run_ids.is_empty() {
-        HashMap::new()
-    } else {
-        state
-            .db
-            .run_views_by_ids(caller.workspace.id, &run_ids)
-            .await?
-            .into_iter()
-            .map(|r| (r.run.id, r))
-            .collect()
-    };
+    let (jobs, runs): (HashMap<Uuid, bb_db::JobView>, HashMap<Uuid, bb_db::RunView>) =
+        match snapshot {
+            Some(s) => (
+                job_ids
+                    .iter()
+                    .filter_map(|id| s.jobs.get(id).map(|j| (*id, j.clone())))
+                    .collect(),
+                run_ids
+                    .iter()
+                    .filter_map(|id| s.runs_by_id.get(id).map(|r| (*id, r.clone())))
+                    .collect(),
+            ),
+            None => (
+                if job_ids.is_empty() {
+                    HashMap::new()
+                } else {
+                    state
+                        .db
+                        .job_views_by_ids(&job_ids)
+                        .await?
+                        .into_iter()
+                        .map(|j| (j.job.id, j))
+                        .collect()
+                },
+                if run_ids.is_empty() {
+                    HashMap::new()
+                } else {
+                    state
+                        .db
+                        .run_views_by_ids(caller.workspace.id, &run_ids)
+                        .await?
+                        .into_iter()
+                        .map(|r| (r.run.id, r))
+                        .collect()
+                },
+            ),
+        };
     let hb = state.hub.heartbeat_interval.as_millis() as u64;
     let mut out = Vec::with_capacity(views.len());
     for view in views {
@@ -257,8 +275,14 @@ pub async fn create_experiment(
         workspace: workspace.clone(),
         ..caller.clone()
     };
-    let mut resources =
-        experiment_resources(&state, &caller_for_view, std::slice::from_ref(&view), false).await?;
+    let mut resources = experiment_resources(
+        &state,
+        &caller_for_view,
+        std::slice::from_ref(&view),
+        false,
+        None,
+    )
+    .await?;
     let experiment = resources
         .pop()
         .ok_or_else(|| ApiError::internal("experiment vanished"))?;
@@ -289,12 +313,16 @@ pub async fn create_experiment(
         StatusCode::OK
     };
     let run_summary = match &submission.run {
-        Some(_) => {
-            experiment_resources(&state, &caller_for_view, std::slice::from_ref(&view), false)
-                .await?
-                .pop()
-                .and_then(|e| e.run)
-        }
+        Some(_) => experiment_resources(
+            &state,
+            &caller_for_view,
+            std::slice::from_ref(&view),
+            false,
+            None,
+        )
+        .await?
+        .pop()
+        .and_then(|e| e.run),
         None => None,
     };
     let location = format!("/api/v1/experiments/{}", experiment.id);
@@ -355,17 +383,24 @@ pub async fn list_experiments(
         .get("cursor")
         .map(|c| decode_cursor(c, &filters))
         .transpose()?;
-    let views = state
-        .db
-        .experiment_views(workspace.id, &q, cursor.as_ref(), super::runs::peek(limit))
-        .await?;
+    let snapshot = state.snapshot.for_read(&state, &caller).await;
+    let views = match &snapshot {
+        Some(s) => s.experiment_views(&q, cursor.as_ref(), super::runs::peek(limit) as usize),
+        None => {
+            state
+                .db
+                .experiment_views(workspace.id, &q, cursor.as_ref(), super::runs::peek(limit))
+                .await?
+        }
+    };
     let more = super::runs::has_more(views.len(), limit);
     let views = &views[..views.len().min(limit as usize)];
     let caller_view = Caller {
         workspace: workspace.clone(),
         ..caller.clone()
     };
-    let resources = experiment_resources(&state, &caller_view, views, false).await?;
+    let resources =
+        experiment_resources(&state, &caller_view, views, false, snapshot.as_deref()).await?;
     let (items, cut) = bounded(&resources, byte_cap(&state, &caller))?;
     let last = views.get(items.len().saturating_sub(1));
     let next = if (cut || more) && !items.is_empty() {
@@ -409,7 +444,7 @@ pub async fn get_experiment(
         .await
         .map_err(|_| ApiError::not_found("experiment"))?;
     let mut items =
-        experiment_resources(&state, &caller, std::slice::from_ref(&view), true).await?;
+        experiment_resources(&state, &caller, std::slice::from_ref(&view), true, None).await?;
     let experiment = items
         .pop()
         .ok_or_else(|| ApiError::not_found("experiment"))?;
@@ -457,7 +492,7 @@ pub async fn patch_experiment(
     state.hub.bump();
     let view = state.db.experiment_view(workspace.id, id).await?;
     let mut items =
-        experiment_resources(&state, &caller, std::slice::from_ref(&view), true).await?;
+        experiment_resources(&state, &caller, std::slice::from_ref(&view), true, None).await?;
     let experiment = items
         .pop()
         .ok_or_else(|| ApiError::not_found("experiment"))?;

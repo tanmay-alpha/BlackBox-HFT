@@ -40,6 +40,12 @@ target/release/blackbox --data-dir data serve --web-dir web/dist
 `demo seed` without `--wait` only queues the demo runs; the worker of `serve` computes them, and a second
 `demo seed` then stores the curated comparisons and reports (it prints what is still pending).
 
+Anonymous demo lists and catalogues (`/runs`, `/experiments`, `/comparisons`, `/reports`, `/datasets`, `/presets`,
+`/demos`) are answered from an in-memory snapshot that `serve` builds at start and rebuilds after any change it makes
+itself, so warm anonymous traffic leaves Postgres idle. Rows written by another process (`demo seed`, `datasets`
+commands, a separate `worker`) appear in anonymous lists after the snapshot's next rebuild: the next change made by
+`serve`, at most one hour, or a restart. Keyed reads always use the database.
+
 `blackbox demo` still starts the deprecated file-based `/api` server without Postgres. The bundled console talks to
 `/api/v1` and does not work with it; the command says so when it starts. The `hosted` Docker target is the API image
 that CI publishes to `ghcr.io/tanmay-alpha/blackbox-hft`.

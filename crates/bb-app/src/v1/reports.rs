@@ -198,10 +198,15 @@ pub async fn list_reports(
         .get("cursor")
         .map(|c| decode_cursor(c, &filters))
         .transpose()?;
-    let rows = state
-        .db
-        .reports(workspace.id, cursor.as_ref(), super::runs::peek(limit))
-        .await?;
+    let rows = match state.snapshot.for_read(&state, &caller).await {
+        Some(s) => s.reports(cursor.as_ref(), super::runs::peek(limit) as usize),
+        None => {
+            state
+                .db
+                .reports(workspace.id, cursor.as_ref(), super::runs::peek(limit))
+                .await?
+        }
+    };
     let more = super::runs::has_more(rows.len(), limit);
     let rows = &rows[..rows.len().min(limit as usize)];
     report_page(&state, &caller, rows, more, &filters)
@@ -209,7 +214,7 @@ pub async fn list_reports(
 
 /// Whether a saved report's body still matches its `body_sha256`. A changed body is never
 /// served: lists leave it out, detail reads answer `integrity_failed`.
-fn intact(row: &ResearchReport) -> bool {
+pub fn intact(row: &ResearchReport) -> bool {
     if Sha256::digest(row.body.as_bytes()).as_slice() != row.body_sha256 {
         tracing::error!(report = %row.id, "saved report failed its body digest");
         return false;
