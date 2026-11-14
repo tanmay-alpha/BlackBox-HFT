@@ -1405,7 +1405,7 @@ fn cmd_keys(data_dir: &Path, command: KeysCommand) -> Result<()> {
             KeysCommand::Revoke { id } => {
                 let id: uuid::Uuid = id.parse().map_err(|_| anyhow!("key id must be a UUID"))?;
                 let key = db
-                    .revoke_key_any(id)
+                    .revoke_key_any(id, &bb_db::Audit::default())
                     .await
                     .map_err(|e| anyhow!("revoking the key: {e}"))?;
                 println!("Revoked key {} ({})", key.id, key.display_prefix);

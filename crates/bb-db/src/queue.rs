@@ -6,6 +6,10 @@ use serde_json::Value;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+/// Global Vercel Blob upload attempts per month (Hobby: 2,000 advanced operations, with
+/// headroom). Admission refuses new runs at the cap; `reserve_upload` charges every attempt.
+pub const BLOB_UPLOADS_PER_MONTH: i32 = 1800;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
@@ -102,6 +106,9 @@ pub struct Submit {
     /// Privileged seeding is an explicit caller decision, never inferred from an absent key.
     pub bypass_quotas: bool,
     pub storage_backend: String,
+    /// Request id for the `experiment.create` audit row written in the submission's
+    /// transaction (SEC-25); `None` outside HTTP (CLI seeding).
+    pub request_id: Option<String>,
 }
 impl Submit {
     pub fn new(config_id: Uuid, workspace_id: Uuid, platform: impl Into<String>) -> Self {
@@ -118,6 +125,7 @@ impl Submit {
             bypass_quotas: false,
             prerequisites_ready: true,
             storage_backend: "fs".into(),
+            request_id: None,
         }
     }
 }
@@ -254,7 +262,11 @@ impl Database {
             if !s.bypass_quotas && s.storage_backend == "vercel_blob" {
                 let uploads:i64=sqlx::query_scalar("SELECT coalesce(sum(uploads),0)::bigint FROM bb.storage_usage_monthly WHERE storage_backend='vercel_blob' AND month=date_trunc('month',now())::date").fetch_one(&mut *tx).await?;
                 let bytes:i64=sqlx::query_scalar("SELECT coalesce(sum(size_bytes),0)::bigint FROM bb.run_artifacts WHERE storage_backend='vercel_blob'").fetch_one(&mut *tx).await?;
-                if uploads >= 1800 || bytes.saturating_add(c.est_output_bytes_upper) > 900_000_000 {
+                let share:i64=sqlx::query_scalar("SELECT coalesce(sum(attempts),0)::bigint FROM bb.workspace_uploads_monthly WHERE workspace_id=$1 AND storage_backend='vercel_blob' AND month=date_trunc('month',now())::date").bind(w.id).fetch_one(&mut *tx).await?;
+                if uploads >= i64::from(BLOB_UPLOADS_PER_MONTH)
+                    || share >= i64::from(w.quota_uploads_per_month)
+                    || bytes.saturating_add(c.est_output_bytes_upper) > 900_000_000
+                {
                     return Err(Error::Quota("storage"));
                 }
             }
@@ -272,13 +284,16 @@ impl Database {
             return Err(Error::Conflict);
         }
         let job_id = job.as_ref().map(|j| j.id);
+        // Admission units (SEC-8): every live job of a single experiment is one unit and a
+        // sweep is one unit however many of its cells are live, so `quota_active_jobs` (hosted
+        // default 5) bounds single experiments while a sweep is admitted as a whole.
         if !s.bypass_quotas
             && let Some(id) = job_id
         {
-            let already_counted:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM bb.experiments WHERE workspace_id=$1 AND job_id=$2 AND cancel_requested_at IS NULL)")
-                    .bind(w.id).bind(id).fetch_one(&mut *tx).await?;
+            let already_counted:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM bb.experiments e JOIN bb.jobs j ON j.id=e.job_id WHERE e.workspace_id=$1 AND e.cancel_requested_at IS NULL AND (e.job_id=$2 OR ($3::uuid IS NOT NULL AND e.sweep_id=$3 AND j.state IN ('created','queued','running','cancelling'))))")
+                    .bind(w.id).bind(id).bind(sweep_id).fetch_one(&mut *tx).await?;
             if !already_counted {
-                let active:i64=sqlx::query_scalar("SELECT count(DISTINCT e.job_id) FROM bb.experiments e JOIN bb.jobs j ON j.id=e.job_id WHERE e.workspace_id=$1 AND e.cancel_requested_at IS NULL AND j.state IN ('created','queued','running','cancelling')")
+                let active:i64=sqlx::query_scalar("SELECT count(DISTINCT coalesce(e.sweep_id,e.job_id)) FROM bb.experiments e JOIN bb.jobs j ON j.id=e.job_id WHERE e.workspace_id=$1 AND e.cancel_requested_at IS NULL AND j.state IN ('created','queued','running','cancelling')")
                         .bind(w.id).fetch_one(&mut *tx).await?;
                 if active >= i64::from(w.quota_active_jobs) {
                     return Err(Error::Quota("active_jobs"));
@@ -291,6 +306,19 @@ impl Database {
             .unwrap_or((None, None));
         let experiment:Experiment=sqlx::query_as("INSERT INTO bb.experiments (workspace_id,experiment_config_id,dataset_id,strategy_kind,platform,label,job_id,created_by_key_id,sweep_id,sweep_x,sweep_y) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT ON CONSTRAINT experiments_idempotency DO UPDATE SET job_id=excluded.job_id,cancel_requested_at=NULL RETURNING *")
             .bind(w.id).bind(c.id).bind(&c.dataset_id).bind(&c.strategy_kind).bind(&s.platform).bind(&s.label).bind(job_id).bind(s.api_key_id).bind(sweep_id).bind(x).bind(y).fetch_one(&mut *tx).await?;
+        Audit {
+            workspace: Some(w.id),
+            key: s.api_key_id,
+            request_id: s.request_id.clone(),
+        }
+        .write(
+            &mut tx,
+            "experiment.create",
+            "experiment",
+            experiment.id,
+            serde_json::json!({"created": !exists, "job_id": job_id, "sweep_id": sweep_id}),
+        )
+        .await?;
         tx.commit().await?;
         Ok(Submission {
             created: !exists,
@@ -394,7 +422,8 @@ impl Database {
             sqlx::query("DELETE FROM bb.blob_gc WHERE storage_backend=$1 AND storage_key=$2 AND reason='upload_intent'").bind(&a.storage_backend).bind(&a.storage_key).execute(&mut *tx).await?;
         }
         // All successful uploads count, even if a duplicate object's intent is left for GC.
-        sqlx::query("INSERT INTO bb.storage_usage_monthly (month,storage_backend,uploads,bytes_uploaded) VALUES (date_trunc('month',now())::date,$1,1,$2) ON CONFLICT (month,storage_backend) DO UPDATE SET uploads=bb.storage_usage_monthly.uploads+1,bytes_uploaded=bb.storage_usage_monthly.bytes_uploaded+excluded.bytes_uploaded")
+        // Vercel Blob uploads were already counted per attempt by `reserve_upload`.
+        sqlx::query("INSERT INTO bb.storage_usage_monthly (month,storage_backend,uploads,bytes_uploaded) VALUES (date_trunc('month',now())::date,$1,CASE WHEN $1='vercel_blob' THEN 0 ELSE 1 END,$2) ON CONFLICT (month,storage_backend) DO UPDATE SET uploads=bb.storage_usage_monthly.uploads+CASE WHEN $1='vercel_blob' THEN 0 ELSE 1 END,bytes_uploaded=bb.storage_usage_monthly.bytes_uploaded+excluded.bytes_uploaded")
             .bind(&a.storage_backend).bind(a.size_bytes).execute(&mut *tx).await?;
         let n=sqlx::query("UPDATE bb.jobs SET state='completed',run_id=$4,lease_owner=NULL,lease_expires_at=NULL,finished_at=now(),ticks_done=ticks_total WHERE id=$1 AND lease_owner=$2 AND claim_count=$3 AND state='running' AND lease_expires_at>clock_timestamp()")
             .bind(job.id).bind(&lease.worker_id).bind(lease.attempt_no).bind(run.id).execute(&mut *tx).await?.rows_affected();
@@ -470,7 +499,12 @@ impl Database {
         tx.commit().await?;
         Ok(updated)
     }
-    pub async fn request_cancel(&self, workspace: Uuid, id: Uuid) -> Result<CancelResult> {
+    pub async fn request_cancel(
+        &self,
+        workspace: Uuid,
+        id: Uuid,
+        audit: &Audit,
+    ) -> Result<CancelResult> {
         let mut tx = self.pool.begin().await?;
         let job:Job=sqlx::query_as("SELECT j.* FROM bb.jobs j WHERE j.id=$1 AND EXISTS (SELECT 1 FROM bb.experiments e WHERE e.job_id=j.id AND e.workspace_id=$2) FOR UPDATE")
             .bind(id).bind(workspace).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
@@ -487,6 +521,15 @@ impl Database {
         } else {
             job
         };
+        audit
+            .write(
+                &mut tx,
+                "job.cancel",
+                "job",
+                id,
+                serde_json::json!({"state": updated.state, "detached": interested}),
+            )
+            .await?;
         tx.commit().await?;
         Ok(CancelResult {
             job: updated,
@@ -571,8 +614,21 @@ impl Database {
         id: Uuid,
         version: i64,
         label: &str,
+        audit: &Audit,
     ) -> Result<Experiment> {
-        sqlx::query_as("UPDATE bb.experiments SET label=$4 WHERE id=$1 AND workspace_id=$2 AND version=$3 RETURNING *").bind(id).bind(workspace).bind(version).bind(label).fetch_optional(&self.pool).await?.ok_or(Error::Conflict)
+        let mut tx = self.pool.begin().await?;
+        let row: Experiment = sqlx::query_as("UPDATE bb.experiments SET label=$4 WHERE id=$1 AND workspace_id=$2 AND version=$3 RETURNING *").bind(id).bind(workspace).bind(version).bind(label).fetch_optional(&mut *tx).await?.ok_or(Error::Conflict)?;
+        audit
+            .write(
+                &mut tx,
+                "experiment.rename",
+                "experiment",
+                id,
+                serde_json::json!({"version": row.version}),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(row)
     }
     pub async fn pin_experiment(
         &self,
@@ -588,6 +644,7 @@ impl Database {
         workspace: Uuid,
         id: Uuid,
         version: Option<i64>,
+        audit: &Audit,
     ) -> Result<()> {
         // Discover without locking, then follow the same job -> experiment lock order as cancel.
         let row: Experiment =
@@ -612,6 +669,15 @@ impl Database {
         if let Some(job) = row.job_id {
             sqlx::query("UPDATE bb.jobs SET state=CASE WHEN state='running' THEN 'cancelling' ELSE 'cancelled' END,cancel_requested_at=now(),finished_at=CASE WHEN state IN ('created','queued') THEN now() END WHERE id=$1 AND state IN ('created','queued','running') AND NOT EXISTS (SELECT 1 FROM bb.experiments WHERE job_id=$1 AND cancel_requested_at IS NULL)").bind(job).execute(&mut *tx).await?;
         }
+        audit
+            .write(
+                &mut tx,
+                "experiment.delete",
+                "experiment",
+                id,
+                serde_json::json!({"job_id": row.job_id}),
+            )
+            .await?;
         tx.commit().await?;
         Ok(())
     }

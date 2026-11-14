@@ -136,17 +136,26 @@ pub async fn create_report(
             body: markdown,
             created_by_key_id: caller.key_id(),
         },
+        &caller.audit(&workspace),
     )
     .await?;
     json(StatusCode::CREATED, &resource(&row), Cache::NoStore)
 }
 
 /// Saves a report snapshot (`POST /reports`, `blackbox demo seed`).
-pub async fn store(state: &Shared, report: NewReport) -> Result<ResearchReport, ApiError> {
-    let row = state.db.save_report(&report).await.map_err(|e| match e {
-        bb_db::Error::NotFound => ApiError::not_found(&report.kind),
-        other => other.into(),
-    })?;
+pub async fn store(
+    state: &Shared,
+    report: NewReport,
+    audit: &bb_db::Audit,
+) -> Result<ResearchReport, ApiError> {
+    let row = state
+        .db
+        .save_report(&report, audit)
+        .await
+        .map_err(|e| match e {
+            bb_db::Error::NotFound => ApiError::not_found(&report.kind),
+            other => other.into(),
+        })?;
     state.hub.bump();
     Ok(row)
 }
@@ -303,7 +312,7 @@ pub async fn delete_report(
     let id = uuid_param("report", &id)?;
     state
         .db
-        .delete_report(workspace.id, id)
+        .delete_report(workspace.id, id, &caller.audit(&workspace))
         .await
         .map_err(|_| ApiError::not_found("report"))?;
     state.hub.bump();

@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use crate::{
     analytics,
-    artifacts::{BundleCache, Storage, bundle_limits},
+    artifacts::{BundleCache, Storage, StorageError, bundle_limits},
     config::AppConfig,
     error::AppError,
     metrics::Metrics,
@@ -778,14 +778,28 @@ async fn persist(
     if let Err(e) = ctx.db.upload_intent(ctx.storage.backend, &key).await {
         return Outcome::Failed("storage_failed", "storage_failed", generic(&e));
     }
-    // 4b: publish (never overwrites).
-    if let Err(e) = ctx.storage.put(&key, bundle.path()).await {
-        tracing::error!(job_id = %job.id, error = %e, "upload failed");
-        return Outcome::Failed(
-            "storage_failed",
-            "storage_failed",
-            "the bundle could not be stored; resubmit to retry".into(),
-        );
+    // 4b: publish (never overwrites); every attempt is charged to the submitting workspace.
+    match ctx
+        .storage
+        .put(&key, bundle.path(), job.submitted_by_workspace_id)
+        .await
+    {
+        Ok(()) => {}
+        Err(StorageError::Budget) => {
+            return Outcome::Failed(
+                "storage_failed",
+                "storage_budget",
+                "the monthly storage upload allowance is spent; nothing was stored".into(),
+            );
+        }
+        Err(e) => {
+            tracing::error!(job_id = %job.id, error = %e, "upload failed");
+            return Outcome::Failed(
+                "storage_failed",
+                "storage_failed",
+                "the bundle could not be stored; resubmit to retry".into(),
+            );
+        }
     }
     // 4c: read back the trailer and compare its digest.
     let range = match trust.trailer.range() {

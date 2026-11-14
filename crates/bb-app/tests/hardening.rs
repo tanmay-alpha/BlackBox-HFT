@@ -7,6 +7,10 @@ mod common;
 use bb_db::{Database, Scope};
 use common::*;
 use serde_json::{Value, json};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 macro_rules! db_or_skip {
     () => {
@@ -182,6 +186,475 @@ async fn tampered_summary_rows_never_escape_a_list() {
         .await;
     assert_eq!(status, 500, "{body}");
     assert_eq!(body["error"]["code"], "integrity_failed");
+    server.stop().await;
+    tdb.drop_db().await;
+}
+
+/// A filesystem store whose next `fail_puts` uploads answer 503, counting every PUT it sees.
+struct FlakyStore {
+    inner: bb_artifacts::FsArtifactStore,
+    fail_puts: AtomicUsize,
+    puts: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl bb_artifacts::ArtifactStore for FlakyStore {
+    async fn put_bundle_from_file(
+        &self,
+        key: &str,
+        path: &std::path::Path,
+    ) -> Result<bb_artifacts::ArtifactHead, bb_artifacts::ArtifactError> {
+        self.puts.fetch_add(1, Ordering::SeqCst);
+        if self
+            .fail_puts
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(bb_artifacts::ArtifactError::Http(503));
+        }
+        self.inner.put_bundle_from_file(key, path).await
+    }
+    async fn get_range(
+        &self,
+        key: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<bytes::Bytes, bb_artifacts::ArtifactError> {
+        self.inner.get_range(key, range).await
+    }
+    async fn head(
+        &self,
+        key: &str,
+    ) -> Result<bb_artifacts::ArtifactHead, bb_artifacts::ArtifactError> {
+        self.inner.head(key).await
+    }
+    async fn delete(&self, key: &str) -> Result<(), bb_artifacts::ArtifactError> {
+        self.inner.delete(key).await
+    }
+}
+
+async fn workspace_attempts(db: &Database, workspace: uuid::Uuid) -> i64 {
+    sqlx::query_scalar("SELECT coalesce(sum(attempts),0)::bigint FROM bb.workspace_uploads_monthly WHERE workspace_id=$1")
+        .bind(workspace)
+        .fetch_one(db.pool())
+        .await
+        .unwrap()
+}
+
+/// FINAL_AUDIT §4 item 7 (SEC-8/SEC-11): every Blob upload attempt, retries included, is
+/// reserved against the submitting workspace's monthly share before the PUT; a spent share
+/// refuses the upload (no PUT is sent, the job fails `storage_budget`) and new submissions
+/// (429 `storage`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blob_uploads_are_reserved_per_attempt_against_the_workspace_share() {
+    let tdb = db_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(FlakyStore {
+        inner: bb_artifacts::FsArtifactStore::new(dir.path().join("objects")).unwrap(),
+        fail_puts: AtomicUsize::new(1),
+        puts: AtomicUsize::new(0),
+    });
+    let storage = bb_app::artifacts::Storage::custom(
+        store.clone(),
+        "vercel_blob",
+        Some((tdb.pool().await, 1_000_000, i64::MAX)),
+    );
+    let server = Server::start(
+        &tdb,
+        dir.path(),
+        Options {
+            storage: Some(storage),
+            ..Options::default()
+        },
+    )
+    .await;
+    let manifest = register_dataset(&server.db, dir.path(), 20).await;
+    let (ws, key) = workspace_key(&server.db, "alpha", &[Scope::Run]).await;
+    let workspace = server.db.workspace("alpha").await.unwrap();
+    assert_eq!(workspace.quota_uploads_per_month, 300, "default share");
+    sqlx::query("UPDATE bb.workspaces SET quota_uploads_per_month=3 WHERE id=$1")
+        .bind(ws)
+        .execute(server.db.pool())
+        .await
+        .unwrap();
+
+    // One transient failure, then success: two attempts, both charged.
+    run(&server, &key, config_json(&manifest, 100, 1), "first").await;
+    assert_eq!(store.puts.load(Ordering::SeqCst), 2);
+    assert_eq!(workspace_attempts(&server.db, ws).await, 2);
+
+    // Admitted (2 < 3); the first attempt takes the last unit and fails, the retry is refused
+    // before any PUT.
+    store.fail_puts.store(5, Ordering::SeqCst);
+    let (status, _, body) = server
+        .post(
+            "/api/v1/experiments",
+            Some(&key),
+            &json!({"config": config_json(&manifest, 200, 1), "label": "second"}),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let job = wait_job(&server, Some(&key), body["job"]["id"].as_str().unwrap()).await;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(job["error"]["code"], "storage_budget", "{job}");
+    assert_eq!(store.puts.load(Ordering::SeqCst), 3);
+    assert_eq!(workspace_attempts(&server.db, ws).await, 3);
+
+    // The share is spent: new work is refused at admission.
+    let (status, _, body) = server
+        .post(
+            "/api/v1/experiments",
+            Some(&key),
+            &json!({"config": config_json(&manifest, 300, 1), "label": "third"}),
+        )
+        .await;
+    assert_eq!(status, 429, "{body}");
+    assert_eq!(body["error"]["details"]["scope"], "storage", "{body}");
+    // Another workspace still has its own share.
+    store.fail_puts.store(0, Ordering::SeqCst);
+    let (_, other) = workspace_key(&server.db, "beta", &[Scope::Run]).await;
+    run(&server, &other, config_json(&manifest, 400, 1), "beta").await;
+    server.stop().await;
+    tdb.drop_db().await;
+}
+
+/// FINAL_AUDIT §4 item 7 (SEC-8): hosted default `quota_active_jobs` is 5 live admission units;
+/// a sweep is one unit however many cells it has.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn active_jobs_admit_five_units_and_a_sweep_counts_once() {
+    let tdb = db_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    // No worker: every job stays live.
+    let server = Server::start(
+        &tdb,
+        dir.path(),
+        Options {
+            slots: 0,
+            ..Options::default()
+        },
+    )
+    .await;
+    let manifest = register_dataset(&server.db, dir.path(), 20).await;
+    let (ws, key) = workspace_key(&server.db, "alpha", &[Scope::Run]).await;
+    assert_eq!(
+        server
+            .db
+            .workspace("alpha")
+            .await
+            .unwrap()
+            .quota_active_jobs,
+        5
+    );
+
+    let sweep = server
+        .db
+        .create_sweep(
+            &bb_db::NewSweep {
+                workspace_id: ws,
+                spec: json!({"x": {"type": "seed"}, "y": {"type": "interval"}}),
+                spec_fingerprint: vec![7; 32],
+                x_len: 3,
+                y_len: 3,
+                label: "grid".into(),
+                created_by_key_id: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    let cfg = &server.state.cfg;
+    for cell in 0..8i16 {
+        let mut config = bb_app::presets::find(&manifest, "maker_baseline")
+            .unwrap()
+            .config;
+        config.strategy.interval_ns = 250_000_000;
+        config.seed = 100 + cell as u64;
+        let admitted = bb_app::admission::admit(&server.db, ws, cfg.profile, &cfg.limits, config)
+            .await
+            .unwrap();
+        bb_app::admission::submit(
+            &server.db,
+            &server.hub,
+            &server.metrics,
+            &admitted,
+            bb_app::admission::SubmitOptions {
+                workspace: ws,
+                key: None,
+                label: "cell",
+                platform: &cfg.result_platform,
+                priority: 100,
+                deadline_ms: cfg.deadline_ms,
+                sweep: Some((sweep.id, cell % 3, cell / 3)),
+                bypass_quotas: false,
+                storage_backend: "fs",
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("sweep cell {cell}: {}", e.message));
+    }
+    // The sweep is one unit: four single experiments fit, the fifth does not.
+    for seed in 1..=5u64 {
+        let (status, _, body) = server
+            .post(
+                "/api/v1/experiments",
+                Some(&key),
+                &json!({"config": config_json(&manifest, 100, seed), "label": format!("single {seed}")}),
+            )
+            .await;
+        if seed <= 4 {
+            assert_eq!(status, 202, "single {seed}: {body}");
+        } else {
+            assert_eq!(status, 429, "{body}");
+            assert_eq!(body["error"]["details"]["scope"], "active_jobs");
+            assert_eq!(body["error"]["details"]["limit"], 5);
+            assert_eq!(body["error"]["details"]["used"], 5);
+        }
+    }
+    server.stop().await;
+    tdb.drop_db().await;
+}
+
+/// The audit rows of `action`: (api key id, request id, target id).
+async fn audit_rows(
+    db: &Database,
+    action: &str,
+) -> Vec<(Option<uuid::Uuid>, Option<String>, Option<String>)> {
+    sqlx::query_as("SELECT api_key_id,request_id,target_id FROM bb.audit_events WHERE action=$1 AND outcome='ok' ORDER BY id")
+        .bind(action)
+        .fetch_all(db.pool())
+        .await
+        .unwrap()
+}
+
+async fn key_id(db: &Database, plaintext: &str) -> uuid::Uuid {
+    sqlx::query_scalar("SELECT id FROM bb.api_keys WHERE display_prefix=$1")
+        .bind(&plaintext[..8])
+        .fetch_one(db.pool())
+        .await
+        .unwrap()
+}
+
+fn request_id(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+async fn send(
+    server: &Server,
+    method: reqwest::Method,
+    path: &str,
+    key: &str,
+    if_match: Option<&str>,
+    body: Option<Value>,
+) -> (u16, reqwest::header::HeaderMap, Value) {
+    let mut req = server
+        .http
+        .request(method, server.url(path))
+        .bearer_auth(key);
+    if let Some(tag) = if_match {
+        req = req.header("If-Match", tag);
+    }
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    response(req.send().await.unwrap()).await
+}
+
+/// FINAL_AUDIT §4 item 7 (SEC-25): every v1 mutation writes exactly one `audit_events` row with
+/// its request id, key id, action, target and outcome inside the mutation's transaction; a
+/// mutation that rolls back (stale version, terminal job, missing target) leaves no row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_v1_mutation_writes_one_transactional_audit_row() {
+    let tdb = db_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    use reqwest::Method;
+
+    // Phase 1 without a worker: submit, rename, cancel and delete a queued experiment.
+    let server = Server::start(
+        &tdb,
+        dir.path(),
+        Options {
+            slots: 0,
+            ..Options::default()
+        },
+    )
+    .await;
+    let manifest = register_dataset(&server.db, dir.path(), 20).await;
+    let (_, key) = workspace_key(&server.db, "alpha", &[Scope::Run]).await;
+    let (_, admin) = workspace_key(&server.db, "ops", &[Scope::Admin]).await;
+    let kid = key_id(&server.db, &key).await;
+    let (status, headers, submitted) = send(
+        &server,
+        Method::POST,
+        "/api/v1/experiments",
+        &key,
+        None,
+        Some(json!({"config": config_json(&manifest, 100, 9), "label": "queued"})),
+    )
+    .await;
+    assert_eq!(status, 202, "{submitted}");
+    let experiment_id = submitted["experiment"]["id"].as_str().unwrap().to_string();
+    let job_id = submitted["job"]["id"].as_str().unwrap().to_string();
+    let rows = audit_rows(&server.db, "experiment.create").await;
+    assert_eq!(
+        rows,
+        vec![(Some(kid), request_id(&headers), Some(experiment_id.clone()))]
+    );
+
+    let path = format!("/api/v1/experiments/{experiment_id}");
+    let version = submitted["experiment"]["version"].as_i64().unwrap();
+    let (status, headers, _) = send(
+        &server,
+        Method::PATCH,
+        &path,
+        &key,
+        Some(&format!("\"v{version}\"")),
+        Some(json!({"label": "renamed"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let rename_request = request_id(&headers);
+    // Stale version: the update matches nothing and the transaction rolls back.
+    let (status, _, _) = send(
+        &server,
+        Method::PATCH,
+        &path,
+        &key,
+        Some(&format!("\"v{version}\"")),
+        Some(json!({"label": "stale"})),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(
+        audit_rows(&server.db, "experiment.rename").await,
+        vec![(Some(kid), rename_request, Some(experiment_id.clone()))]
+    );
+
+    let (status, headers, _) = send(
+        &server,
+        Method::POST,
+        &format!("/api/v1/jobs/{job_id}/cancel"),
+        &key,
+        None,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 202);
+    assert_eq!(
+        audit_rows(&server.db, "job.cancel").await,
+        vec![(Some(kid), request_id(&headers), Some(job_id.clone()))]
+    );
+    let (status, headers, _) = send(&server, Method::DELETE, &path, &key, None, None).await;
+    assert_eq!(status, 204);
+    assert_eq!(
+        audit_rows(&server.db, "experiment.delete").await,
+        vec![(Some(kid), request_id(&headers), Some(experiment_id.clone()))]
+    );
+    server.stop().await;
+
+    // Phase 2 with a worker: comparisons, reports and a key revocation.
+    let server = Server::start(&tdb, dir.path(), Options::default()).await;
+    let (run1, job1) = run(&server, &key, config_json(&manifest, 100, 1), "one").await;
+    let (run2, _) = run(&server, &key, config_json(&manifest, 200, 1), "two").await;
+    // A terminal job cannot be cancelled: rolled back, no row.
+    let (status, _, _) = send(
+        &server,
+        Method::POST,
+        &format!("/api/v1/jobs/{}/cancel", job1["id"].as_str().unwrap()),
+        &key,
+        None,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(audit_rows(&server.db, "job.cancel").await.len(), 1);
+
+    let (status, headers, comparison) = send(
+        &server,
+        Method::POST,
+        "/api/v1/comparisons",
+        &key,
+        None,
+        Some(json!({"run_a": run1, "run_b": run2})),
+    )
+    .await;
+    assert_eq!(status, 201, "{comparison}");
+    let comparison_id = comparison["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        audit_rows(&server.db, "comparison.create").await,
+        vec![(Some(kid), request_id(&headers), Some(comparison_id.clone()))]
+    );
+    let cpath = format!("/api/v1/comparisons/{comparison_id}");
+    let (status, headers, _) = send(
+        &server,
+        Method::PATCH,
+        &cpath,
+        &key,
+        Some("\"v1\""),
+        Some(json!({"label": "pair"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        audit_rows(&server.db, "comparison.rename").await,
+        vec![(Some(kid), request_id(&headers), Some(comparison_id.clone()))]
+    );
+    let (status, headers, report) = send(
+        &server,
+        Method::POST,
+        "/api/v1/reports",
+        &key,
+        None,
+        Some(json!({"kind": "run", "subject_id": run1, "title": "One"})),
+    )
+    .await;
+    assert_eq!(status, 201, "{report}");
+    let report_id = report["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        audit_rows(&server.db, "report.create").await,
+        vec![(Some(kid), request_id(&headers), Some(report_id.clone()))]
+    );
+    let (status, headers, _) = send(
+        &server,
+        Method::DELETE,
+        &format!("/api/v1/reports/{report_id}"),
+        &key,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    assert_eq!(
+        audit_rows(&server.db, "report.delete").await,
+        vec![(Some(kid), request_id(&headers), Some(report_id.clone()))]
+    );
+    let (status, headers, _) = send(&server, Method::DELETE, &cpath, &key, None, None).await;
+    assert_eq!(status, 204);
+    // Deleting it again finds nothing: rolled back, no second row.
+    let (status, _, _) = send(&server, Method::DELETE, &cpath, &key, None, None).await;
+    assert_eq!(status, 404);
+    assert_eq!(
+        audit_rows(&server.db, "comparison.delete").await,
+        vec![(Some(kid), request_id(&headers), Some(comparison_id.clone()))]
+    );
+
+    let (status, headers, _) = send(
+        &server,
+        Method::POST,
+        &format!("/api/v1/system/api-keys/{kid}/revoke"),
+        &admin,
+        None,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let admin_id = key_id(&server.db, &admin).await;
+    let revokes = audit_rows(&server.db, "key.revoke").await;
+    assert_eq!(
+        revokes,
+        vec![(Some(admin_id), request_id(&headers), Some(kid.to_string()))]
+    );
     server.stop().await;
     tdb.drop_db().await;
 }

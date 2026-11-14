@@ -60,6 +60,32 @@ pub struct NewAuditEvent<'a> {
     pub detail: &'a Value,
 }
 
+/// Who performed a v1 mutation and under which request (SEC-25). Each mutation writes one
+/// `bb.audit_events` row (`outcome = 'ok'`) with it inside its own transaction, so the change
+/// and its audit row commit or roll back together.
+#[derive(Debug, Clone, Default)]
+pub struct Audit {
+    /// The workspace written to.
+    pub workspace: Option<Uuid>,
+    pub key: Option<Uuid>,
+    pub request_id: Option<String>,
+}
+
+impl Audit {
+    pub(crate) async fn write(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        action: &str,
+        target_type: &str,
+        target_id: impl ToString,
+        detail: Value,
+    ) -> Result<()> {
+        sqlx::query("INSERT INTO bb.audit_events (workspace_id,api_key_id,action,outcome,target_type,target_id,request_id,detail) VALUES ($1,$2,$3,'ok',$4,$5,$6,$7)")
+            .bind(self.workspace).bind(self.key).bind(action).bind(target_type).bind(target_id.to_string()).bind(&self.request_id).bind(detail).execute(conn).await?;
+        Ok(())
+    }
+}
+
 impl Database {
     pub async fn create_sweep(&self, s: &NewSweep, bypass_quotas: bool) -> Result<Sweep> {
         hash(&s.spec_fingerprint)?;
@@ -144,16 +170,28 @@ impl Database {
             .await?;
         Ok(())
     }
-    pub async fn create_comparison(&self, c: &NewComparison) -> Result<Comparison> {
+    pub async fn create_comparison(&self, c: &NewComparison, audit: &Audit) -> Result<Comparison> {
         hash(&c.summary_sha256)?;
+        let mut tx = self.pool.begin().await?;
         let visible:i64=sqlx::query_scalar("SELECT count(*) FROM bb.runs r WHERE r.id=ANY($1::uuid[]) AND r.quarantined_at IS NULL AND EXISTS (SELECT 1 FROM bb.experiments e JOIN bb.workspaces w ON w.id=e.workspace_id WHERE e.experiment_config_id=r.experiment_config_id AND e.platform=r.platform AND (e.workspace_id=$2 OR w.is_public_read))")
-            .bind(vec![c.run_a_id,c.run_b_id]).bind(c.workspace_id).fetch_one(&self.pool).await?;
+            .bind(vec![c.run_a_id,c.run_b_id]).bind(c.workspace_id).fetch_one(&mut *tx).await?;
         if visible != 2 {
             return Err(Error::NotFound);
         }
-        sqlx::query("INSERT INTO bb.comparisons (workspace_id,run_a_id,run_b_id,comparator_version,eligibility,reasons,summary,summary_sha256,label,created_by_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (workspace_id,run_a_id,run_b_id,comparator_version) DO NOTHING")
-            .bind(c.workspace_id).bind(c.run_a_id).bind(c.run_b_id).bind(c.comparator_version).bind(&c.eligibility).bind(&c.reasons).bind(&c.summary).bind(&c.summary_sha256).bind(&c.label).bind(c.created_by_key_id).execute(&self.pool).await?;
-        Ok(sqlx::query_as("SELECT * FROM bb.comparisons WHERE workspace_id=$1 AND run_a_id=$2 AND run_b_id=$3 AND comparator_version=$4").bind(c.workspace_id).bind(c.run_a_id).bind(c.run_b_id).bind(c.comparator_version).fetch_one(&self.pool).await?)
+        let created = sqlx::query("INSERT INTO bb.comparisons (workspace_id,run_a_id,run_b_id,comparator_version,eligibility,reasons,summary,summary_sha256,label,created_by_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (workspace_id,run_a_id,run_b_id,comparator_version) DO NOTHING")
+            .bind(c.workspace_id).bind(c.run_a_id).bind(c.run_b_id).bind(c.comparator_version).bind(&c.eligibility).bind(&c.reasons).bind(&c.summary).bind(&c.summary_sha256).bind(&c.label).bind(c.created_by_key_id).execute(&mut *tx).await?.rows_affected() == 1;
+        let row: Comparison = sqlx::query_as("SELECT * FROM bb.comparisons WHERE workspace_id=$1 AND run_a_id=$2 AND run_b_id=$3 AND comparator_version=$4").bind(c.workspace_id).bind(c.run_a_id).bind(c.run_b_id).bind(c.comparator_version).fetch_one(&mut *tx).await?;
+        audit
+            .write(
+                &mut tx,
+                "comparison.create",
+                "comparison",
+                row.id,
+                serde_json::json!({"created": created}),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(row)
     }
     /// The stored comparison of `run_a` with `run_b` in `workspace` by `comparator_version`.
     pub async fn find_comparison(
@@ -182,23 +220,47 @@ impl Database {
         id: Uuid,
         version: i64,
         label: &str,
+        audit: &Audit,
     ) -> Result<Comparison> {
-        sqlx::query_as("UPDATE bb.comparisons SET label=$4 WHERE id=$1 AND workspace_id=$2 AND version=$3 RETURNING *").bind(id).bind(workspace).bind(version).bind(label).fetch_optional(&self.pool).await?.ok_or(Error::Conflict)
+        let mut tx = self.pool.begin().await?;
+        let row: Comparison = sqlx::query_as("UPDATE bb.comparisons SET label=$4 WHERE id=$1 AND workspace_id=$2 AND version=$3 RETURNING *").bind(id).bind(workspace).bind(version).bind(label).fetch_optional(&mut *tx).await?.ok_or(Error::Conflict)?;
+        audit
+            .write(
+                &mut tx,
+                "comparison.rename",
+                "comparison",
+                id,
+                serde_json::json!({"version": row.version}),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(row)
     }
-    pub async fn delete_comparison(&self, workspace: Uuid, id: Uuid) -> Result<()> {
+    pub async fn delete_comparison(&self, workspace: Uuid, id: Uuid, audit: &Audit) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         if sqlx::query("DELETE FROM bb.comparisons WHERE id=$1 AND workspace_id=$2")
             .bind(id)
             .bind(workspace)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?
             .rows_affected()
             == 0
         {
             return Err(Error::NotFound);
         }
+        audit
+            .write(
+                &mut tx,
+                "comparison.delete",
+                "comparison",
+                id,
+                serde_json::json!({}),
+            )
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
-    pub async fn save_report(&self, r: &NewReport) -> Result<ResearchReport> {
+    pub async fn save_report(&self, r: &NewReport, audit: &Audit) -> Result<ResearchReport> {
         hash(&r.body_sha256)?;
         match (r.kind.as_str(), r.run_id, r.comparison_id, r.sweep_id) {
             ("run", Some(id), None, None) => {
@@ -215,8 +277,20 @@ impl Database {
             }
             _ => return Err(Error::Invalid("report subject must match kind".into())),
         }
-        Ok(sqlx::query_as("INSERT INTO bb.research_reports (workspace_id,kind,run_id,comparison_id,sweep_id,title,generator_version,body,body_sha256,created_by_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *")
-            .bind(r.workspace_id).bind(&r.kind).bind(r.run_id).bind(r.comparison_id).bind(r.sweep_id).bind(&r.title).bind(r.generator_version).bind(&r.body).bind(&r.body_sha256).bind(r.created_by_key_id).fetch_one(&self.pool).await?)
+        let mut tx = self.pool.begin().await?;
+        let row: ResearchReport = sqlx::query_as("INSERT INTO bb.research_reports (workspace_id,kind,run_id,comparison_id,sweep_id,title,generator_version,body,body_sha256,created_by_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *")
+            .bind(r.workspace_id).bind(&r.kind).bind(r.run_id).bind(r.comparison_id).bind(r.sweep_id).bind(&r.title).bind(r.generator_version).bind(&r.body).bind(&r.body_sha256).bind(r.created_by_key_id).fetch_one(&mut *tx).await?;
+        audit
+            .write(
+                &mut tx,
+                "report.create",
+                "report",
+                row.id,
+                serde_json::json!({"kind": r.kind}),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(row)
     }
     pub async fn report(&self, workspace: Uuid, id: Uuid) -> Result<ResearchReport> {
         sqlx::query_as("SELECT r.* FROM bb.research_reports r JOIN bb.workspaces w ON w.id=r.workspace_id WHERE r.id=$1 AND (r.workspace_id=$2 OR w.is_public_read)").bind(id).bind(workspace).fetch_optional(&self.pool).await?.ok_or(Error::NotFound)
@@ -229,17 +303,28 @@ impl Database {
     ) -> Result<Vec<ResearchReport>> {
         Ok(sqlx::query_as("SELECT * FROM bb.research_reports WHERE workspace_id=$1 AND ($2::timestamptz IS NULL OR (created_at,id)<($2,$3)) ORDER BY created_at DESC,id DESC LIMIT $4").bind(workspace).bind(cursor.map(|c|c.created_at)).bind(cursor.map(|c|c.id)).bind(limit(count)?).fetch_all(&self.pool).await?)
     }
-    pub async fn delete_report(&self, workspace: Uuid, id: Uuid) -> Result<()> {
+    pub async fn delete_report(&self, workspace: Uuid, id: Uuid, audit: &Audit) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         if sqlx::query("DELETE FROM bb.research_reports WHERE id=$1 AND workspace_id=$2")
             .bind(id)
             .bind(workspace)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?
             .rows_affected()
             == 0
         {
             return Err(Error::NotFound);
         }
+        audit
+            .write(
+                &mut tx,
+                "report.delete",
+                "report",
+                id,
+                serde_json::json!({}),
+            )
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
     pub async fn runs(

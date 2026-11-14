@@ -255,8 +255,12 @@ async fn curate(
                 }
                 continue;
             };
+            let audit = bb_db::Audit {
+                workspace: Some(workspace),
+                ..Default::default()
+            };
             let (row, existed) =
-                comparisons::compare_and_store(&state, workspace, a, b, title.clone(), None)
+                comparisons::compare_and_store(&state, workspace, a, b, title.clone(), &audit)
                     .await
                     .map_err(|e| anyhow!("{title}: {} ({})", e.message, e.code))?;
             out.push(Curated {
@@ -283,7 +287,7 @@ async fn curate(
                     let snapshot =
                         reports::comparison_snapshot(workspace, &row, report_title.clone())
                             .map_err(|e| anyhow!("{report_title}: {}", e.message))?;
-                    let r = reports::store(&state, snapshot)
+                    let r = reports::store(&state, snapshot, &audit)
                         .await
                         .map_err(|e| anyhow!("{report_title}: {} ({})", e.message, e.code))?;
                     out.push(Curated {

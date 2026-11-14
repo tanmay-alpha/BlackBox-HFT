@@ -13,6 +13,8 @@ pub struct Workspace {
     pub quota_experiments_per_day: i32,
     pub quota_sweeps_per_day: i32,
     pub quota_active_jobs: i32,
+    /// Vercel Blob upload attempts this workspace may spend per month (SEC-8/SEC-11).
+    pub quota_uploads_per_month: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub version: i64,

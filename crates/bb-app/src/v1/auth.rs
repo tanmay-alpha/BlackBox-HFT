@@ -50,6 +50,15 @@ impl Caller {
         self.key.as_ref().map(|k| k.id)
     }
 
+    /// The actor of a mutation of `workspace` for its transactional audit row (SEC-25).
+    pub fn audit(&self, workspace: &Workspace) -> bb_db::Audit {
+        bb_db::Audit {
+            workspace: Some(workspace.id),
+            key: self.key_id(),
+            request_id: Some(super::error::request_id()),
+        }
+    }
+
     /// 401 without a key, 403 when the key lacks `scope`.
     pub fn require(&self, scope: Scope) -> Result<&ApiKey, ApiError> {
         match &self.key {

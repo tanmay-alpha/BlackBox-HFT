@@ -111,13 +111,19 @@ experiments are `pinned` (exempt from retention). Demo quotas are 0, so nothing 
 | Request timeout | 30 s (reads), 10 s (submissions), `BB_COMPARISON_TIMEOUT_S` = 60 s (`POST /comparisons`, §8.6) | `TimeoutLayer` | 503 `unavailable` |
 | Experiments per key per day | 100 (workspace setting) | Postgres, in the submit transaction | 429 `quota_exceeded` |
 | Sweeps per key per day | 5 | Postgres | 429 `quota_exceeded` |
-| Live jobs per workspace | 50 | Postgres | 429 `quota_exceeded` |
-| Storage (Vercel Blob Hobby) | uploads ≤ 1,800 of 2,000/month; bytes ≤ 900 MB of 1 GB | `bb.storage_usage_monthly` + `run_artifacts` sums | 429 `quota_exceeded` (`scope: "storage"`) |
+| Live admission units per workspace | 5 (`quota_active_jobs`): each live single experiment is one unit; a sweep is **one** unit however many of its cells are live | Postgres, in the submit transaction (`count(DISTINCT coalesce(sweep_id, job_id))`) | 429 `quota_exceeded` (`scope: "active_jobs"`) |
+| Storage (Vercel Blob Hobby) | upload attempts ≤ 1,800 of 2,000/month globally and ≤ 300/month per workspace (`quota_uploads_per_month`); bytes ≤ 900 MB of 1 GB | admission checks `bb.storage_usage_monthly`, `bb.workspace_uploads_monthly` and `run_artifacts` sums; the worker reserves **every** upload attempt (retries included) against both counters before the PUT and refuses the upload when either is spent or the reservation fails (job `failed{storage_failed/storage_budget}`) | 429 `quota_exceeded` (`scope: "storage"`) |
 | Work per experiment | `ExecutionLimits::hosted()` (`max_ticks`, `max_tape_events`, `max_output_bytes`) | admission (`estimate_work`) + runtime `RunBudget` | 422 `budget_exceeded` / job `failed{budget_exceeded}` |
 | Sweep size | ≤ 25 cells hosted (≤ 100 local = `MAX_GRID_CELLS`) | admission | 422 `budget_exceeded` |
 
 Every 429/503 carries `Retry-After` (seconds). Rate-limited routes also send `X-RateLimit-Limit` and
 `X-RateLimit-Remaining`. `GET /whoami` reports quota usage.
+
+Every v1 mutation (`POST /experiments`, `PATCH`/`DELETE /experiments/{id}`, `POST /jobs/{id}/cancel`,
+`POST`/`PATCH`/`DELETE /comparisons…`, `POST`/`DELETE /reports…`, `POST /system/api-keys/{id}/revoke`) writes one
+`bb.audit_events` row (`action`, `outcome = ok`, target, workspace, `api_key_id`, `request_id`) inside the same
+transaction as the change, so a rolled-back mutation leaves no row (SECURITY_REVIEW §15, SEC-25). Refused requests
+(validation, quota, auth) and anonymous traffic write none.
 
 ## 6. Caching
 
@@ -389,7 +395,7 @@ written only on state transitions and job heartbeats, so its age during a long i
   "workspace": { "slug": "lab", "name": "Research lab", "kind": "research" },
   "key": { "id": "01a1…", "label": "lead laptop", "display_prefix": "bbk_TEST", "scopes": ["read", "run"], "expires_at_ns": null },
   "quotas": { "experiments_per_day": { "limit": 100, "used": 3 }, "sweeps_per_day": { "limit": 5, "used": 0 },
-              "active_jobs": { "limit": 50, "used": 1 } } }
+              "active_jobs": { "limit": 5, "used": 1 } } }
 ```
 
 Anonymous: `{"mode":"demo","workspace":{"slug":"demo",…,"kind":"demo"},"key":null,"quotas":null}`.
@@ -547,6 +553,6 @@ above, and why:
 | Host/CORS | Same-origin requests (Origin authority = Host) are always allowed, besides `BB_CORS_ALLOWED_ORIGINS` | the local UI served by `serve` sends `Origin` on POST |
 | API keys | `bbk_` + base64url(24 random bytes ‖ 8-byte HMAC-SHA256 tag with `BB_API_KEY_PEPPER`); forged keys fail before any DB access | SECURITY_REVIEW §9.1, SEC-31 |
 | Rate limits | `governor` keyed limiters in the auth layer (per IP for anonymous, per key, plus a global anonymous cap; client IP = last `X-Forwarded-For` entry) instead of a `tower_governor` layer | one layer must apply different quotas to anonymous and keyed callers |
-| Quotas | hosted `quota_active_jobs` stays 50 (not 5) | a 25-cell sweep needs 25 live jobs |
+| Quotas | hosted `quota_active_jobs` = 5 admission units, a sweep counting as one unit (migration 0009) | a 25-cell sweep must still be admissible next to single experiments |
 | Sweeps | v1 sweeps still take `GridSpec`; switch to `bb_core::sweep::SweepSpec` (p5-sweeps) is pending | merged after this branch's scope was fixed |
 | `demo seed` | Runs against the database directly (`DATABASE_URL`), not against the hosted API; `--platform linux-x86_64` seeds canonical jobs for the hosted worker | no admin-API seeding path is needed for a queue-based seed |

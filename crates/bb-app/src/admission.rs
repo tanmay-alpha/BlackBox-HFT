@@ -160,6 +160,7 @@ pub async fn submit(
     s.sweep = opts.sweep;
     s.bypass_quotas = opts.bypass_quotas;
     s.storage_backend = opts.storage_backend.to_string();
+    s.request_id = Some(crate::v1::error::request_id()).filter(|id| id != "-");
     let submission = db.submit(&s).await.map_err(|e| match e {
         // Limit and usage are filled in by `quota_details`.
         bb_db::Error::Quota(scope) => ApiError::quota_exceeded(scope, 0, 0),

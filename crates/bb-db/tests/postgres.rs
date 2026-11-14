@@ -436,7 +436,7 @@ async fn scenario(db: Database) {
         Some("completed")
     );
     assert!(matches!(
-        db.request_cancel(a.id, job_id).await,
+        db.request_cancel(a.id, job_id, &Audit::default()).await,
         Err(Error::Conflict)
     ));
     assert!(db.gc_due(10).await.unwrap().is_empty());
@@ -483,9 +483,19 @@ async fn scenario(db: Database) {
         .unwrap();
     assert_eq!(running.id, j2.id);
     let l2 = running.lease().unwrap();
-    assert!(db.request_cancel(a.id, j2.id).await.unwrap().detached);
+    assert!(
+        db.request_cancel(a.id, j2.id, &Audit::default())
+            .await
+            .unwrap()
+            .detached
+    );
     assert_eq!(db.job(j2.id).await.unwrap().state, "running");
-    assert!(!db.request_cancel(b.id, j2.id).await.unwrap().detached);
+    assert!(
+        !db.request_cancel(b.id, j2.id, &Audit::default())
+            .await
+            .unwrap()
+            .detached
+    );
     assert_eq!(
         db.heartbeat(&l2, 60, 1, 1).await.unwrap().state,
         "cancelling"
@@ -504,7 +514,11 @@ async fn scenario(db: Database) {
     assert!(matches!(Error::from(err), Error::IllegalTransition));
     assert_eq!(db.acknowledge_cancel(&l2).await.unwrap().state, "cancelled");
     assert_eq!(
-        db.request_cancel(b.id, j2.id).await.unwrap().job.state,
+        db.request_cancel(b.id, j2.id, &Audit::default())
+            .await
+            .unwrap()
+            .job
+            .state,
         "cancelled"
     );
     assert!(db.existing_run(c2.id, PLATFORM).await.unwrap().is_none());
@@ -512,7 +526,11 @@ async fn scenario(db: Database) {
     assert_ne!(fresh.job.as_ref().unwrap().id, j2.id);
     let queued = fresh.job.unwrap();
     assert_eq!(
-        db.request_cancel(a.id, queued.id).await.unwrap().job.state,
+        db.request_cancel(a.id, queued.id, &Audit::default())
+            .await
+            .unwrap()
+            .job
+            .state,
         "cancelled"
     );
 
@@ -604,12 +622,13 @@ async fn scenario(db: Database) {
     assert!(page2.iter().all(|e| !listed.iter().any(|x| x.id == e.id)));
     let e = db.experiment(a.id, exp_id).await.unwrap();
     let renamed = db
-        .rename_experiment(a.id, e.id, e.version, "renamed")
+        .rename_experiment(a.id, e.id, e.version, "renamed", &Audit::default())
         .await
         .unwrap();
     assert!(renamed.version > e.version);
     assert!(matches!(
-        db.rename_experiment(a.id, e.id, e.version, "stale").await,
+        db.rename_experiment(a.id, e.id, e.version, "stale", &Audit::default())
+            .await,
         Err(Error::Conflict)
     ));
     let pinned = db
@@ -785,44 +804,52 @@ async fn research_and_operations(
     db.cancel_sweep(a, sweep.id).await.unwrap();
     assert_eq!(db.job(cell.job.unwrap().id).await.unwrap().state, "queued");
     let comp = db
-        .create_comparison(&NewComparison {
-            workspace_id: a,
-            run_a_id: r1.id,
-            run_b_id: r2.id,
-            comparator_version: 2,
-            eligibility: "aligned".into(),
-            reasons: json!([]),
-            summary: json!({"same":true}),
-            summary_sha256: vec![8; 32],
-            label: "pair".into(),
-            created_by_key_id: None,
-        })
+        .create_comparison(
+            &NewComparison {
+                workspace_id: a,
+                run_a_id: r1.id,
+                run_b_id: r2.id,
+                comparator_version: 2,
+                eligibility: "aligned".into(),
+                reasons: json!([]),
+                summary: json!({"same":true}),
+                summary_sha256: vec![8; 32],
+                label: "pair".into(),
+                created_by_key_id: None,
+            },
+            &Audit::default(),
+        )
         .await
         .unwrap();
     assert_eq!(db.comparison(a, comp.id).await.unwrap().id, comp.id);
     assert_eq!(db.comparisons(a, None, 10).await.unwrap().len(), 1);
-    db.rename_comparison(a, comp.id, comp.version, "renamed pair")
+    db.rename_comparison(a, comp.id, comp.version, "renamed pair", &Audit::default())
         .await
         .unwrap();
     let body = "# Research\n";
     let report = db
-        .save_report(&NewReport {
-            workspace_id: a,
-            kind: "comparison".into(),
-            run_id: None,
-            comparison_id: Some(comp.id),
-            sweep_id: None,
-            title: "Saved research".into(),
-            generator_version: 1,
-            body: body.into(),
-            body_sha256: Sha256::digest(body.as_bytes()).to_vec(),
-            created_by_key_id: None,
-        })
+        .save_report(
+            &NewReport {
+                workspace_id: a,
+                kind: "comparison".into(),
+                run_id: None,
+                comparison_id: Some(comp.id),
+                sweep_id: None,
+                title: "Saved research".into(),
+                generator_version: 1,
+                body: body.into(),
+                body_sha256: Sha256::digest(body.as_bytes()).to_vec(),
+                created_by_key_id: None,
+            },
+            &Audit::default(),
+        )
         .await
         .unwrap();
     assert_eq!(db.report(a, report.id).await.unwrap().body, body);
     assert_eq!(db.reports(a, None, 10).await.unwrap().len(), 1);
-    db.delete_comparison(a, comp.id).await.unwrap();
+    db.delete_comparison(a, comp.id, &Audit::default())
+        .await
+        .unwrap();
     assert!(
         db.report(a, report.id)
             .await
@@ -830,7 +857,9 @@ async fn research_and_operations(
             .comparison_id
             .is_none()
     );
-    db.delete_report(a, report.id).await.unwrap();
+    db.delete_report(a, report.id, &Audit::default())
+        .await
+        .unwrap();
     db.audit(NewAuditEvent {
         workspace: Some(a),
         key: None,
@@ -922,7 +951,7 @@ async fn research_and_operations(
         .into_iter()
         .find(|e| e.experiment_config_id == c.id)
         .unwrap();
-    db.delete_experiment(b, e.id, Some(e.version))
+    db.delete_experiment(b, e.id, Some(e.version), &Audit::default())
         .await
         .unwrap();
     assert!(db.existing_run(c.id, PLATFORM).await.unwrap().is_none());
@@ -971,7 +1000,11 @@ async fn lease_and_cancel_edges(db: &Database, workspace: Uuid, v: &DatasetVersi
     s.prerequisites_ready = false;
     let j = db.submit(&s).await.unwrap().job.unwrap();
     assert_eq!(
-        db.request_cancel(workspace, j.id).await.unwrap().job.state,
+        db.request_cancel(workspace, j.id, &Audit::default())
+            .await
+            .unwrap()
+            .job
+            .state,
         "cancelled"
     );
     let c = config(db, v, 42).await;
@@ -981,7 +1014,9 @@ async fn lease_and_cancel_edges(db: &Database, workspace: Uuid, v: &DatasetVersi
         .await
         .unwrap()
         .unwrap();
-    db.request_cancel(workspace, running.id).await.unwrap();
+    db.request_cancel(workspace, running.id, &Audit::default())
+        .await
+        .unwrap();
     let bad = Lease {
         worker_id: "nonholder".into(),
         ..running.lease().unwrap()
@@ -1005,8 +1040,9 @@ async fn lease_and_cancel_edges(db: &Database, workspace: Uuid, v: &DatasetVersi
     let lease = running.lease().unwrap();
     let (r, a) = result(&c);
     db.upload_intent("fs", &a.storage_key).await.unwrap();
+    let audit = Audit::default();
     let (cancel, complete) = tokio::join!(
-        db.request_cancel(workspace, running.id),
+        db.request_cancel(workspace, running.id, &audit),
         db.complete(&lease, &r, &a)
     );
     match (cancel, complete) {

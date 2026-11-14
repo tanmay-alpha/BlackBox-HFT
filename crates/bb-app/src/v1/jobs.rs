@@ -171,7 +171,7 @@ pub async fn cancel_job(
     let id = uuid_param("job", &id)?;
     let result = state
         .db
-        .request_cancel(workspace.id, id)
+        .request_cancel(workspace.id, id, &caller.audit(&workspace))
         .await
         .map_err(|e| match e {
             bb_db::Error::NotFound => ApiError::not_found("job"),

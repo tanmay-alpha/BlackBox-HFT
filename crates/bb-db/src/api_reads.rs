@@ -312,6 +312,27 @@ impl Database {
         tx.commit().await?;
         Ok(true)
     }
+    /// Reserves one Blob upload attempt before every PUT, retries included (SEC-8/SEC-11): one
+    /// unit of the global monthly allowance ([`BLOB_UPLOADS_PER_MONTH`]) and, for a job with a
+    /// submitting workspace, one of that workspace's `quota_uploads_per_month`. `false` (nothing
+    /// charged) when either is spent; the caller then does not upload (fail closed).
+    pub async fn reserve_upload(&self, backend: &str, workspace: Option<Uuid>) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let global: Option<i32> = sqlx::query_scalar("INSERT INTO bb.storage_usage_monthly (month,storage_backend,uploads) VALUES (date_trunc('month',now())::date,$1,1) ON CONFLICT (month,storage_backend) DO UPDATE SET uploads=bb.storage_usage_monthly.uploads+1 WHERE bb.storage_usage_monthly.uploads<$2 RETURNING uploads")
+            .bind(backend).bind(BLOB_UPLOADS_PER_MONTH).fetch_optional(&mut *tx).await?;
+        if global.is_none() {
+            return Ok(false);
+        }
+        if let Some(workspace) = workspace {
+            let share: Option<i32> = sqlx::query_scalar("INSERT INTO bb.workspace_uploads_monthly (workspace_id,month,storage_backend,attempts) SELECT w.id,date_trunc('month',now())::date,$2,1 FROM bb.workspaces w WHERE w.id=$1 AND w.quota_uploads_per_month>0 ON CONFLICT (workspace_id,month,storage_backend) DO UPDATE SET attempts=bb.workspace_uploads_monthly.attempts+1 WHERE bb.workspace_uploads_monthly.attempts<(SELECT quota_uploads_per_month FROM bb.workspaces WHERE id=$1) RETURNING attempts")
+                .bind(workspace).bind(backend).fetch_optional(&mut *tx).await?;
+            if share.is_none() {
+                return Ok(false);
+            }
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
     /// Adds response bytes to today's (UTC) egress counter of `class` (`anonymous` or `keyed`)
     /// and returns the new total (SEC-12).
     pub async fn add_egress(&self, class: &str, bytes: i64) -> Result<i64> {
@@ -329,7 +350,7 @@ impl Database {
             .bind(class).fetch_one(&self.pool).await?)
     }
     pub async fn quota_usage(&self, workspace: Uuid, key: Option<Uuid>) -> Result<QuotaUsage> {
-        Ok(sqlx::query_as("SELECT (SELECT count(*) FROM bb.experiments WHERE workspace_id=$1 AND ($2::uuid IS NULL OR created_by_key_id=$2) AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS experiments_today,(SELECT count(*) FROM bb.sweeps WHERE workspace_id=$1 AND ($2::uuid IS NULL OR created_by_key_id=$2) AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS sweeps_today,(SELECT count(DISTINCT e.job_id) FROM bb.experiments e JOIN bb.jobs j ON j.id=e.job_id WHERE e.workspace_id=$1 AND e.cancel_requested_at IS NULL AND j.state IN ('created','queued','running','cancelling')) AS active_jobs")
+        Ok(sqlx::query_as("SELECT (SELECT count(*) FROM bb.experiments WHERE workspace_id=$1 AND ($2::uuid IS NULL OR created_by_key_id=$2) AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS experiments_today,(SELECT count(*) FROM bb.sweeps WHERE workspace_id=$1 AND ($2::uuid IS NULL OR created_by_key_id=$2) AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS sweeps_today,(SELECT count(DISTINCT coalesce(e.sweep_id,e.job_id)) FROM bb.experiments e JOIN bb.jobs j ON j.id=e.job_id WHERE e.workspace_id=$1 AND e.cancel_requested_at IS NULL AND j.state IN ('created','queued','running','cancelling')) AS active_jobs")
             .bind(workspace).bind(key).fetch_one(&self.pool).await?)
     }
     /// `platform = None` counts every platform.

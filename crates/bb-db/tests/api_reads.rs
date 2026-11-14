@@ -664,14 +664,17 @@ async fn keys_and_bootstrap(db: &Database) {
     ));
 
     // Operator revoke: idempotent, audited per call.
-    let revoked = db.revoke_key_any(boot.id).await.unwrap();
+    let revoked = db.revoke_key_any(boot.id, &Audit::default()).await.unwrap();
     let first = revoked.revoked_at.unwrap();
     assert_eq!(
-        db.revoke_key_any(boot.id).await.unwrap().revoked_at,
+        db.revoke_key_any(boot.id, &Audit::default())
+            .await
+            .unwrap()
+            .revoked_at,
         Some(first)
     );
     assert_eq!(audit_count(db, "key.revoke", boot.id).await, 2);
-    not_found(db.revoke_key_any(Uuid::new_v4()).await);
+    not_found(db.revoke_key_any(Uuid::new_v4(), &Audit::default()).await);
 
     // A revoked digest is never resurrected.
     let BootstrapOutcome::Inactive(again) = db

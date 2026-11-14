@@ -444,7 +444,7 @@ pub async fn patch_experiment(
     }
     state
         .db
-        .rename_experiment(workspace.id, id, version, &label)
+        .rename_experiment(workspace.id, id, version, &label, &caller.audit(&workspace))
         .await
         .map_err(|e| match e {
             bb_db::Error::Conflict => ApiError::conflict(
@@ -487,7 +487,7 @@ pub async fn delete_experiment(
         .job_id;
     state
         .db
-        .delete_experiment(workspace.id, id, version)
+        .delete_experiment(workspace.id, id, version, &caller.audit(&workspace))
         .await
         .map_err(|e| match e {
             bb_db::Error::NotFound => ApiError::not_found("experiment"),

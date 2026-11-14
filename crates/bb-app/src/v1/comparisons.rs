@@ -87,8 +87,15 @@ pub async fn create_comparison(
     let platform = body.platform.as_deref();
     let a = resolve_run(&state, &viewer, &body.run_a, platform).await?;
     let b = resolve_run(&state, &viewer, &body.run_b, platform).await?;
-    let (row, existed) =
-        compare_and_store(&state, workspace.id, &a, &b, label, caller.key_id()).await?;
+    let (row, existed) = compare_and_store(
+        &state,
+        workspace.id,
+        &a,
+        &b,
+        label,
+        &caller.audit(&workspace),
+    )
+    .await?;
     json(
         if existed {
             StatusCode::OK
@@ -124,7 +131,7 @@ pub async fn compare_and_store(
     a: &RunView,
     b: &RunView,
     label: String,
-    key: Option<Uuid>,
+    audit: &bb_db::Audit,
 ) -> Result<(Row, bool), ApiError> {
     if a.run.id == b.run.id {
         return Err(ApiError::invalid_request(
@@ -236,23 +243,26 @@ pub async fn compare_and_store(
     };
     let row = state
         .db
-        .create_comparison(&NewComparison {
-            workspace_id: workspace,
-            run_a_id: a.run.id,
-            run_b_id: b.run.id,
-            comparator_version: COMPARATOR_VERSION,
-            eligibility: if comparison.eligibility.aligned {
-                "aligned"
-            } else {
-                "metrics_only"
-            }
-            .into(),
-            reasons,
-            summary_sha256: crate::canonical::sha256(&summary).to_vec(),
-            summary,
-            label,
-            created_by_key_id: key,
-        })
+        .create_comparison(
+            &NewComparison {
+                workspace_id: workspace,
+                run_a_id: a.run.id,
+                run_b_id: b.run.id,
+                comparator_version: COMPARATOR_VERSION,
+                eligibility: if comparison.eligibility.aligned {
+                    "aligned"
+                } else {
+                    "metrics_only"
+                }
+                .into(),
+                reasons,
+                summary_sha256: crate::canonical::sha256(&summary).to_vec(),
+                summary,
+                label,
+                created_by_key_id: audit.key,
+            },
+            audit,
+        )
         .await
         .map_err(|e| match e {
             bb_db::Error::NotFound => ApiError::not_found("run"),
@@ -387,7 +397,7 @@ pub async fn patch_comparison(
     let label = check_label("label", &body.label, true)?;
     let row = state
         .db
-        .rename_comparison(workspace.id, id, version, &label)
+        .rename_comparison(workspace.id, id, version, &label, &caller.audit(&workspace))
         .await
         .map_err(|e| match e {
             bb_db::Error::Conflict => ApiError::conflict(
@@ -396,6 +406,7 @@ pub async fn patch_comparison(
             ),
             other => other.into(),
         })?;
+    state.hub.bump();
     json(StatusCode::OK, &resource(&row, true)?, Cache::NoStore)
 }
 
@@ -411,7 +422,7 @@ pub async fn delete_comparison(
     let id = uuid_param("comparison", &id)?;
     state
         .db
-        .delete_comparison(workspace.id, id)
+        .delete_comparison(workspace.id, id, &caller.audit(&workspace))
         .await
         .map_err(|_| ApiError::not_found("comparison"))?;
     state.hub.bump();

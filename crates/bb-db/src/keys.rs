@@ -109,9 +109,11 @@ impl Database {
         Ok(MintedKey { plaintext, key })
     }
 
-    /// Revokes a key of any workspace (operator CLI). Idempotent: an already revoked key keeps
-    /// its first `revoked_at`. Every call writes a `key.revoke` audit row.
-    pub async fn revoke_key_any(&self, id: Uuid) -> Result<ApiKey> {
+    /// Revokes a key of any workspace (operator CLI, `POST /system/api-keys/{id}/revoke`).
+    /// Idempotent: an already revoked key keeps its first `revoked_at`. Every call writes a
+    /// `key.revoke` audit row (in the revoked key's workspace, with the caller's key and
+    /// request id) in the same transaction.
+    pub async fn revoke_key_any(&self, id: Uuid, audit: &Audit) -> Result<ApiKey> {
         let mut tx = self.pool.begin().await?;
         let current: ApiKey = sqlx::query_as("SELECT * FROM bb.api_keys WHERE id=$1 FOR UPDATE")
             .bind(id)
@@ -127,8 +129,18 @@ impl Database {
                 .fetch_one(&mut *tx)
                 .await?
         };
-        sqlx::query("INSERT INTO bb.audit_events (workspace_id,action,outcome,target_type,target_id,detail) VALUES ($1,'key.revoke','ok','api_key',$2,$3)")
-            .bind(key.workspace_id).bind(key.id.to_string()).bind(json!({"already_revoked":already})).execute(&mut *tx).await?;
+        Audit {
+            workspace: Some(key.workspace_id),
+            ..audit.clone()
+        }
+        .write(
+            &mut tx,
+            "key.revoke",
+            "api_key",
+            key.id,
+            json!({"already_revoked": already}),
+        )
+        .await?;
         tx.commit().await?;
         Ok(key)
     }

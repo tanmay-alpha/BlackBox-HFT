@@ -243,7 +243,7 @@ pub async fn revoke_key(
     let id = uuid_param("api key", &id)?;
     let key = state
         .db
-        .revoke_key_any(id)
+        .revoke_key_any(id, &caller.audit(&caller.workspace))
         .await
         .map_err(|_| ApiError::not_found("api key"))?;
     json(StatusCode::OK, &key_row(key), Cache::NoStore)

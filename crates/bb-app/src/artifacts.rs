@@ -47,7 +47,7 @@ pub struct Storage {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
-    #[error("storage read budget exhausted")]
+    #[error("storage budget exhausted")]
     Budget,
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
@@ -145,11 +145,24 @@ impl Storage {
         Err(last.map(StorageError::from).unwrap_or(StorageError::Budget))
     }
 
-    /// Publishes a bundle with bounded retries (uploads are counted at completion).
-    pub async fn put(&self, key: &str, path: &Path) -> Result<(), StorageError> {
+    /// Publishes a bundle with bounded retries. A metered store (Vercel Blob) reserves every
+    /// attempt first, retries included, against the global monthly upload allowance and the
+    /// monthly share of `workspace` (the job's submitter); a spent allowance or a failed
+    /// reservation refuses the upload (fail closed). Other stores count uploads at completion.
+    pub async fn put(
+        &self,
+        key: &str,
+        path: &Path,
+        workspace: Option<uuid::Uuid>,
+    ) -> Result<(), StorageError> {
         let mut delay = Duration::from_millis(500);
         let mut last = None;
         for _ in 0..STORE_ATTEMPTS {
+            if let Some((db, _, _)) = &self.budget
+                && !db.reserve_upload(self.backend, workspace).await?
+            {
+                return Err(StorageError::Budget);
+            }
             match self.store.put_bundle_from_file(key, path).await {
                 Ok(_) => return Ok(()),
                 // A previous attempt may have landed before its response was lost.

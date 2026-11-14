@@ -77,3 +77,26 @@ ALTER TABLE bb.comparisons ENABLE TRIGGER comparisons_immutable;
 ALTER TABLE bb.comparisons ALTER COLUMN summary_row_sha256 SET NOT NULL;
 CREATE TRIGGER comparisons_summary_row_digest BEFORE INSERT ON bb.comparisons
     FOR EACH ROW EXECUTE FUNCTION bb.set_comparison_summary_digest();
+
+-- ---------------------------------------------------------------------------------------------
+-- Hosted quotas and the per-workspace Blob upload share (FINAL_AUDIT §4 item 7, SEC-8/SEC-11)
+-- ---------------------------------------------------------------------------------------------
+
+-- At most 5 live admission units per workspace: each single experiment's job is one unit and a
+-- sweep is one unit however many cells it has (bb-db `submit`). Workspaces still on the old
+-- default of 50 move to 5; deliberately raised or lowered values stay.
+ALTER TABLE bb.workspaces ALTER COLUMN quota_active_jobs SET DEFAULT 5;
+UPDATE bb.workspaces SET quota_active_jobs = 5 WHERE quota_active_jobs = 50;
+
+-- Each workspace may spend this many Vercel Blob upload attempts per month, next to the global
+-- monthly allowance. `reserve_upload` charges one attempt (retries included) before every PUT,
+-- and admission refuses new runs of a workspace whose share is spent.
+ALTER TABLE bb.workspaces ADD COLUMN quota_uploads_per_month integer NOT NULL DEFAULT 300
+    CHECK (quota_uploads_per_month >= 0);
+CREATE TABLE bb.workspace_uploads_monthly (
+    workspace_id     uuid NOT NULL REFERENCES bb.workspaces (id) ON DELETE CASCADE,
+    month            date NOT NULL CHECK (month = date_trunc('month', month)::date),
+    storage_backend  text NOT NULL CHECK (storage_backend IN ('fs', 'vercel_blob')),
+    attempts         integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    PRIMARY KEY (workspace_id, month, storage_backend)
+);
