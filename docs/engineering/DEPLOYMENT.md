@@ -57,14 +57,40 @@ call that names a digest.
    `ghcr.io/tanmay-alpha/blackbox-hft:<40-hex sha>` and `:main` with OCI labels and index annotations, a BuildKit
    SPDX SBOM and SLSA provenance (`mode=max`), and a Sigstore-signed GitHub artifact attestation pushed to the
    registry [G5].
-4. `deploy` job (skipped while `RENDER_DEPLOY_HOOK_URL` is unset): it calls the deploy hook with
+4. `deploy` job, only when the repository secret `RENDER_DEPLOY_HOOK_URL` exists (the `gate` job exports whether it
+   does as `deploy=true|false`): it calls the deploy hook with
    `imgURL=<url-encoded ghcr.io/tanmay-alpha/blackbox-hft@sha256:…>`. Render documents `imgURL` for image-backed
    services: the deploy uses that tag or digest instead of the one in the service settings, and every part except
    the tag/digest must match the service's image URL, otherwise the request is rejected with 400 [R9], [R10]. 200 =
    started, 202 = queued behind a deploy in progress [R9].
+   Without the secret the `deploy` job is **skipped** and a `publish only (not deployed)` job runs instead: it posts a
+   `Not deployed` notice and a step summary with the digest and the manual release command below. A green publish
+   run therefore proves an image was published and attested, **not** that production changed; the deployed revision
+   is whatever `/api/v1/status` reports as `git_sha`.
 5. `smoke.sh` polls the service for up to 15 minutes, until `/api/v1/status` reports the new `git_sha`. Then it runs
    the CORS and auth checks (§12). Render switches traffic only after the new instance passes health checks and
    cancels a deploy that is not healthy within 15 minutes [R5]. The smoke budget matches that window.
+
+**Manual digest release (no deploy hook configured).** The operator releases one published digest through the
+Render API and verifies it; nothing here is automated or stored in the repository:
+
+1. Take the digest from the publish run's summary (`publish only (not deployed)` job) or GHCR; never `:main`.
+2. With a Render API key from the dashboard (Account Settings → API Keys, kept out of the repository and shell
+   history) and the service id (`srv-…`, service Settings):
+
+   ```
+   curl -fsS -X POST "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys" \
+     -H "Authorization: Bearer $RENDER_API_KEY" -H 'Content-Type: application/json' \
+     -d '{"imageUrl": "ghcr.io/tanmay-alpha/blackbox-hft@sha256:<digest>"}'
+   ```
+
+   The response is the deploy object (`id`, `status`); `imageUrl` must match the service's image URL except for the
+   digest, as with `imgURL` above.
+3. Poll `GET https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys/<deploy id>` until `status` is `live`
+   (or `update_failed`/`canceled`: stop and investigate).
+4. Verify: `BASE_URL=https://blackbox-hft-api.onrender.com EXPECT_GIT_SHA=<40-hex sha> bash scripts/deploy/smoke.sh`.
+5. Record the released commit, digest and date in [PROJECT_STATE.md](PROJECT_STATE.md). Only then describe the commit
+   as deployed.
 
 **Why `workflow_run` and not `needs`.** `needs` works only between jobs of one workflow. Gating there would mean
 copying ci.yml's jobs into publish.yml (a second definition of "tests pass" that can drift) or moving the publish
@@ -223,7 +249,7 @@ no second `BLACKBOX_` convention.
 | `BB_ADMIN_BOOTSTRAP_KEY_SHA256` | no | **yes** | 64 lowercase hex = sha256 of a `bbk_…` key | Render secret (may stay empty) | startup: ensure one active `admin` key with this digest exists (§8 step 7) |
 | `BB_GIT_SHA` | baked in | no | 40-hex commit | Dockerfile `ARG GIT_SHA` ← publish.yml | `/api/v1/status` `git_sha`; smoke test waits for it |
 | `RUST_LOG` | no | no | `info` | render.yaml | `tracing-subscriber` filter |
-| `BB_RESULT_PLATFORM`, `BB_PAGE_CACHE_BYTES`, `BB_ARTIFACT_DISK_CACHE_BYTES`, `BB_ARTIFACT_WHOLE_FETCH_MAX`, `BB_MAX_RESPONSE_BYTES` | no | no | defaults in TARGET_ARCHITECTURE §7–§9, §17 and API_CONTRACT §7 | – | tuning; unset on Render |
+| `BB_RESULT_PLATFORM`, `BB_PAGE_CACHE_BYTES`, `BB_ARTIFACT_DISK_CACHE_BYTES`, `BB_ARTIFACT_WHOLE_FETCH_MAX`, `BB_MAX_RESPONSE_BYTES`, `BB_COMPARISON_TIMEOUT_S` (default 60, 1–600; API_CONTRACT §8.6) | no | no | defaults in TARGET_ARCHITECTURE §7–§9, §17 and API_CONTRACT §7 | – | tuning; unset on Render |
 
 Outside the container:
 
@@ -272,8 +298,8 @@ See §2 for the flow and §5 for secrets. Additional behaviour:
   cancelling a deploy halfway.
 - The `:main` tag always moves to the newest published commit. Deploys never use it, because they pass a digest.
   Only Blueprint creation and a dashboard "Deploy latest reference" [R10] resolve `:main`.
-- The `deploy` job without `RENDER_DEPLOY_HOOK_URL` succeeds with a notice. Without `RENDER_SERVICE_URL` it deploys
-  and warns that no smoke test ran.
+- Without `RENDER_DEPLOY_HOOK_URL` the `deploy` job is skipped and the `publish only (not deployed)` job reports
+  `Not deployed` (§2). Without `RENDER_SERVICE_URL` it deploys and warns that no smoke test ran.
 - The smoke step runs `scripts/deploy/smoke.sh` from the same commit (sparse checkout).
 
 ## 8. First-time setup (operator, once bb-app implements §15)
@@ -323,8 +349,12 @@ See §2 for the flow and §5 for secrets. Additional behaviour:
    (`printf 'bbk_%s\n' "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"`), store
    `printf %s "$KEY" | sha256sum` as `BB_ADMIN_BOOTSTRAP_KEY_SHA256`, and let the server create that key at startup.
    Clear the variable once real keys exist.
-8. **Deploy**: Actions → publish → Run workflow (branch `main`). Watch the smoke step, then run
-   `blackbox demo seed` against the hosted API with the admin key (API_CONTRACT §3).
+8. **Deploy**: Actions → publish → Run workflow (branch `main`), or the manual digest release (§2). Watch the smoke
+   step, then seed the demo from the operator machine against Neon (direct URL, as in step 7):
+   `blackbox demo seed --platform <the Linux worker's class from /api/v1/status result_platform>` queues the demo
+   runs; the hosted worker computes them; a second `blackbox demo seed` (idempotent) then stores the curated
+   comparisons and saved reports in the `demo` workspace and prints anything still pending. The curation reads the
+   run bundles, so that second run needs the service's `BLOB_READ_WRITE_TOKEN` in its environment too.
 9. **Vercel**: §6 steps 1–5.
 
 ## 9. Rollback
@@ -426,8 +456,9 @@ The deployment files assume exactly this. Each item is a requirement for the `se
 
 1. **Commands:** `blackbox --data-dir <dir> serve`, `blackbox worker`, `blackbox migrate`, `blackbox keys mint
    --workspace <slug> --scopes <list> --label <text>`, and `blackbox demo seed`. The global `--data-dir` stays.
-   `demo` keeps working in the `local` image: `--addr`, `--web-dir`, `/api/health` and `/api/datasets` are what
-   CI's docker job checks until ci.yml changes.
+   The `local` image runs `scripts/docker/local-start.sh` (`migrate`, `demo seed --wait`, first-start `keys mint`,
+   `serve --addr 0.0.0.0:8787 --web-dir /app/web`) against the Postgres of `docker-compose.yml`; CI's docker job
+   checks `/api/v1/status`, `/api/v1/datasets`, the curated comparisons/reports, the console and the printed key.
 2. **Listen address:** `--addr` > `BB_ADDR` > `0.0.0.0:$PORT` (if `PORT` is set) > `127.0.0.1:8787`. Log the bound
    address.
 3. **Env names in §5**, especially `BB_PROFILE`, `BB_MIGRATE_ON_START`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`,

@@ -1,7 +1,10 @@
 name: publish
 
 # Builds the hosted API image (Dockerfile target `hosted`) for a commit on main that passed CI,
-# pushes it to GHCR, attests it, deploys that exact digest to Render and smoke-tests the service.
+# pushes it to GHCR, attests it and, only when the deploy hook secret exists, deploys that exact
+# digest to Render and smoke-tests the service. Without the hook the run is publish-only: the
+# `deploy` job is skipped and a `publish only (not deployed)` job states that production did not
+# change (manual digest release: docs/engineering/DEPLOYMENT.md §2).
 # Design, secrets and first-time setup: docs/engineering/DEPLOYMENT.md §2, §5, §7, §8.
 #
 # Gate: `workflow_run` on the `ci` workflow instead of re-running the tests here. ci.yml stays the
@@ -34,6 +37,8 @@ jobs:
       actions: read
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
+      # 'true' only when the RENDER_DEPLOY_HOOK_URL secret exists (secrets cannot appear in `if`).
+      deploy: ${{ steps.mode.outputs.deploy }}
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -66,6 +71,12 @@ jobs:
           fi
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad sha '$sha'"; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Release mode
+        id: mode
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$HOOK" ]; then echo "deploy=true"; else echo "deploy=false"; fi >> "$GITHUB_OUTPUT"
 
   image:
     needs: gate
@@ -145,10 +156,38 @@ jobs:
             echo "- tags: \`$SHA\`, \`main\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  deploy:
-    # Skipped (green) until the Render service exists and its deploy hook is stored as the
-    # repository secret RENDER_DEPLOY_HOOK_URL. RENDER_SERVICE_URL is a repository variable.
+  not-deployed:
+    # No deploy hook: the image is published and nothing else happens. This job exists so a green
+    # run is never mistaken for a deployment; production keeps running its previous revision.
+    name: publish only (not deployed)
     needs: [gate, image]
+    if: needs.gate.outputs.deploy != 'true'
+    runs-on: ubuntu-24.04
+    permissions: {}
+    env:
+      DIGEST: ${{ needs.image.outputs.digest }}
+      SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - name: Not deployed
+        run: |
+          echo "::notice title=Not deployed::Image $IMAGE@$DIGEST published for $SHA. RENDER_DEPLOY_HOOK_URL is not set, so Render was NOT deployed and production still runs its previous revision (check /api/v1/status git_sha). Manual digest release: docs/engineering/DEPLOYMENT.md section 2."
+          {
+            echo "### Not deployed (publish only)"
+            echo "Production was not changed by this run. To release this image:"
+            echo
+            echo '```'
+            echo "curl -fsS -X POST https://api.render.com/v1/services/\$RENDER_SERVICE_ID/deploys \\"
+            echo "  -H \"Authorization: Bearer \$RENDER_API_KEY\" -H 'Content-Type: application/json' \\"
+            echo "  -d '{\"imageUrl\": \"$IMAGE@$DIGEST\"}'"
+            echo '```'
+            echo "Then: \`BASE_URL=<service url> EXPECT_GIT_SHA=$SHA bash scripts/deploy/smoke.sh\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    # Runs only when the deploy hook is stored as the repository secret RENDER_DEPLOY_HOOK_URL.
+    # RENDER_SERVICE_URL is a repository variable.
+    needs: [gate, image]
+    if: needs.gate.outputs.deploy == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -159,11 +198,7 @@ jobs:
       DIGEST: ${{ needs.image.outputs.digest }}
       SHA: ${{ needs.gate.outputs.sha }}
     steps:
-      - name: Deploy hook not configured
-        if: env.HOOK == ''
-        run: echo "::notice::RENDER_DEPLOY_HOOK_URL is not set; image published, deploy skipped"
       - name: Trigger Render deploy of the pushed digest
-        if: env.HOOK != ''
         run: |
           set -euo pipefail
           # https://render.com/docs/deploy-hooks#deploying-from-an-image-registry: imgURL must match
@@ -177,13 +212,13 @@ jobs:
             *) echo "::error::deploy hook answered HTTP $code"; cat resp.json; exit 1 ;;
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: env.HOOK != '' && env.SERVICE_URL != ''
+        if: env.SERVICE_URL != ''
         with:
           ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
           sparse-checkout: scripts/deploy
       - name: Smoke test the deployed revision
-        if: env.HOOK != '' && env.SERVICE_URL != ''
+        if: env.SERVICE_URL != ''
         # Render pulls the image, starts it, runs migrations and waits for /healthz before it
         # switches traffic; it cancels a deploy that is not healthy within 15 minutes.
         timeout-minutes: 20
@@ -193,5 +228,5 @@ jobs:
           WAIT_SECONDS: "900"
         run: bash scripts/deploy/smoke.sh
       - name: Smoke test skipped
-        if: env.HOOK != '' && env.SERVICE_URL == ''
+        if: env.SERVICE_URL == ''
         run: echo "::warning::RENDER_SERVICE_URL variable is not set; deployed without a smoke test"
