@@ -205,11 +205,9 @@ impl bb_artifacts::ArtifactStore for FlakyStore {
         path: &std::path::Path,
     ) -> Result<bb_artifacts::ArtifactHead, bb_artifacts::ArtifactError> {
         self.puts.fetch_add(1, Ordering::SeqCst);
-        if self
-            .fail_puts
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok()
-        {
+        // One upload at a time reaches this store, so load-then-decrement is exact.
+        if self.fail_puts.load(Ordering::SeqCst) > 0 {
+            self.fail_puts.fetch_sub(1, Ordering::SeqCst);
             return Err(bb_artifacts::ArtifactError::Http(503));
         }
         self.inner.put_bundle_from_file(key, path).await
