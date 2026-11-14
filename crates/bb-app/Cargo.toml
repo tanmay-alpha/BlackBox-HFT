@@ -19,7 +19,7 @@ bb-core = { workspace = true, features = ["openapi"] }
 bb-data.workspace = true
 bb-strategies.workspace = true
 bb-sim.workspace = true
-bb-forensics.workspace = true
+bb-forensics = { workspace = true, features = ["openapi"] }
 bb-db.workspace = true
 bb-artifacts.workspace = true
 bb-analytics = { workspace = true, features = ["openapi"] }

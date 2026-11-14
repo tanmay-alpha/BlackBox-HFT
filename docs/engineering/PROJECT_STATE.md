@@ -55,8 +55,7 @@ Opus agents hit one rate-limit window (HTTP 429) and were resumed on their own t
 
 ## Open items
 
-See `FINAL_AUDIT.md` for the ranked remaining defects. Known before the audit: v1 sweeps still take
-the 2-D `GridSpec` (the `SweepSpec` designs, slicing and sweep report exist in the libraries but are
-not exposed by the API yet); SEC-9/11/12/17/18/25 partially tested; AT-5 runtime-breach test
+See `FINAL_AUDIT.md` for the ranked remaining defects. Known before the audit: SEC-9/11/12/17/18/25
+partially tested; AT-5 runtime-breach test
 missing; the debug `serve` binary on the dev machine reports libm fingerprint `0352e099` (its
 results are non-canonical; harmless).

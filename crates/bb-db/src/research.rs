@@ -9,8 +9,10 @@ pub struct NewSweep {
     pub workspace_id: Uuid,
     pub spec: Value,
     pub spec_fingerprint: Vec<u8>,
-    pub x_len: i16,
-    pub y_len: i16,
+    /// Configurations declared by the spec.
+    pub cell_count: i16,
+    /// Runs queued: one per cell, or two (in-sample, out-of-sample) with a partition.
+    pub run_count: i16,
     pub label: String,
     pub created_by_key_id: Option<Uuid>,
 }
@@ -87,7 +89,14 @@ impl Audit {
 }
 
 impl Database {
-    pub async fn create_sweep(&self, s: &NewSweep, bypass_quotas: bool) -> Result<Sweep> {
+    /// The sweep of `s` (an existing one with the same fingerprint is returned unchanged), with
+    /// its `sweep.create` audit row in the same transaction.
+    pub async fn create_sweep(
+        &self,
+        s: &NewSweep,
+        bypass_quotas: bool,
+        audit: &Audit,
+    ) -> Result<Sweep> {
         hash(&s.spec_fingerprint)?;
         let mut tx = self.pool.begin().await?;
         let w: Workspace = sqlx::query_as("SELECT * FROM bb.workspaces WHERE id=$1 FOR UPDATE")
@@ -101,18 +110,30 @@ impl Database {
                 .bind(&s.spec_fingerprint)
                 .fetch_optional(&mut *tx)
                 .await?;
-        if let Some(row) = existing {
-            return Ok(row);
-        }
-        if !bypass_quotas {
-            let count:i64=sqlx::query_scalar("SELECT count(*) FROM bb.sweeps WHERE workspace_id=$1 AND ($2::uuid IS NULL OR created_by_key_id=$2) AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")
-                .bind(w.id).bind(s.created_by_key_id).fetch_one(&mut *tx).await?;
-            if count >= i64::from(w.quota_sweeps_per_day) {
-                return Err(Error::Quota("sweeps_per_day"));
+        let created = existing.is_none();
+        let row: Sweep = match existing {
+            Some(row) => row,
+            None => {
+                if !bypass_quotas {
+                    let count:i64=sqlx::query_scalar("SELECT count(*) FROM bb.sweeps WHERE workspace_id=$1 AND ($2::uuid IS NULL OR created_by_key_id=$2) AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")
+                        .bind(w.id).bind(s.created_by_key_id).fetch_one(&mut *tx).await?;
+                    if count >= i64::from(w.quota_sweeps_per_day) {
+                        return Err(Error::Quota("sweeps_per_day"));
+                    }
+                }
+                sqlx::query_as("INSERT INTO bb.sweeps (workspace_id,spec,spec_fingerprint,cell_count,run_count,label,created_by_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *")
+                    .bind(w.id).bind(&s.spec).bind(&s.spec_fingerprint).bind(s.cell_count).bind(s.run_count).bind(&s.label).bind(s.created_by_key_id).fetch_one(&mut *tx).await?
             }
-        }
-        let row=sqlx::query_as("INSERT INTO bb.sweeps (workspace_id,spec,spec_fingerprint,x_len,y_len,label,created_by_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *")
-            .bind(w.id).bind(&s.spec).bind(&s.spec_fingerprint).bind(s.x_len).bind(s.y_len).bind(&s.label).bind(s.created_by_key_id).fetch_one(&mut *tx).await?;
+        };
+        audit
+            .write(
+                &mut tx,
+                "sweep.create",
+                "sweep",
+                row.id,
+                serde_json::json!({"created": created, "runs": row.run_count}),
+            )
+            .await?;
         tx.commit().await?;
         Ok(row)
     }
@@ -131,7 +152,7 @@ impl Database {
     pub async fn sweep_cells(&self, workspace: Uuid, id: Uuid) -> Result<Vec<Experiment>> {
         self.sweep(workspace, id).await?;
         Ok(sqlx::query_as(
-            "SELECT * FROM bb.experiments WHERE sweep_id=$1 ORDER BY sweep_y,sweep_x",
+            "SELECT * FROM bb.experiments WHERE sweep_id=$1 ORDER BY sweep_cell,sweep_segment",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -143,11 +164,29 @@ impl Database {
         id: Uuid,
         version: i64,
         label: &str,
+        audit: &Audit,
     ) -> Result<Sweep> {
-        sqlx::query_as("UPDATE bb.sweeps SET label=$4 WHERE id=$1 AND workspace_id=$2 AND version=$3 RETURNING *").bind(id).bind(workspace).bind(version).bind(label).fetch_optional(&self.pool).await?.ok_or(Error::Conflict)
-    }
-    pub async fn cancel_sweep(&self, workspace: Uuid, id: Uuid) -> Result<Sweep> {
         let mut tx = self.pool.begin().await?;
+        let row: Sweep = sqlx::query_as("UPDATE bb.sweeps SET label=$4 WHERE id=$1 AND workspace_id=$2 AND version=$3 RETURNING *").bind(id).bind(workspace).bind(version).bind(label).fetch_optional(&mut *tx).await?.ok_or(Error::Conflict)?;
+        audit
+            .write(
+                &mut tx,
+                "sweep.rename",
+                "sweep",
+                id,
+                serde_json::json!({"version": row.version}),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(row)
+    }
+    /// Marks the sweep and its experiments cancelled and cancels jobs no other experiment
+    /// wants, inside `tx`.
+    async fn cancel_sweep_in(
+        tx: &mut sqlx::PgConnection,
+        workspace: Uuid,
+        id: Uuid,
+    ) -> Result<Sweep> {
         // Lock workspace to fence new cell submissions while all interested jobs are inspected.
         sqlx::query("SELECT id FROM bb.workspaces WHERE id=$1 FOR UPDATE")
             .bind(workspace)
@@ -158,16 +197,30 @@ impl Database {
         let row:Sweep=sqlx::query_as("UPDATE bb.sweeps SET cancel_requested_at=coalesce(cancel_requested_at,now()) WHERE id=$1 AND workspace_id=$2 RETURNING *").bind(id).bind(workspace).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
         sqlx::query("UPDATE bb.experiments SET cancel_requested_at=coalesce(cancel_requested_at,now()) WHERE sweep_id=$1 AND workspace_id=$2").bind(id).bind(workspace).execute(&mut *tx).await?;
         sqlx::query("UPDATE bb.jobs j SET state=CASE WHEN j.state='running' THEN 'cancelling' ELSE 'cancelled' END,cancel_requested_at=now(),finished_at=CASE WHEN j.state IN ('created','queued') THEN now() END WHERE j.state IN ('created','queued','running') AND EXISTS (SELECT 1 FROM bb.experiments e WHERE e.job_id=j.id AND e.sweep_id=$1 AND e.workspace_id=$2) AND NOT EXISTS (SELECT 1 FROM bb.experiments e WHERE e.job_id=j.id AND e.cancel_requested_at IS NULL)").bind(id).bind(workspace).execute(&mut *tx).await?;
+        Ok(row)
+    }
+    pub async fn cancel_sweep(&self, workspace: Uuid, id: Uuid, audit: &Audit) -> Result<Sweep> {
+        let mut tx = self.pool.begin().await?;
+        let row = Self::cancel_sweep_in(&mut tx, workspace, id).await?;
+        audit
+            .write(&mut tx, "sweep.cancel", "sweep", id, serde_json::json!({}))
+            .await?;
         tx.commit().await?;
         Ok(row)
     }
-    pub async fn delete_sweep(&self, workspace: Uuid, id: Uuid) -> Result<()> {
-        self.cancel_sweep(workspace, id).await?;
+    /// Cancels the sweep's live runs and deletes it (its experiments go with it).
+    pub async fn delete_sweep(&self, workspace: Uuid, id: Uuid, audit: &Audit) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::cancel_sweep_in(&mut tx, workspace, id).await?;
         sqlx::query("DELETE FROM bb.sweeps WHERE id=$1 AND workspace_id=$2")
             .bind(id)
             .bind(workspace)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        audit
+            .write(&mut tx, "sweep.delete", "sweep", id, serde_json::json!({}))
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
     pub async fn create_comparison(&self, c: &NewComparison, audit: &Audit) -> Result<Comparison> {

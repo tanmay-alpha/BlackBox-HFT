@@ -1,8 +1,19 @@
-// Sweep form model: drafts, explicit unit conversion, validation mirroring `GridSpec::validate`
-// in bb-core, and the result matrix's metric and colour definitions.
+// Sweep form model: drafts, explicit unit conversion, validation mirroring bb-core
+// `SweepSpec::validate` (grid, random and seeds designs, the in-sample / out-of-sample partition,
+// CSCV blocks), and the result matrix's metric and colour definitions.
 
-import type { SweepCell } from "../../api/model";
-import type { GridAxis, QueueModelConfig } from "../../api/types";
+import type { SweepCellRun } from "../../api/model";
+import type {
+  GridAxis,
+  Objective,
+  ObjectiveMetric,
+  Partition,
+  QueueModelConfig,
+  RandomParam,
+  RunConfig,
+  SweepDesign,
+  SweepSpec,
+} from "../../api/types";
 import { bpsToFraction, fractionToBps } from "../../components/describe";
 import { fmtDurationExact, fmtInt, fmtMoney, fmtPnl } from "../../components/fmt";
 import type { GlossaryKey } from "../../components/glossary";
@@ -235,8 +246,8 @@ export function axisValueLabels(axis: GridAxis): string[] {
 // Result matrix metrics and colour scale
 // ---------------------------------------------------------------------------------------------
 
-/** The per-cell metrics a sweep serves (API_CONTRACT §8.7); nothing else exists per cell. */
-export type CellMetrics = NonNullable<SweepCell["metrics"]>;
+/** The per-run metrics a sweep serves (API_CONTRACT §8.7); nothing else exists per run. */
+export type CellMetrics = NonNullable<SweepCellRun["metrics"]>;
 
 export interface MetricDef {
   key: keyof CellMetrics;
@@ -298,4 +309,180 @@ export function legendValues(scale: Scale): number[] {
   }
   if (scale.hi <= scale.lo) return [scale.lo];
   return [0, 0.25, 0.5, 0.75, 1].map((t) => scale.lo + t * (scale.hi - scale.lo));
+}
+
+// ---------------------------------------------------------------------------------------------
+// SweepSpec: design, partition, objective
+// ---------------------------------------------------------------------------------------------
+
+export type DesignKind = SweepDesign["type"];
+
+export const DESIGNS: readonly { kind: DesignKind; label: string; help: string }[] = [
+  { kind: "grid", label: "Grid", help: "Every combination of the X and Y values." },
+  {
+    kind: "random",
+    label: "Random",
+    help: "A seeded sample of combinations of the X and Y values, drawn without replacement.",
+  },
+  {
+    kind: "seeds",
+    label: "Seed ensemble",
+    help: "The base configuration replayed under several seeds, to measure how much of a result is the seeded latency draw.",
+  },
+];
+
+export const OBJECTIVES: readonly { metric: ObjectiveMetric; label: string; additive: boolean }[] = [
+  { metric: "net_pnl", label: "Net P&L", additive: true },
+  { metric: "realized_pnl", label: "Realized P&L", additive: true },
+  { metric: "fees", label: "Fees", additive: true },
+  { metric: "spread_capture", label: "Spread capture", additive: false },
+  { metric: "pnl_per_turnover_bps", label: "P&L per turnover (bp)", additive: false },
+  { metric: "max_drawdown", label: "Max drawdown", additive: false },
+  { metric: "fill_count", label: "Fill count", additive: false },
+  { metric: "fill_ratio_orders", label: "Order fill ratio", additive: false },
+  { metric: "mean_abs_position", label: "Mean |position|", additive: false },
+];
+
+/** Even block counts bb-core accepts for CSCV (`MIN_CSCV_BLOCKS..=MAX_CSCV_BLOCKS`). */
+export const CSCV_BLOCKS: readonly number[] = [4, 6, 8, 10, 12, 14, 16];
+
+const MAX_SEED = BigInt(Number.MAX_SAFE_INTEGER);
+const DIGITS = /^\d+$/;
+
+export interface SeedsDraft {
+  /** `count` seeds from `baseSeed`, or the explicit `list`. */
+  mode: "count" | "list";
+  count: string;
+  /** Empty: the base run's own seed. */
+  baseSeed: string;
+  list: string;
+}
+
+export interface RandomDraft {
+  samples: string;
+  seed: string;
+}
+
+export interface SweepFormDraft {
+  kind: DesignKind;
+  x: ParsedAxis;
+  y: ParsedAxis;
+  random: RandomDraft;
+  seeds: SeedsDraft;
+  /** Percent of the dataset span that is in sample; `null` without a partition. */
+  inSamplePercent: string | null;
+  objective: Objective;
+  cscvBlocks: number | null;
+}
+
+export interface BuiltSweep {
+  /** `null` while there are problems. */
+  spec: SweepSpec | null;
+  configurations: number;
+  runs: number;
+  problems: string[];
+}
+
+function seedProblem(text: string, where: string): string | null {
+  if (!DIGITS.test(text)) return `${where}: "${text}" is not a non-negative integer`;
+  return BigInt(text) > MAX_SEED ? `${where}: ${text} exceeds 2^53 - 1` : null;
+}
+
+/** A grid axis's values as a random design's discrete set. */
+export function randomParam(axis: GridAxis): RandomParam {
+  switch (axis.type) {
+    case "queue_model":
+      return { type: "queue_model", values: axis.values };
+    case "maker_fee":
+    case "taker_fee":
+      return { type: axis.type, domain: { kind: "set", values: axis.values } };
+    default:
+      return { type: axis.type, domain: { kind: "set", values: axis.values } };
+  }
+}
+
+/**
+ * `[start, start + pct% of the span)` in sample and the rest out of sample, on the dataset span
+ * `[start, end]` (inclusive end, so the last window ends at `end + 1`). Integer arithmetic on
+ * exact ns numbers.
+ */
+export function splitSpan(span: { start: number; end: number }, percent: number): Partition {
+  const len = BigInt(span.end) + 1n - BigInt(span.start);
+  const split = Number(BigInt(span.start) + (len * BigInt(percent)) / 100n);
+  return {
+    in_sample: { start: span.start, end: split },
+    out_of_sample: { start: split, end: span.end + 1 },
+  };
+}
+
+/**
+ * The `SweepSpec` the form describes, or the problems that stop it. `span` is the base dataset's
+ * current exchange-time span (`null` while unknown); `maxCells` the server's sweep limit.
+ */
+export function buildSweep(base: RunConfig | null, d: SweepFormDraft, span: { start: number; end: number } | null, maxCells: number): BuiltSweep {
+  const problems: string[] = [];
+  let design: SweepDesign | null = null;
+  let configurations = 0;
+
+  if (d.kind === "grid" || d.kind === "random") {
+    problems.push(...validateGrid(d.x, d.y, d.kind === "grid" ? maxCells : Number.MAX_SAFE_INTEGER));
+    const combos = d.x.axis.values.length * d.y.axis.values.length;
+    if (d.kind === "grid") {
+      configurations = combos;
+      design = { type: "grid", axes: [d.x.axis, d.y.axis] };
+    } else {
+      const samples = Number(d.random.samples);
+      if (!DIGITS.test(d.random.samples) || samples < 1) problems.push("random design: samples must be a positive integer");
+      else if (samples > combos) problems.push(`random design: ${samples} samples but the X and Y values have only ${combos} combinations (drawn without replacement)`);
+      const seed = seedProblem(d.random.seed, "random design seed");
+      if (seed) problems.push(seed);
+      configurations = Number.isFinite(samples) ? samples : 0;
+      design = { type: "random", samples, seed: d.random.seed, params: [randomParam(d.x.axis), randomParam(d.y.axis)] };
+    }
+  } else {
+    const s = d.seeds;
+    if (s.mode === "count") {
+      const count = Number(s.count);
+      if (!DIGITS.test(s.count) || count < 2) problems.push("seed ensemble: count must be an integer of at least 2");
+      const baseSeed = s.baseSeed.trim();
+      if (baseSeed !== "") {
+        const p = seedProblem(baseSeed, "seed ensemble base seed");
+        if (p) problems.push(p);
+      }
+      configurations = Number.isFinite(count) ? count : 0;
+      design = baseSeed === "" ? { type: "seeds", count } : { type: "seeds", count, base_seed: baseSeed };
+    } else {
+      const seeds = tokens(s.list);
+      for (const t of seeds) {
+        const p = seedProblem(t, "seed ensemble");
+        if (p) problems.push(p);
+      }
+      if (seeds.length < 2) problems.push("seed ensemble: list at least 2 seeds");
+      if (new Set(seeds.map((t) => (DIGITS.test(t) ? BigInt(t).toString() : t))).size !== seeds.length) {
+        problems.push("seed ensemble: a seed is listed twice");
+      }
+      configurations = seeds.length;
+      design = { type: "seeds", seeds };
+    }
+    if (d.cscvBlocks !== null) problems.push("CSCV does not apply to a seed ensemble: nothing is selected");
+  }
+  if (configurations > maxCells) problems.push(`the sweep declares ${configurations} configurations; the limit is ${maxCells}`);
+
+  let partition: Partition | null = null;
+  if (d.inSamplePercent !== null) {
+    const pct = Number(d.inSamplePercent);
+    if (!DIGITS.test(d.inSamplePercent) || pct < 10 || pct > 90) problems.push("partition: the in-sample share must be a whole percent from 10 to 90");
+    else if (span === null) problems.push("partition: the base dataset's span is not known yet");
+    else partition = splitSpan(span, pct);
+  }
+  if (d.cscvBlocks !== null && !OBJECTIVES.find((o) => o.metric === d.objective.metric)?.additive) {
+    problems.push(`CSCV needs a time-additive objective (net P&L, realized P&L or fees), not ${d.objective.metric}`);
+  }
+  if (base === null) problems.push("choose a base run");
+  const runs = configurations * (d.inSamplePercent === null ? 1 : 2);
+  const spec =
+    problems.length === 0 && base !== null && design !== null
+      ? { base, design, partition, objective: d.objective, cscv_blocks: d.cscvBlocks }
+      : null;
+  return { spec, configurations, runs, problems };
 }

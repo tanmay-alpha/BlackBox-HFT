@@ -83,6 +83,9 @@ pub const NS_KEYS: &[&str] = &[
     "feed_jitter_ns",
     "seed",
     "bootstrap_seed",
+    // seed ensembles (`SweepDesign::Seeds`)
+    "seeds",
+    "base_seed",
 ];
 
 /// `GridAxis` variants whose `values` are nanoseconds.

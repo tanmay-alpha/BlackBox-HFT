@@ -37,6 +37,17 @@ export function axisName(axis: string): string {
   return AXIS_PARAMS.find((p) => p.param === axis)?.label ?? axis;
 }
 
+/** One line describing what a sweep varies: its axes, random sample or seed ensemble, and split. */
+export function designText(s: Sweep): string {
+  const what =
+    s.design === "grid"
+      ? `grid: ${s.axes.map((a) => `${axisName(a.axis)} (${a.labels.length})`).join(" by ")}`
+      : s.design === "random"
+        ? `random sample of ${fmtInt(s.progress.cells_total)}`
+        : `ensemble of ${fmtInt(s.progress.cells_total)} seeds`;
+  return s.partition ? `${what}, in / out of sample` : what;
+}
+
 /** `progress` exactly as served: completed of total, then every non-zero other count. */
 export function progressText(p: Sweep["progress"]): string {
   const rest = (
@@ -50,7 +61,8 @@ export function progressText(p: Sweep["progress"]): string {
   )
     .filter(([, n]) => n > 0)
     .map(([what, n]) => `${fmtInt(n)} ${what}`);
-  return [`${fmtInt(p.completed)} of ${fmtInt(p.cells_total)} completed`, ...rest].join(" \u00b7 ");
+  const runs = p.runs_total === p.cells_total ? "" : ` runs (${fmtInt(p.cells_total)} configurations)`;
+  return [`${fmtInt(p.completed)} of ${fmtInt(p.runs_total)}${runs} completed`, ...rest].join(" \u00b7 ");
 }
 
 export function RecentSweeps({ fill = false }: { fill?: boolean }) {
@@ -65,13 +77,10 @@ export function RecentSweeps({ fill = false }: { fill?: boolean }) {
       sortValue: (s) => s.label,
     },
     {
-      id: "axes",
-      header: "Rows by columns",
-      cell: (s) => (
-        <span title={`${s.y.axis} by ${s.x.axis}`}>
-          {axisName(s.y.axis)} ({s.y.labels.length}) by {axisName(s.x.axis)} ({s.x.labels.length})
-        </span>
-      ),
+      id: "design",
+      header: "Design",
+      cell: (s) => <span>{designText(s)}</span>,
+      raw: (s) => designText(s),
     },
     {
       id: "state",

@@ -17,7 +17,6 @@ import type {
   DatasetManifest,
   FillRecord,
   FlightEvent,
-  GridSpec,
   OrderOutcome,
   OrderPair,
   OrderRecord,
@@ -25,6 +24,7 @@ import type {
   Preset,
   ReplayWindow,
   RunConfig,
+  SweepSpec,
   Side,
 } from './types';
 import type * as W from './v1';
@@ -193,8 +193,9 @@ export const api = {
   comparisonReport: (id: string, o: Opts = {}) => requestText(`/comparisons/${enc(id)}/report`, o),
 
   // ----- sweeps --------------------------------------------------------------------------------
-  createSweep: (spec: GridSpec, label: string | null, o: Opts = {}) =>
-    request<W.SubmitSweepResponse>('POST', '/sweeps', { body: { spec: toWire.gridSpec(spec), label }, ...o }).then((r) => ({
+  /** Submits a `SweepSpec` (grid, random or seeds design, optional IS/OOS partition). Idempotent per spec. */
+  createSweep: (spec: SweepSpec, label: string | null, o: Opts = {}) =>
+    request<W.SubmitSweepResponse>('POST', '/sweeps', { body: { spec: toWire.sweepSpec(spec), label }, ...o }).then((r) => ({
       created: r.created,
       sweep: normalize.sweep(r.sweep),
     })),
@@ -202,7 +203,10 @@ export const api = {
     request<W.CursorPage<W.Sweep>>('GET', '/sweeps', { query: q, ...o }).then(normalize.sweeps),
   sweep: (id: string, o: Opts = {}) => request<W.Sweep>('GET', `/sweeps/${enc(id)}`, o).then(normalize.sweep),
   cancelSweep: (id: string, o: Opts = {}) => request<W.Sweep>('POST', `/sweeps/${enc(id)}/cancel`, { body: {}, ...o }).then(normalize.sweep),
-  sweepReport: (id: string, o: Opts = {}) => requestText(`/sweeps/${enc(id)}/report`, o),
+  /** The analysis of a finished sweep (409 `conflict` while a run is still live). */
+  sweepReport: (id: string, o: Opts = {}) =>
+    request<W.SweepReport>('GET', `/sweeps/${enc(id)}/report`, o).then(normalize.sweepReport),
+  sweepReportMarkdown: (id: string, o: Opts = {}) => requestText(`/sweeps/${enc(id)}/report?format=markdown`, o),
 
   // ----- saved reports -------------------------------------------------------------------------
   createReport: (kind: W.ReportKind, subjectId: string, title: string, o: Opts = {}) =>

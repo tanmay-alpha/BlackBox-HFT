@@ -24,8 +24,8 @@ import type {
   FillRecord,
   FlightEvent,
   GridAxis,
-  GridSpec,
   LogNormalLeg,
+  Partition,
   MarketView,
   MarkoutStat,
   OrderLatencyConfig,
@@ -34,6 +34,8 @@ import type {
   Preset,
   ReplayWindow,
   RunConfig,
+  SweepSpec,
+  TimeWindow,
 } from './types';
 import type * as W from './v1';
 
@@ -309,14 +311,33 @@ function comparison(c: W.Comparison, path: string): M.Comparison {
   return c as unknown as M.Comparison;
 }
 
+/** Partition windows are relative ns: exact numbers. */
+function partition(raw: object, path: string): void {
+  const p = raw as Partition;
+  for (const k of ['in_sample', 'out_of_sample'] as const) {
+    ns(p[k], 'start', `${path}.${k}`);
+    ns(p[k], 'end', `${path}.${k}`);
+  }
+}
+
+/** A served `SweepSpec`. Seeds (`design.seeds`, `base_seed`, a random design's `seed`) stay u64 decimal strings. */
+function sweepSpec(raw: object, path: string): void {
+  const s = raw as SweepSpec;
+  config(s.base, `${path}.base`);
+  if (s.design.type === 'grid') s.design.axes.forEach((a, i) => axis(a, `${path}.design.axes[${i}]`));
+  if (s.partition) partition(s.partition, `${path}.partition`);
+}
+
 function sweep(s: W.Sweep, path: string): M.Sweep {
   absNs(s, 'created_at_ns', path);
-  if (s.spec) {
-    config(s.spec.base, `${path}.spec.base`);
-    axis(s.spec.x, `${path}.spec.x`);
-    axis(s.spec.y, `${path}.spec.y`);
-  }
+  if (s.partition) partition(s.partition, `${path}.partition`);
+  if (s.spec) sweepSpec(s.spec, `${path}.spec`);
   return s as unknown as M.Sweep;
+}
+
+function sweepReport(r: W.SweepReport, path: string): M.SweepReport {
+  if (r.partition) partition(r.partition, `${path}.partition`);
+  return r as unknown as M.SweepReport;
 }
 
 function cursorPage<T, U>(p: W.CursorPage<T>, path: string, each: (item: T, path: string) => U): W.CursorPage<U> {
@@ -430,6 +451,7 @@ export const normalize = {
   pairs: (p: W.CursorPage<OrderPair>) => cursorPage(p, 'pairs', pair),
   sweep: (s: W.Sweep) => sweep(s, 'sweep'),
   sweeps: (p: W.CursorPage<W.Sweep>) => cursorPage(p, 'sweeps', sweep),
+  sweepReport: (r: W.SweepReport) => sweepReport(r, 'sweep_report'),
   report(r: W.Report): W.Report {
     absNs(r, 'created_at_ns', 'report');
     return r;
@@ -504,8 +526,18 @@ export const toWire = {
     }
     return a;
   },
-  gridSpec(s: GridSpec): unknown {
-    return { base: toWire.config(s.base), x: toWire.axis(s.x), y: toWire.axis(s.y) };
+  sweepSpec(s: SweepSpec): unknown {
+    const win = (w: TimeWindow, path: string) => ({ start: nsOut(w.start, `${path}.start`), end: nsOut(w.end, `${path}.end`) });
+    const design = s.design.type === 'grid' ? { ...s.design, axes: s.design.axes.map((a) => toWire.axis(a)) } : s.design;
+    return {
+      base: toWire.config(s.base),
+      design,
+      partition: s.partition
+        ? { in_sample: win(s.partition.in_sample, 'partition.in_sample'), out_of_sample: win(s.partition.out_of_sample, 'partition.out_of_sample') }
+        : null,
+      objective: s.objective,
+      cscv_blocks: s.cscv_blocks,
+    };
   },
   /** A query-parameter ns value. */
   ns: (v: NsInput) => nsOut(v, 'query'),

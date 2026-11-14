@@ -8,12 +8,13 @@ import type {
   DatasetManifest,
   EngineStateCheck,
   EquitySample,
-  GridSpec,
   Metrics,
   OrderDetail as CoreOrderDetail,
   OrderPair,
+  Partition,
   RunConfig,
   RunTimeline as CoreRunTimeline,
+  SweepSpec,
 } from './types';
 import type * as W from './v1';
 
@@ -48,6 +49,8 @@ export type {
   Status,
   SubmitSweepResponse as WireSubmitSweepResponse,
   SweepCell,
+  SweepCellRun,
+  SweepRunState,
   SweepState,
   SystemEvent,
   TruncatedBy,
@@ -111,7 +114,8 @@ export type EquityPage = EquityPageCommon &
 export type Comparison = Omit<W.Comparison, keyof CoreComparison> & CoreComparison;
 export type ComparisonPair = OrderPair;
 
-export type Sweep = Omit<W.Sweep, 'spec'> & { spec: GridSpec | null };
+export type Sweep = Omit<W.Sweep, 'spec' | 'partition'> & { spec: SweepSpec | null; partition: Partition | null };
+export type SweepReport = Omit<W.SweepReport, 'partition'> & { partition: Partition | null };
 export type DemoRun = Omit<W.DemoRun, 'config'> & { config: RunConfig };
 export type Demo = Omit<W.Demo, 'runs'> & { runs: DemoRun[] };
 

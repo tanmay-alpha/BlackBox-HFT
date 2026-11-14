@@ -421,20 +421,21 @@ async fn scenario(db: Database) {
         .create_sweep(
             &NewSweep {
                 workspace_id: a.id,
-                spec: json!({"x":{"type":"spread"},"y":{"type":"size"}}),
+                spec: json!({"design":{"type":"grid","axes":[]}}),
                 spec_fingerprint: vec![9; 32],
-                x_len: 1,
-                y_len: 1,
+                cell_count: 1,
+                run_count: 1,
                 label: "grid".into(),
                 created_by_key_id: Some(key.key.id),
             },
             false,
+            &Audit::default(),
         )
         .await
         .unwrap();
     let cs = config(&db, &version, 31).await;
     let mut s = Submit::new(cs.id, a.id, PLATFORM);
-    s.sweep = Some((sweep.id, 0, 0));
+    s.sweep = Some((sweep.id, 0, "full"));
     let cell = db.submit(&s).await.unwrap();
     assert_eq!(
         db.quota_usage(a.id, None).await.unwrap(),

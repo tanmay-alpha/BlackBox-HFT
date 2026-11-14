@@ -83,8 +83,8 @@ erDiagram
 | `run_artifacts` | uuid; `(run_id, kind)`, `(storage_backend, storage_key)` unique | **immutable** | sha256, size, format version, page index + its sha256; delete enqueues `blob_gc` |
 | `blob_gc` | `(storage_backend, storage_key)` | work queue | upload-intent log + deletion outbox (§6.6) |
 | `storage_usage_monthly` | `(month, storage_backend)` | counters | Vercel Blob Hobby allowance accounting [V1] |
-| `sweeps` | uuid; `(workspace_id, spec_fingerprint)` unique | mutable label/cancel, `version` | `x_len·y_len ≤ 100` |
-| `experiments` | uuid; `UNIQUE NULLS NOT DISTINCT (workspace_id, experiment_config_id, platform, sweep_id)` | mutable label/job/cancel, `version` | sweep cells are experiments with `(sweep_id, sweep_x, sweep_y)`; view `sweep_cells` |
+| `sweeps` | uuid; `(workspace_id, spec_fingerprint)` unique | mutable label/cancel, `version` | `spec` = bb-core `SweepSpec`; `cell_count ≤ 100`, `run_count ∈ {cells, 2·cells}` (migration 0008) |
+| `experiments` | uuid; `UNIQUE NULLS NOT DISTINCT (workspace_id, experiment_config_id, platform, sweep_id)` | mutable label/job/cancel, `version` | sweep runs are experiments keyed `UNIQUE (sweep_id, sweep_cell, sweep_segment)` (segment `full`/`in_sample`/`out_of_sample`); view `sweep_cells` |
 | `comparisons` | uuid; `(workspace_id, run_a_id, run_b_id, comparator_version)` unique | immutable except label | `eligibility ∈ {aligned, metrics_only}` with `reasons` (AT-1); CHECK ties them together |
 | `research_reports` | uuid | immutable (FK `SET NULL` whitelisted) | saved Markdown snapshot ≤ 1 MiB + sha256; unsaved reports are generated on demand |
 | `jobs` | uuidv7; **single-flight partial unique index** | state machine, `version` | see §6 |
@@ -99,7 +99,7 @@ erDiagram
 |---|---|---|
 | **Strategy kinds = `CHECK` on a generated text column**, not a table, not a PG `ENUM` | `strategy_kinds` table; `CREATE TYPE … AS ENUM` | Kinds are compiled Rust (`StrategyKind`, 4 variants); a new kind needs a code release and is covered by `SIMULATION_REVISION`/`CONTRACT_VERSION`. A table would hold data the code already owns and could drift from it. A PG enum cannot drop values, and new values cannot be used in the transaction that adds them; a CHECK is replaced transactionally in the same migration that ships the kind |
 | **`run_metrics` merged into `runs`** (`metrics` jsonb + generated `net_pnl`, `fees`, `max_drawdown`, `orders_submitted`, `engine_check_agrees`) | separate 1:1 `run_metrics`; EAV `(run_id, key, value)` | The run list always shows metrics and the run detail always reads all of them, so a 1:1 split only adds a join. EAV loses types. Generated columns make the promoted values provably equal to the hashed JSON |
-| **`sweep_cells` = rows of `experiments`** with `(sweep_id, sweep_x, sweep_y)` + a view | separate `sweep_cells` table | A cell *is* a workspace experiment: same idempotency, quota, cancel, listing and job linkage. One path, not two |
+| **`sweep_cells` = rows of `experiments`** with `(sweep_id, sweep_cell, sweep_segment)` + a view | separate `sweep_cells` table | A sweep run *is* a workspace experiment: same idempotency, quota, cancel, listing and job linkage. One path, not two |
 | **`dataset_quality_reports` separate** from `dataset_versions` | jsonb column on the version | The version is immutable, but quality checkers evolve (`checker_version`) |
 | **Page index as jsonb on `run_artifacts`**, not an `artifact_pages` table | one row per page | It is always read whole and cached per run; up to ~60 entries under hosted limits |
 | **Comparisons store the summary** (eligibility, metric deltas, alignment counters, first divergence), not the pair list | store pairs | Pairs are recomputed per page from the two cached bundles; the summary is small and is what lists show |
@@ -156,7 +156,7 @@ free plan.
 ### 5.4 State and quantity CHECKs (excerpt)
 
 All state/kind columns are `text` + `CHECK (… IN (…))`. Non-negative counts and sizes, 32-byte digests, label lengths,
-`x_len·y_len ≤ 100`, `ticks_done ≤ ticks_total`, `lease_losses ≤ max_attempts`, and the job invariants:
+`cell_count ≤ 100`, `ticks_done ≤ ticks_total`, `lease_losses ≤ max_attempts`, and the job invariants:
 `(state IN (running, cancelling)) = (lease_owner and lease_expires_at NOT NULL)`, `(state = completed) = (run_id NOT
 NULL)`, `(state = failed) = (error_category, error_code NOT NULL)`, `(state = expired) = (expired_reason NOT NULL)`,
 `terminal = (finished_at NOT NULL)`, and `cancelling ⇒ cancel_requested_at`. Insert is allowed only as

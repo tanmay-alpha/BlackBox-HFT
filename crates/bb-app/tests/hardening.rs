@@ -190,6 +190,64 @@ async fn tampered_summary_rows_never_escape_a_list() {
     tdb.drop_db().await;
 }
 
+/// A run whose stored row changed after its sweep finished is left out of the sweep view and
+/// the sweep report (`sweep_cell_views` checks `summary_row_sha256`): no run id, no metrics and
+/// an integrity error for its cell instead of a value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sweep_views_and_reports_leave_out_tampered_runs() {
+    let tdb = db_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server::start(&tdb, dir.path(), Options::default()).await;
+    let manifest = register_dataset(&server.db, dir.path(), 20).await;
+    let (_, key) = workspace_key(&server.db, "alpha", &[Scope::Run]).await;
+    let spec = json!({
+        "base": config_json(&manifest, 250, 11),
+        "design": {"type": "seeds", "count": 3},
+    });
+    let (status, _, body) = server
+        .post("/api/v1/sweeps", Some(&key), &json!({"spec": spec}))
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let path = format!("/api/v1/sweeps/{}", body["sweep"]["id"].as_str().unwrap());
+    let mut sweep = Value::Null;
+    for _ in 0..1200 {
+        sweep = server.get(&path, Some(&key)).await.2;
+        if sweep["report_ready"] == true {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert_eq!(sweep["state"], "completed", "{sweep}");
+    let run_of = |s: &Value, cell: usize| s["cells"][cell]["runs"][0]["run_id"].clone();
+    let changed = run_of(&sweep, 0).as_str().unwrap().to_string();
+    let kept = run_of(&sweep, 1).as_str().unwrap().to_string();
+    tamper_net_pnl(&server.db, &changed, 3000.25).await;
+
+    let (status, _, sweep) = server.get(&path, Some(&key)).await;
+    assert_eq!(status, 200, "{sweep}");
+    let cell = &sweep["cells"][0]["runs"][0];
+    assert!(
+        cell["run_id"].is_null() && cell["metrics"].is_null(),
+        "{cell}"
+    );
+    assert_eq!(run_of(&sweep, 1), json!(kept));
+    let (status, _, report) = server.get(&format!("{path}/report"), Some(&key)).await;
+    assert_eq!(status, 200, "{report}");
+    let cell = &report["cells"][0];
+    assert!(
+        cell["in_sample"].is_null() && cell["in_sample_run_id"].is_null(),
+        "{cell}"
+    );
+    assert!(
+        cell["error"].as_str().unwrap().contains("integrity"),
+        "{cell}"
+    );
+    assert!(!report.to_string().contains(&changed), "{report}");
+    assert!(report.to_string().contains(&kept));
+    server.stop().await;
+    tdb.drop_db().await;
+}
+
 /// A filesystem store whose next `fail_puts` uploads answer 503, counting every PUT it sees.
 struct FlakyStore {
     inner: bb_artifacts::FsArtifactStore,
@@ -316,7 +374,8 @@ async fn blob_uploads_are_reserved_per_attempt_against_the_workspace_share() {
 }
 
 /// FINAL_AUDIT §4 item 7 (SEC-8): hosted default `quota_active_jobs` is 5 live admission units;
-/// a sweep is one unit however many cells it has.
+/// a sweep is one unit however many runs it has. The sweep goes through `POST /sweeps`, so every
+/// run reaches `Database::submit` with its sweep id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn active_jobs_admit_five_units_and_a_sweep_counts_once() {
     let tdb = db_or_skip!();
@@ -332,7 +391,7 @@ async fn active_jobs_admit_five_units_and_a_sweep_counts_once() {
     )
     .await;
     let manifest = register_dataset(&server.db, dir.path(), 20).await;
-    let (ws, key) = workspace_key(&server.db, "alpha", &[Scope::Run]).await;
+    let (_, key) = workspace_key(&server.db, "alpha", &[Scope::Run]).await;
     assert_eq!(
         server
             .db
@@ -343,52 +402,24 @@ async fn active_jobs_admit_five_units_and_a_sweep_counts_once() {
         5
     );
 
-    let sweep = server
-        .db
-        .create_sweep(
-            &bb_db::NewSweep {
-                workspace_id: ws,
-                spec: json!({"x": {"type": "seed"}, "y": {"type": "interval"}}),
-                spec_fingerprint: vec![7; 32],
-                x_len: 3,
-                y_len: 3,
-                label: "grid".into(),
-                created_by_key_id: None,
-            },
-            false,
-        )
-        .await
-        .unwrap();
-    let cfg = &server.state.cfg;
-    for cell in 0..8i16 {
-        let mut config = bb_app::presets::find(&manifest, "maker_baseline")
-            .unwrap()
-            .config;
-        config.strategy.interval_ns = 250_000_000;
-        config.seed = 100 + cell as u64;
-        let admitted = bb_app::admission::admit(&server.db, ws, cfg.profile, &cfg.limits, config)
-            .await
-            .unwrap();
-        bb_app::admission::submit(
-            &server.db,
-            &server.hub,
-            &server.metrics,
-            &admitted,
-            bb_app::admission::SubmitOptions {
-                workspace: ws,
-                key: None,
-                label: "cell",
-                platform: &cfg.result_platform,
-                priority: 100,
-                deadline_ms: cfg.deadline_ms,
-                sweep: Some((sweep.id, cell % 3, cell / 3)),
-                bypass_quotas: false,
-                storage_backend: "fs",
-            },
-        )
-        .await
-        .unwrap_or_else(|e| panic!("sweep cell {cell}: {}", e.message));
-    }
+    // An 8-run seed ensemble (more runs than the quota) is admitted into an empty workspace.
+    let spec = json!({
+        "base": config_json(&manifest, 250, 100),
+        "design": {"type": "seeds", "count": 8},
+    });
+    let (status, _, body) = server
+        .post("/api/v1/sweeps", Some(&key), &json!({"spec": spec}))
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let live: std::collections::BTreeSet<&str> = body["sweep"]["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["runs"].as_array().unwrap())
+        .filter(|r| r["state"] == "queued")
+        .filter_map(|r| r["job_id"].as_str())
+        .collect();
+    assert_eq!(live.len(), 8, "{body}");
     // The sweep is one unit: four single experiments fit, the fifth does not.
     for seed in 1..=5u64 {
         let (status, _, body) = server
@@ -548,6 +579,77 @@ async fn every_v1_mutation_writes_one_transactional_audit_row() {
     assert_eq!(
         audit_rows(&server.db, "experiment.delete").await,
         vec![(Some(kid), request_id(&headers), Some(experiment_id.clone()))]
+    );
+
+    // Sweeps: create, rename (a stale version rolls back), cancel, delete (a second delete
+    // finds nothing and rolls back).
+    let spec = json!({
+        "base": config_json(&manifest, 250, 5),
+        "design": {"type": "seeds", "count": 2},
+    });
+    let (status, headers, created) = send(
+        &server,
+        Method::POST,
+        "/api/v1/sweeps",
+        &key,
+        None,
+        Some(json!({"spec": spec})),
+    )
+    .await;
+    assert_eq!(status, 202, "{created}");
+    let sweep_id = created["sweep"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        audit_rows(&server.db, "sweep.create").await,
+        vec![(Some(kid), request_id(&headers), Some(sweep_id.clone()))]
+    );
+    let spath = format!("/api/v1/sweeps/{sweep_id}");
+    let version = created["sweep"]["version"].as_i64().unwrap();
+    let (status, headers, _) = send(
+        &server,
+        Method::PATCH,
+        &spath,
+        &key,
+        Some(&format!("\"v{version}\"")),
+        Some(json!({"label": "ensemble"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let rename_request = request_id(&headers);
+    let (status, _, _) = send(
+        &server,
+        Method::PATCH,
+        &spath,
+        &key,
+        Some(&format!("\"v{version}\"")),
+        Some(json!({"label": "stale"})),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(
+        audit_rows(&server.db, "sweep.rename").await,
+        vec![(Some(kid), rename_request, Some(sweep_id.clone()))]
+    );
+    let (status, headers, _) = send(
+        &server,
+        Method::POST,
+        &format!("{spath}/cancel"),
+        &key,
+        None,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 202);
+    assert_eq!(
+        audit_rows(&server.db, "sweep.cancel").await,
+        vec![(Some(kid), request_id(&headers), Some(sweep_id.clone()))]
+    );
+    let (status, headers, _) = send(&server, Method::DELETE, &spath, &key, None, None).await;
+    assert_eq!(status, 204);
+    let (status, _, _) = send(&server, Method::DELETE, &spath, &key, None, None).await;
+    assert_eq!(status, 404);
+    assert_eq!(
+        audit_rows(&server.db, "sweep.delete").await,
+        vec![(Some(kid), request_id(&headers), Some(sweep_id.clone()))]
     );
     server.stop().await;
 

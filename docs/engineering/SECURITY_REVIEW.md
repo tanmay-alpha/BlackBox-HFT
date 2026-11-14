@@ -574,7 +574,7 @@ transaction so the action and its row commit together.
 | `key.mint`, `key.revoke` | CLI / admin API | `ok` | always |
 | `auth.denied` | auth layer | `denied` | keyed request with revoked/expired key or missing scope; ≤ 1 row per key per minute |
 | `experiment.create`, `experiment.rename`, `experiment.delete` | v1 handlers | `ok`/`denied` | in the change's transaction |
-| `job.cancel`, `sweep.create`, `sweep.cancel`, `sweep.delete` | v1 handlers | `ok`/`denied` | same |
+| `job.cancel`, `sweep.create`, `sweep.rename`, `sweep.cancel`, `sweep.delete` | v1 handlers | `ok`/`denied` | same |
 | `comparison.create`, `comparison.delete`, `report.create`, `report.delete` | v1 handlers | `ok` | same |
 | `demo.write` | any write with `?workspace=demo` | `ok` | same |
 | `quota.exceeded`, `storage.budget_exceeded` | admission | `denied` | keyed submissions only |

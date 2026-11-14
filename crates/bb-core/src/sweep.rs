@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     RelNs,
-    compare::{GridAxis, MAX_GRID_CELLS},
+    compare::{GridAxis, GridSpec, MAX_GRID_CELLS},
     config::{QueueModelConfig, RunConfig},
     dataset::DatasetManifest,
     hash::sha256_json,
@@ -52,12 +52,17 @@ pub const HOSTED_MAX_SWEEP_CELLS: u32 = 25;
 pub const MIN_CSCV_BLOCKS: u32 = 4;
 pub const MAX_CSCV_BLOCKS: u32 = 16;
 
+/// Fewest seeds of an ensemble ([`SweepDesign::Seeds`]): one seed measures no dispersion.
+pub const MIN_ENSEMBLE_SEEDS: usize = 2;
+
 /// Half-open exchange-clock interval `[start, end)`, nanoseconds relative to the dataset origin.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TimeWindow {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub start: RelNs,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub end: RelNs,
 }
 
@@ -125,6 +130,19 @@ pub enum ObjectiveMetric {
 }
 
 impl ObjectiveMetric {
+    /// Every metric, in declaration order (ensemble reports summarise all of them).
+    pub const ALL: [ObjectiveMetric; 9] = [
+        ObjectiveMetric::NetPnl,
+        ObjectiveMetric::RealizedPnl,
+        ObjectiveMetric::Fees,
+        ObjectiveMetric::SpreadCapture,
+        ObjectiveMetric::PnlPerTurnoverBps,
+        ObjectiveMetric::MaxDrawdown,
+        ObjectiveMetric::FillCount,
+        ObjectiveMetric::FillRatioOrders,
+        ObjectiveMetric::MeanAbsPosition,
+    ];
+
     pub fn key(self) -> &'static str {
         match self {
             ObjectiveMetric::NetPnl => "net_pnl",
@@ -208,6 +226,16 @@ pub enum Direction {
 pub struct Objective {
     pub metric: ObjectiveMetric,
     pub direction: Direction,
+}
+
+impl Default for Objective {
+    /// Maximise net P&L (also what a legacy `GridSpec` sweep is ranked by).
+    fn default() -> Self {
+        Self {
+            metric: ObjectiveMetric::NetPnl,
+            direction: Direction::Maximize,
+        }
+    }
 }
 
 impl Objective {
@@ -414,8 +442,25 @@ pub enum SweepDesign {
     /// never changes the values another one receives.
     Random {
         samples: u32,
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         seed: u64,
         params: Vec<RandomParam>,
+    },
+    /// One configuration (`base`) replayed under several seeds: an ensemble that measures how
+    /// much of a result is the seeded draw. Either `seeds` lists them, or `count` seeds
+    /// `base_seed, base_seed + 1, …` are used (`base_seed` defaults to `base.seed`). The seed
+    /// drives only the stochastic order-latency models (`jitter`, `log_normal`, `heavy_tail`);
+    /// under `constant` latency every seed gives the same result. Nothing is selected, so
+    /// `cscv_blocks` does not apply.
+    Seeds {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
+        seeds: Vec<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
+        base_seed: Option<u64>,
     },
 }
 
@@ -441,11 +486,29 @@ pub struct SweepSpec {
     /// exists.
     #[serde(default)]
     pub partition: Option<Partition>,
+    /// Ranks the cells; defaults to maximising net P&L. A seeds ensemble ranks nothing.
+    #[serde(default)]
     pub objective: Objective,
     /// Number of equal time blocks of the selection window (in-sample, or the whole dataset) for
     /// the CSCV probability of backtest overfitting. `None` skips it.
     #[serde(default)]
     pub cscv_blocks: Option<u32>,
+}
+
+impl From<GridSpec> for SweepSpec {
+    /// A legacy two-axis `GridSpec` as a grid sweep on the whole dataset, ranked by net P&L.
+    /// Cell `yi * x_len + xi` is the grid's cell `(xi, yi)`.
+    fn from(grid: GridSpec) -> Self {
+        Self {
+            base: grid.base,
+            design: SweepDesign::Grid {
+                axes: vec![grid.x, grid.y],
+            },
+            partition: None,
+            objective: Objective::default(),
+            cscv_blocks: None,
+        }
+    }
 }
 
 /// One parameter value of a cell.
@@ -662,6 +725,28 @@ impl SweepSpec {
                 .iter()
                 .fold(1u64, |n, a| n.saturating_mul(a.len() as u64)),
             SweepDesign::Random { samples, .. } => u64::from(*samples),
+            SweepDesign::Seeds { seeds, count, .. } => {
+                count.map_or(seeds.len() as u64, |n| u64::from(n).max(seeds.len() as u64))
+            }
+        }
+    }
+
+    /// The seeds of a [`SweepDesign::Seeds`] ensemble, in cell order; `None` for other designs.
+    /// Only meaningful once [`SweepSpec::validate`] passed (the count is bounded there).
+    pub fn ensemble_seeds(&self) -> Option<Vec<u64>> {
+        match &self.design {
+            SweepDesign::Seeds {
+                seeds,
+                count,
+                base_seed,
+            } => Some(match count {
+                Some(n) => {
+                    let base = base_seed.unwrap_or(self.base.seed);
+                    (0..u64::from(*n)).map(|i| base.saturating_add(i)).collect()
+                }
+                None => seeds.clone(),
+            }),
+            _ => None,
         }
     }
 
@@ -749,6 +834,49 @@ impl SweepSpec {
                              {combos} combinations; sampling is without replacement"
                         ));
                     }
+                }
+            }
+            SweepDesign::Seeds {
+                seeds,
+                count,
+                base_seed,
+            } => {
+                match (seeds.is_empty(), count) {
+                    (false, Some(_)) => {
+                        e.push("a seeds design lists seeds or gives a count, not both".into())
+                    }
+                    (true, None) => e.push("a seeds design needs seeds or a count".into()),
+                    (false, None) if base_seed.is_some() => {
+                        e.push("base_seed applies only with count".into())
+                    }
+                    _ => {}
+                }
+                if e.is_empty() {
+                    let values = self.ensemble_seeds().unwrap_or_default();
+                    if values.len() < MIN_ENSEMBLE_SEEDS {
+                        e.push(format!(
+                            "an ensemble needs at least {MIN_ENSEMBLE_SEEDS} seeds; one seed \
+                             measures no dispersion"
+                        ));
+                    }
+                    let max = crate::time::MAX_SAFE_INTEGER as u64;
+                    if let Some(s) = values.iter().find(|s| **s > max) {
+                        e.push(format!("seed {s} exceeds {max} (2^53 - 1)"));
+                    }
+                    let unique: BTreeSet<u64> = values.iter().copied().collect();
+                    if unique.len() != values.len() {
+                        e.push(
+                            "a seed is listed twice: a repeated seed is the same run and adds \
+                             nothing to the ensemble"
+                                .into(),
+                        );
+                    }
+                }
+                if self.cscv_blocks.is_some() {
+                    e.push(
+                        "cscv_blocks does not apply to a seeds ensemble: nothing is selected"
+                            .into(),
+                    );
                 }
             }
         }
@@ -850,18 +978,51 @@ impl SweepSpec {
                 },
             ],
         };
-        let assignments: Vec<(Vec<u32>, Vec<GridAxis>)> = match &self.design {
-            SweepDesign::Grid { axes } => grid_assignments(axes),
+        let made: Vec<(Vec<u32>, Vec<ParamValue>, RunConfig)> = match &self.design {
+            SweepDesign::Grid { axes } => self.apply_assignments(grid_assignments(axes)),
             SweepDesign::Random {
                 samples,
                 seed,
                 params,
-            } => random_assignments(*samples as usize, *seed, params),
+            } => self.apply_assignments(random_assignments(*samples as usize, *seed, params)),
+            SweepDesign::Seeds { .. } => self
+                .ensemble_seeds()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|seed| {
+                    let mut config = self.base.clone();
+                    config.seed = seed;
+                    let param = ParamValue {
+                        param: "seed".into(),
+                        label: seed.to_string(),
+                        // A string: seeds may exceed what a JSON number holds exactly.
+                        value: serde_json::Value::String(seed.to_string()),
+                    };
+                    (Vec::new(), vec![param], config)
+                })
+                .collect(),
         };
-        Ok(assignments
+        Ok(made
             .into_iter()
             .enumerate()
-            .map(|(index, (coords, axes))| {
+            .map(|(index, (coords, params, config))| SweepCell {
+                index: index as u32,
+                coords,
+                params,
+                config,
+                runs: runs.clone(),
+            })
+            .collect())
+    }
+
+    /// The base configuration with each assignment's one-value axes applied.
+    fn apply_assignments(
+        &self,
+        assignments: Vec<(Vec<u32>, Vec<GridAxis>)>,
+    ) -> Vec<(Vec<u32>, Vec<ParamValue>, RunConfig)> {
+        assignments
+            .into_iter()
+            .map(|(coords, axes)| {
                 let mut config = self.base.clone();
                 let mut params = Vec::with_capacity(axes.len());
                 for axis in &axes {
@@ -872,15 +1033,9 @@ impl SweepSpec {
                         value: axis_value(axis),
                     });
                 }
-                SweepCell {
-                    index: index as u32,
-                    coords,
-                    params,
-                    config,
-                    runs: runs.clone(),
-                }
+                (coords, params, config)
             })
-            .collect())
+            .collect()
     }
 
     /// Full admission against the parent dataset and a deployment's limits: validation, window

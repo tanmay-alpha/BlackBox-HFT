@@ -133,16 +133,23 @@ pub struct JobView {
     pub run_short_id: Option<String>,
 }
 
-/// One sweep cell with the state of its job and the promoted metrics of its live run.
+/// One run of a sweep cell (keyed by cell index and segment) with the state of its job and the
+/// metrics of its live run.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SweepCellView {
     pub experiment_id: Uuid,
-    pub x: i16,
-    pub y: i16,
+    pub cell: i16,
+    /// `full`, `in_sample` or `out_of_sample`.
+    pub segment: String,
     pub job_id: Option<Uuid>,
     pub job_state: Option<String>,
+    pub error_message: Option<String>,
     pub cancel_requested_at: Option<DateTime<Utc>>,
+    /// Row id of the live run (for opening its bundle).
+    pub run_uuid: Option<Uuid>,
     pub run_short_id: Option<String>,
+    /// The run's bb-core `Metrics`.
+    pub metrics: Option<Value>,
     pub net_pnl: Option<f64>,
     pub fees: Option<f64>,
     pub max_drawdown: Option<f64>,
@@ -553,8 +560,11 @@ impl Database {
 
     // ----- sweeps -----
 
+    /// The runs of a sweep with their job state and, for a run whose stored row still matches
+    /// its `summary_row_sha256`, the run's metrics. A quarantined or changed run is left out
+    /// (no run id, no metrics), so sweep views and reports never show it.
     pub async fn sweep_cell_views(&self, sweep: Uuid) -> Result<Vec<SweepCellView>> {
-        Ok(sqlx::query_as("SELECT e.id AS experiment_id,e.sweep_x AS x,e.sweep_y AS y,e.job_id,j.state AS job_state,e.cancel_requested_at,CASE WHEN r.id IS NOT NULL THEN c.short_id END AS run_short_id,r.net_pnl,r.fees,r.max_drawdown,r.fill_count FROM bb.experiments e JOIN bb.experiment_configs c ON c.id=e.experiment_config_id LEFT JOIN bb.jobs j ON j.id=e.job_id LEFT JOIN bb.runs r ON r.experiment_config_id=e.experiment_config_id AND r.platform=e.platform AND r.quarantined_at IS NULL WHERE e.sweep_id=$1 ORDER BY e.sweep_y,e.sweep_x")
+        Ok(sqlx::query_as("SELECT e.id AS experiment_id,e.sweep_cell AS cell,e.sweep_segment AS segment,e.job_id,j.state AS job_state,j.error_message,e.cancel_requested_at,r.id AS run_uuid,CASE WHEN r.id IS NOT NULL THEN c.short_id END AS run_short_id,r.metrics,r.net_pnl,r.fees,r.max_drawdown,r.fill_count FROM bb.experiments e JOIN bb.experiment_configs c ON c.id=e.experiment_config_id LEFT JOIN bb.jobs j ON j.id=e.job_id LEFT JOIN bb.runs r ON r.experiment_config_id=e.experiment_config_id AND r.platform=e.platform AND r.quarantined_at IS NULL AND r.summary_row_sha256=bb.run_summary_digest(r) WHERE e.sweep_id=$1 ORDER BY e.sweep_cell,e.sweep_segment")
             .bind(sweep).fetch_all(&self.pool).await?)
     }
 

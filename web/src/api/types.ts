@@ -1031,6 +1031,64 @@ export interface GridSpec {
   y: GridAxis;
 }
 
+// ----- sweep.rs ------------------------------------------------------------------------------
+
+/** Half-open `[start, end)` exchange-clock ns relative to the dataset origin. */
+export interface TimeWindow {
+  start: number;
+  end: number;
+}
+
+/** Out-of-sample lies entirely after in-sample. */
+export interface Partition {
+  in_sample: TimeWindow;
+  out_of_sample: TimeWindow;
+}
+
+export type ObjectiveMetric =
+  | 'net_pnl'
+  | 'realized_pnl'
+  | 'fees'
+  | 'spread_capture'
+  | 'pnl_per_turnover_bps'
+  | 'max_drawdown'
+  | 'fill_count'
+  | 'fill_ratio_orders'
+  | 'mean_abs_position';
+
+export interface Objective {
+  metric: ObjectiveMetric;
+  direction: 'maximize' | 'minimize';
+}
+
+export type IntDomain = { kind: 'range'; min: number; max: number; step: number } | { kind: 'set'; values: number[] };
+export type FloatDomain = { kind: 'uniform'; min: number; max: number } | { kind: 'set'; values: number[] };
+
+export type RandomParam =
+  | { type: 'order_latency_ns'; domain: IntDomain }
+  | { type: 'entry_latency_ns'; domain: IntDomain }
+  | { type: 'feed_latency_offset_ns'; domain: IntDomain }
+  | { type: 'queue_model'; values: QueueModelConfig[] }
+  | { type: 'maker_fee'; domain: FloatDomain }
+  | { type: 'taker_fee'; domain: FloatDomain };
+
+/**
+ * Seeds are u64 and kept as decimal strings end to end (they may exceed 2^53 - 1 in principle;
+ * the server accepts at most 2^53 - 1).
+ */
+export type SweepDesign =
+  | { type: 'grid'; axes: GridAxis[] }
+  | { type: 'random'; samples: number; seed: string; params: RandomParam[] }
+  | { type: 'seeds'; seeds?: string[]; count?: number; base_seed?: string };
+
+export interface SweepSpec {
+  base: RunConfig;
+  design: SweepDesign;
+  partition: Partition | null;
+  objective: Objective;
+  cscv_blocks: number | null;
+}
+
 /** A cell with `metrics: null` did not complete and must be rendered as missing. */
 export interface GridCell {
   xi: number;

@@ -283,3 +283,40 @@ a.grd-cell-value:hover {
 .grd-legend-note .grd-swatch {
   width: 16px;
 }
+
+/* ---- Report ---- */
+
+.grd-caveats {
+  margin: 0;
+  padding-left: var(--sp-4);
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.grd-caveats li + li {
+  margin-top: var(--sp-1);
+}
+
+.grd-report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.grd-report-table th,
+.grd-report-table td {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+
+.grd-report-table .num {
+  text-align: right;
+}
+
+.grd-report-table tr.is-selected {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
