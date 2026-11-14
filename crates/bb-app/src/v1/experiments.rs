@@ -356,9 +356,9 @@ pub async fn list_experiments(
         .transpose()?;
     let views = state
         .db
-        .experiment_views(workspace.id, &q, cursor.as_ref(), limit + 1)
+        .experiment_views(workspace.id, &q, cursor.as_ref(), super::runs::peek(limit))
         .await?;
-    let more = views.len() as i64 > limit;
+    let more = super::runs::has_more(views.len(), limit);
     let views = &views[..views.len().min(limit as usize)];
     let caller_view = Caller {
         workspace: workspace.clone(),

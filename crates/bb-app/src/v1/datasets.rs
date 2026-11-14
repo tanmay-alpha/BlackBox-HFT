@@ -186,9 +186,13 @@ pub async fn list_datasets(
         .transpose()?;
     let rows = state
         .db
-        .datasets(caller.workspace.id, after.as_deref(), limit + 1)
+        .datasets(
+            caller.workspace.id,
+            after.as_deref(),
+            super::runs::peek(limit),
+        )
         .await?;
-    let more = rows.len() as i64 > limit;
+    let more = super::runs::has_more(rows.len(), limit);
     let mut items = Vec::new();
     for d in rows.iter().take(limit as usize) {
         items.push(dataset_resource(&state, d, false).await?);
@@ -244,8 +248,11 @@ pub async fn list_versions(
         .as_deref()
         .map(|c| super::respond::decode_cursor::<i32>(c, &filters))
         .transpose()?;
-    let rows = state.db.dataset_versions(&id, before, limit + 1).await?;
-    let more = rows.len() as i64 > limit;
+    let rows = state
+        .db
+        .dataset_versions(&id, before, super::runs::peek(limit))
+        .await?;
+    let more = super::runs::has_more(rows.len(), limit);
     let mut items = Vec::new();
     for v in rows.iter().take(limit as usize) {
         items.push(version_resource(&state, v, false).await?);

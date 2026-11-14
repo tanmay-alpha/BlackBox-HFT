@@ -367,8 +367,11 @@ async fn fetch_verified(
         let end = (offset + FETCH_CHUNK).min(trust.size_bytes);
         let bytes = match storage.get_range(&artifact.storage_key, offset..end).await {
             Ok(bytes) => bytes,
+            // A missing object is a storage fault (or another instance's local store), not
+            // proof of tampering: answer 503 instead of quarantining a valid run.
             Err(StorageError::Artifact(ArtifactError::NotFound)) => {
-                return Err(quarantine(db, metrics, view, "bundle", &trust.sha256).await);
+                tracing::error!(run = %view.short_id, "bundle object missing from the store");
+                return Err(ApiError::unavailable("storage", 60));
             }
             Err(e) => return Err(e.into_api()),
         };

@@ -157,9 +157,9 @@ pub async fn list_reports(
         .transpose()?;
     let rows = state
         .db
-        .reports(workspace.id, cursor.as_ref(), limit + 1)
+        .reports(workspace.id, cursor.as_ref(), super::runs::peek(limit))
         .await?;
-    let more = rows.len() as i64 > limit;
+    let more = super::runs::has_more(rows.len(), limit);
     let rows = &rows[..rows.len().min(limit as usize)];
     let items: Vec<Report> = rows.iter().map(resource).collect();
     let (items, cut) = bounded(&items, byte_cap(&state, &caller))?;

@@ -224,9 +224,9 @@ pub async fn list_comparisons(
         .transpose()?;
     let rows = state
         .db
-        .comparisons(workspace.id, cursor.as_ref(), limit + 1)
+        .comparisons(workspace.id, cursor.as_ref(), super::runs::peek(limit))
         .await?;
-    let more = rows.len() as i64 > limit;
+    let more = super::runs::has_more(rows.len(), limit);
     let rows = &rows[..rows.len().min(limit as usize)];
     let items: Vec<Comparison> = rows
         .iter()

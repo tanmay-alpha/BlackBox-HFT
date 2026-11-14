@@ -91,9 +91,15 @@ pub async fn list_jobs(
         .transpose()?;
     let views = state
         .db
-        .job_views(workspace.id, &states, mine, cursor.as_ref(), limit + 1)
+        .job_views(
+            workspace.id,
+            &states,
+            mine,
+            cursor.as_ref(),
+            super::runs::peek(limit),
+        )
         .await?;
-    let more = views.len() as i64 > limit;
+    let more = super::runs::has_more(views.len(), limit);
     let views = &views[..views.len().min(limit as usize)];
     let jobs: Vec<Job> = views
         .iter()

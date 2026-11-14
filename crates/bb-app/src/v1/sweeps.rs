@@ -268,9 +268,9 @@ pub async fn list_sweeps(
         .transpose()?;
     let rows = state
         .db
-        .sweeps(workspace.id, cursor.as_ref(), limit + 1)
+        .sweeps(workspace.id, cursor.as_ref(), super::runs::peek(limit))
         .await?;
-    let more = rows.len() as i64 > limit;
+    let more = super::runs::has_more(rows.len(), limit);
     let rows = &rows[..rows.len().min(limit as usize)];
     let mut items = Vec::new();
     for r in rows {

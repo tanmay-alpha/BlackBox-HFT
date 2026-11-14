@@ -257,18 +257,27 @@ pub async fn list_runs(
         .transpose()?;
     let views = state
         .db
-        .run_views(workspace.id, &platform, &q, sort, after.as_ref(), limit + 1)
+        .run_views(
+            workspace.id,
+            &platform,
+            &q,
+            sort,
+            after.as_ref(),
+            peek(limit),
+        )
         .await?;
-    let more = views.len() as i64 > limit;
+    let more = has_more(views.len(), limit);
     let views = &views[..views.len().min(limit as usize)];
     let caller_view = Caller {
         workspace: workspace.clone(),
         ..caller.clone()
     };
-    let mut summaries = Vec::with_capacity(views.len());
-    for v in views {
-        summaries.push(verified_summary(&state, v, false).await?);
-    }
+    // Lists come from Postgres only (AT-10): no artefact reads, so one unreadable bundle can
+    // never fail a page. Detail reads verify the summary and the bundle.
+    let summaries = views
+        .iter()
+        .map(|v| RunSummary::from_view(v, false))
+        .collect::<Result<Vec<_>, _>>()?;
     let _ = caller_view;
     let (items, cut) = bounded(&summaries, byte_cap(&state, &caller))?;
     let next = if (cut || more) && !items.is_empty() {
@@ -1017,4 +1026,15 @@ pub async fn run_analytics(
     let mut value: Value = serde_json::from_str(&json_text)?;
     wire::to_wire(&mut value).map_err(ApiError::internal)?;
     immutable_value(&headers, &value)
+}
+
+/// Rows to fetch for a page of `limit` (one extra to detect a next page; bb-db caps at 100).
+pub fn peek(limit: i64) -> i64 {
+    (limit + 1).min(100)
+}
+
+/// Whether another page follows. At the 100-row cap the extra row cannot be fetched, so a full
+/// page always offers a cursor (the next page may then be empty).
+pub fn has_more(len: usize, limit: i64) -> bool {
+    len as i64 > limit || (limit >= 100 && len as i64 >= 100)
 }
