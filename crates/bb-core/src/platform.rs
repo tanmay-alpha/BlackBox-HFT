@@ -24,9 +24,8 @@ use sha2::{Digest, Sha256};
 use crate::rng::Rng;
 
 /// Fingerprint of the math library whose results are the published reference: glibc on
-/// `linux-x86_64`, as computed by the CI `rust` job. `None` until it is pinned from a CI log
-/// (`linux_glibc_has_the_canonical_fingerprint` prints it); until then no class is canonical.
-pub const CANONICAL_LIBM: Option<&str> = None;
+/// `linux-x86_64`, as computed by the CI `rust` job (run 43567594954).
+pub const CANONICAL_LIBM: Option<&str> = Some("53154a4e");
 
 /// Fingerprint of WinLibs MinGW-w64 14.0.0 (msvcrt runtime) on `windows-x86_64-gnu`, the
 /// development machine's toolchain. Its `pow` / `ln` differ from glibc's in the last bit on some

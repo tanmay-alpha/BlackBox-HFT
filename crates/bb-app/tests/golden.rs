@@ -250,7 +250,7 @@ const RESULTS: &[Golden] = &[
         preset: "latency_lognormal",
         variant: unchanged,
         portable: false,
-        canonical: None,
+        canonical: Some("7b42759bae0616c6742689e6e1615fb7a5cbc7f1fc70e4ac7f0921be1da868de"),
         winlibs: Some("7b42759bae0616c6742689e6e1615fb7a5cbc7f1fc70e4ac7f0921be1da868de"),
         must_record: Some("exch_fill"),
     },
@@ -259,7 +259,7 @@ const RESULTS: &[Golden] = &[
         preset: "latency_heavy_tail",
         variant: unchanged,
         portable: false,
-        canonical: None,
+        canonical: Some("09e2b35bef0abf28ffcb545c06f4e79c6a19f055cce3fd01dd2ce890c5d0f15e"),
         winlibs: Some("09e2b35bef0abf28ffcb545c06f4e79c6a19f055cce3fd01dd2ce890c5d0f15e"),
         must_record: Some("exch_fill"),
     },
@@ -268,15 +268,20 @@ const RESULTS: &[Golden] = &[
         preset: "glft_baseline",
         variant: unchanged,
         portable: false,
-        canonical: None,
+        canonical: Some("4e7c4dec3f4306b877a17fc59ed3f854c547d33d63d117009489673dc0b0bebd"),
         winlibs: Some("f501c04a4f9281f794d29773297b5fa862451f3b71455e2731a0d7e56424c964"),
         must_record: Some("exch_fill"),
     },
 ];
 
+/// GitHub's `windows-latest` runner (rustup's bundled MinGW). Its fingerprint differs from glibc's
+/// on some probe inputs, but CI run 43567594954 computed every golden entry identical to the
+/// canonical pins, so the canonical pins apply to it.
+const GITHUB_WINDOWS_RUNNER_LIBM: &str = "9a463940";
+
 /// The pins for this process's libm fingerprint: `None` when the fingerprint is unknown.
 fn expected(g: &Golden, fingerprint: &str) -> Option<Option<&'static str>> {
-    if Some(fingerprint) == CANONICAL_LIBM {
+    if Some(fingerprint) == CANONICAL_LIBM || fingerprint == GITHUB_WINDOWS_RUNNER_LIBM {
         Some(g.canonical)
     } else if fingerprint == WINLIBS_MSVCRT_LIBM {
         Some(g.winlibs)
@@ -339,7 +344,10 @@ fn results_match_the_pinned_hashes() {
             manifest.events_sha256
         ));
     }
-    if Some(fingerprint) != CANONICAL_LIBM && fingerprint != WINLIBS_MSVCRT_LIBM {
+    if Some(fingerprint) != CANONICAL_LIBM
+        && fingerprint != WINLIBS_MSVCRT_LIBM
+        && fingerprint != GITHUB_WINDOWS_RUNNER_LIBM
+    {
         mismatches.push(format!(
             "libm fingerprint {fingerprint} has no pins (canonical: {CANONICAL_LIBM:?}, winlibs: \
              {WINLIBS_MSVCRT_LIBM}); if this is the CI glibc build, set \
