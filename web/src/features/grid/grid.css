@@ -130,10 +130,6 @@
 
 /* ---- Result ---- */
 
-.grd-pending {
-  gap: var(--sp-2);
-}
-
 .grd-metric {
   flex-wrap: nowrap;
   gap: var(--sp-2);
@@ -239,12 +235,6 @@ a.grd-cell-value:hover {
   border: 1px dashed var(--error);
 }
 
-.grd-na,
-.grd-swatch-na {
-  background: var(--bg-0);
-  border: 1px dashed var(--fg-2);
-}
-
 .grd-legend {
   display: flex;
   flex-wrap: wrap;
@@ -292,9 +282,4 @@ a.grd-cell-value:hover {
 
 .grd-legend-note .grd-swatch {
   width: 16px;
-}
-
-.grd-state {
-  flex-wrap: nowrap;
-  gap: var(--sp-2);
 }

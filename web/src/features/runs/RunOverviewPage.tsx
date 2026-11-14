@@ -2,17 +2,18 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
-import { api, exportUrl, reportUrl } from '../../api/client';
+import { api, saveDownload, saveText } from '../../api/client';
+import { isBucketed, type DatasetVersion, type RunDetail } from '../../api/model';
 import type {
-  DatasetManifest, FillRecord, InstrumentMeta, Metrics, OrderOutcome, OrderRecord, RunSummary, Side,
+  DatasetManifest, EngineStateCheck, EquitySample, FillRecord, InstrumentMeta, Metrics, OrderOutcome, OrderRecord, Side,
 } from '../../api/types';
 import { JsonBlock, Pager, QuantileTable } from '../../components/data';
 import { DataTable, type Column } from '../../components/DataTable';
 import { ORDER_OUTCOMES, OUTCOME_MEANING } from '../../components/describe';
 import {
-  DASH, fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtQty, fmtTicks, fmtUnixMs, words,
+  DASH, fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtQty, fmtTicks, words,
 } from '../../components/fmt';
-import { digitsForUnit } from '../../components/ns';
+import { digitsForUnit, fmtNsUtc } from '../../components/ns';
 import { SplitPane } from '../../components/SplitPane';
 import { Tabs } from '../../components/Tabs';
 import { cssVar } from '../../components/theme';
@@ -30,6 +31,9 @@ import type { ChartSeries } from './TimeSeriesChart';
 import './runs.css';
 
 const PAGE_SIZE = 100;
+
+/** Equity points requested per chart; longer runs come back as DOWNSAMPLED buckets. */
+const EQUITY_POINTS = 2000;
 
 const ATTRIBUTION =
   'Charts on run pages use TradingView Lightweight Charts\u2122, Copyright (c) 2025 TradingView, Inc. https://www.tradingview.com/';
@@ -74,7 +78,7 @@ export default function RunOverviewPage() {
 }
 
 function RunOverview({ runId }: { runId: string }) {
-  const run = useAsync(() => api.run(runId), [runId]);
+  const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
   const label = run.data?.label ?? '';
   return (
     <Workspace
@@ -88,10 +92,9 @@ function RunOverview({ runId }: { runId: string }) {
             {label ? <span className="run-context-label">{label}</span> : null}
           </span>
           <Link className="btn btn-primary" to={paths.bookRun(runId)}>Open in Order Book Lab</Link>
-          <a className="btn" href={reportUrl(runId)} download>Download report (.md)</a>
-          <a className="btn" href={exportUrl(runId)} download>Download run (.json)</a>
+          <DownloadButtons runId={runId} />
           <Link className="btn" to={paths.comparePair(runId)}>Compare with…</Link>
-          <Link className="btn" to={paths.sweep(runId)}>Sweep from this run</Link>
+          <Link className="btn" to={paths.sweepForm(runId)}>Sweep from this run</Link>
           <Link className="btn" to={paths.strategy({ from: runId })}>Open in Strategy Lab</Link>
           <button type="button" onClick={run.reload} disabled={run.loading}>Reload run</button>
         </>
@@ -103,11 +106,44 @@ function RunOverview({ runId }: { runId: string }) {
   );
 }
 
-function RunContents({ run }: { run: RunSummary }) {
-  const m = run.manifest;
-  const dataset = useAsync(() => api.dataset(m.dataset.id), [m.dataset.id]);
-  const instrument = dataset.data?.instrument ?? null;
-  const digits = dataset.data ? digitsForUnit(dataset.data.timestamps.input_unit) : 9;
+/** Report and bundle downloads: reads, allowed anonymously; the key travels as a header, never in a URL. */
+function DownloadButtons({ runId }: { runId: string }) {
+  const [pending, setPending] = useState<'report' | 'export' | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const download = async (what: 'report' | 'export') => {
+    setPending(what);
+    setError(null);
+    try {
+      if (what === 'report') saveText(await api.runReport(runId), `run-${runId}-report.md`);
+      else saveDownload(await api.runExport(runId));
+    } catch (e) {
+      setError(e);
+    } finally {
+      setPending(null);
+    }
+  };
+  return (
+    <>
+      <button type="button" onClick={() => void download('report')} disabled={pending !== null}>
+        {pending === 'report' ? 'Downloading report\u2026' : 'Download report (.md)'}
+      </button>
+      <button type="button" onClick={() => void download('export')} disabled={pending !== null}>
+        {pending === 'export' ? 'Downloading run\u2026' : 'Download run (.bbz)'}
+      </button>
+      {error !== null ? <ErrorBox error={error} /> : null}
+    </>
+  );
+}
+
+function RunContents({ run }: { run: RunDetail }) {
+  // The instrument and clock precision of the exact dataset version this run used.
+  const dataset = useAsync(
+    (signal) => api.datasetVersion(run.dataset.id, run.dataset.version, { signal }),
+    [run.dataset.id, run.dataset.version],
+  );
+  const manifest = dataset.data?.manifest ?? null;
+  const instrument = manifest?.instrument ?? null;
+  const digits = manifest ? digitsForUnit(manifest.timestamps.input_unit) : 9;
   const [tab, setTab] = useState<RunTab>('metrics');
 
   return (
@@ -123,7 +159,7 @@ function RunContents({ run }: { run: RunSummary }) {
                 label: 'Order blotter',
                 defaultSize: '55%',
                 minSize: '30%',
-                content: <OrdersBlotter runId={m.run_id} instrument={instrument} />,
+                content: <OrdersBlotter runId={run.run_id} instrument={instrument} />,
               },
               {
                 id: 'details',
@@ -139,20 +175,20 @@ function RunContents({ run }: { run: RunSummary }) {
                     tabs={[
                       { id: 'metrics', label: 'Metrics' },
                       { id: 'charts', label: 'Account charts' },
-                      { id: 'fills', label: 'Fills', count: fmtInt(run.fill_count) },
+                      { id: 'fills', label: 'Fills', count: fmtInt(run.counts.fills) },
                       { id: 'manifest', label: 'Manifest' },
                       { id: 'engine', label: 'Engine cross-check' },
                     ]}
                   >
                     {tab === 'metrics' ? <RunMetrics metrics={run.metrics} instrument={instrument} /> : null}
-                    {tab === 'charts' ? <AccountCharts runId={m.run_id} instrument={instrument} /> : null}
-                    {tab === 'fills' ? <FillsTable runId={m.run_id} instrument={instrument} /> : null}
+                    {tab === 'charts' ? <AccountCharts runId={run.run_id} instrument={instrument} /> : null}
+                    {tab === 'fills' ? <FillsTable runId={run.run_id} instrument={instrument} /> : null}
                     {tab === 'manifest' ? <Manifest run={run} dataset={dataset} /> : null}
                     {tab === 'engine' ? (
                       <EngineCheck
-                        runId={m.run_id}
+                        check={run.engine_check}
                         instrument={instrument}
-                        partialFill={m.config.execution.exchange_model === 'partial_fill'}
+                        partialFill={run.config.execution.exchange_model === 'partial_fill'}
                       />
                     ) : null}
                   </Tabs>
@@ -187,58 +223,55 @@ function KpiStrip({ metrics: m }: { metrics: Metrics }) {
   );
 }
 
-function Manifest({ run, dataset }: { run: RunSummary; dataset: AsyncResult<DatasetManifest> }) {
-  const m = run.manifest;
+function Manifest({ run, dataset }: { run: RunDetail; dataset: AsyncResult<DatasetVersion & { manifest: DatasetManifest }> }) {
+  const version = dataset.data;
   return (
     <Panel title="Reproducibility manifest" fill>
       <div className="col">
         <dl className="kv">
-          <dt>Label</dt><dd>{run.label || <span className="dim">unlabelled</span>}</dd>
-          <dt>Run id</dt><dd className="mono wrap-anywhere">{m.run_id}</dd>
-          <dt>Config SHA-256</dt><dd className="mono wrap-anywhere">{m.config_sha256}</dd>
-          <dt>Result SHA-256</dt><dd className="mono wrap-anywhere">{m.result_sha256}</dd>
-          <dt>BlackBox / contract</dt><dd className="mono">{m.blackbox_version} / v{m.contract_version}</dd>
-          <dt>Engine</dt><dd className="mono">{m.engine.name} {m.engine.version}</dd>
-          <dt>Engine features</dt><dd className="mono">{m.engine.features.join(', ') || DASH}</dd>
-          <dt>Dataset id</dt><dd className="mono wrap-anywhere"><Link to={paths.dataset(m.dataset.id)}>{m.dataset.id}</Link></dd>
-          <dt>Dataset SHA-256</dt><dd className="mono wrap-anywhere">{m.dataset.sha256}</dd>
-          <dt>Platform</dt><dd className="mono">{m.platform}</dd>
-          <dt>Profile</dt><dd className="mono">{m.profile}</dd>
-          <dt>Seed</dt><dd className="mono">{m.config.seed}</dd>
-          <dt>Created</dt><dd className="mono">{fmtUnixMs(m.created_unix_ms)}</dd>
-          <dt>Wall time</dt><dd className="mono">{fmtDuration(m.wall_time_ms * 1_000_000)}</dd>
-          <dt>Strategy ticks / tape events</dt><dd className="mono">{fmtInt(run.ticks)} / {fmtInt(run.tape_len)}</dd>
+          <dt>Label</dt><dd>{run.label ?? <span className="dim">unlabelled</span>}</dd>
+          <dt>Run id</dt><dd className="mono wrap-anywhere">{run.run_id}</dd>
+          <dt>Config fingerprint</dt><dd className="mono wrap-anywhere">{run.fingerprint}</dd>
+          <dt>Result SHA-256</dt><dd className="mono wrap-anywhere">{run.result_sha256}</dd>
+          <dt>Summary SHA-256</dt><dd className="mono wrap-anywhere">{run.summary_sha256}</dd>
+          <dt>Bundle SHA-256</dt><dd className="mono wrap-anywhere">{run.bundle?.sha256 ?? 'no bundle recorded'}</dd>
+          <dt>BlackBox / contract</dt><dd className="mono">{run.blackbox_version} / v{run.contract_version}</dd>
+          <dt>Simulation revision</dt><dd className="mono">{run.simulation_revision}</dd>
+          <dt>Engine</dt><dd className="mono">{run.engine.name} {run.engine.version}</dd>
+          <dt>Engine features</dt><dd className="mono">{run.engine.features.join(', ') || DASH}</dd>
+          <dt>Dataset id / version</dt><dd className="mono wrap-anywhere"><Link to={paths.dataset(run.dataset.id)}>{run.dataset.id}</Link> v{run.dataset.version}</dd>
+          <dt>Dataset events SHA-256</dt><dd className="mono wrap-anywhere">{run.dataset.events_sha256}</dd>
+          <dt>Dataset origin</dt><dd className="mono">{fmtNsUtc(run.dataset.origin_ns, 9)}</dd>
+          <dt>Platform</dt><dd className="mono">{run.platform}{run.canonical ? ' (canonical)' : ''}</dd>
+          <dt>Build profile</dt><dd className="mono">{run.build_profile}</dd>
+          <dt>Seed</dt><dd className="mono">{run.config.seed}</dd>
+          <dt>Created</dt><dd className="mono">{fmtNsUtc(run.created_at_ns, 0)}</dd>
+          <dt>Wall time</dt><dd className="mono">{fmtDuration(run.wall_time_ms * 1_000_000)}</dd>
+          <dt>Strategy ticks / tape events</dt><dd className="mono">{fmtInt(run.counts.ticks)} / {fmtInt(run.counts.tape_events)}</dd>
+          <dt>Orders / fills / equity samples</dt><dd className="mono">{fmtInt(run.counts.orders)} / {fmtInt(run.counts.fills)} / {fmtInt(run.counts.equity_samples)}</dd>
         </dl>
         <p className="note">Identical inputs on the same platform reproduce the same result hash. Config identity covers the contract version, engine name and version, dataset hash, full configuration and seed; labels and wall-clock timing are not hashed.</p>
-        <JsonBlock summary="Full run configuration (JSON)" value={m.config} />
+        <JsonBlock summary="Full run configuration (JSON)" value={run.config} />
         <h3 className="run-subhead">Dataset instrument</h3>
         <div className="row">
-          <button type="button" onClick={dataset.reload} disabled={dataset.loading}>Reload dataset</button>
+          <button type="button" onClick={dataset.reload} disabled={dataset.loading}>Reload dataset version</button>
         </div>
         <LoadState result={dataset} label="Loading instrument for price and quantity formatting" />
-        {dataset.data ? (
-          <>
-            <p className="mono">{dataset.data.source.symbol} · tick {dataset.data.instrument.tick_size} · lot {dataset.data.instrument.lot_size} · contract size {dataset.data.instrument.contract_size}</p>
-            {dataset.data.events_sha256 !== m.dataset.sha256 ? (
-              <Notice tag="HASH MISMATCH">The current dataset hash differs from the hash stored with this run. The instrument below belongs to the current dataset manifest.</Notice>
-            ) : null}
-          </>
+        {version ? (
+          <p className="mono">
+            v{version.version} · {version.manifest.source.symbol} · tick {version.manifest.instrument.tick_size} · lot {version.manifest.instrument.lot_size} · contract size {version.manifest.instrument.contract_size}
+          </p>
         ) : <p className="note">Until the instrument is available, prices are explicitly shown in ticks and quantities in base units.</p>}
       </div>
     </Panel>
   );
 }
 
-function EngineCheck({ runId, instrument, partialFill }: { runId: string; instrument: InstrumentMeta | null; partialFill: boolean }) {
-  const check = useAsync(() => api.engineCheck(runId), [runId]);
-  const c = check.data;
+function EngineCheck({ check: c, instrument, partialFill }: { check: EngineStateCheck; instrument: InstrumentMeta | null; partialFill: boolean }) {
   const qtyUnit = instrument ? '' : ' (base units)';
   return (
-    <Panel title="Engine cross-check" basis="modeled" fill actions={<button type="button" onClick={check.reload} disabled={check.loading}>Reload cross-check</button>}>
+    <Panel title="Engine cross-check" basis="modeled" fill>
       <div className="col">
-        <LoadState result={check} label="Loading engine cross-check" />
-        {c ? (
-          <>
             <div className="row">
               <Pill tone={c.agrees ? 'ok' : 'warn'}>{c.agrees ? 'agrees' : 'disagrees'}</Pill>
               <span className="note">BlackBox ledger versus the engine's final local-side account state.</span>
@@ -254,8 +287,6 @@ function EngineCheck({ runId, instrument, partialFill }: { runId: string; instru
               </tbody>
             </table>
             {c.note !== '' ? <p className="note run-engine-note">{c.note}</p> : <p className="note">No engine note.</p>}
-          </>
-        ) : null}
       </div>
     </Panel>
   );
@@ -335,32 +366,54 @@ function RunMetrics({ metrics: m, instrument: inst }: { metrics: Metrics; instru
 }
 
 function AccountCharts({ runId, instrument }: { runId: string; instrument: InstrumentMeta | null }) {
-  const equity = useAsync(() => api.equity(runId), [runId]);
-  const samples = equity.data;
-  const series = useMemo((): { equity: ChartSeries[]; position: ChartSeries[] } => ({
-    equity: [{ id: 'equity', label: 'Net equity (quote)', color: cssVar('--derived'), points: lastPerSecond(samples ?? [], (s) => s.equity) }],
-    position: [
-      { id: 'position', label: 'Position from exchange-side simulated fills', color: cssVar('--fg-0'), points: lastPerSecond(samples ?? [], (s) => s.position), stepped: true },
-      { id: 'known', label: 'Position known to strategy', color: cssVar('--accent'), points: lastPerSecond(samples ?? [], (s) => s.known_position), stepped: true, dashed: true },
-    ],
-  }), [samples]);
+  const equity = useAsync((signal) => api.equity(runId, { max_points: EQUITY_POINTS }, { signal }), [runId]);
+  const page = equity.data;
+  const series = useMemo((): { equity: ChartSeries[]; position: ChartSeries[] | null } | null => {
+    if (!page) return null;
+    if (isBucketed(page)) {
+      return {
+        equity: [{ id: 'equity', label: 'Net equity at bucket end (quote)', color: cssVar('--derived'), points: lastPerSecond(page.items, (b) => b.last, (b) => b.t1_ns) }],
+        position: null,
+      };
+    }
+    const samples = page.items as EquitySample[];
+    const at = (s: EquitySample) => s.ts;
+    return {
+      equity: [{ id: 'equity', label: 'Net equity (quote)', color: cssVar('--derived'), points: lastPerSecond(samples, (s) => s.equity, at) }],
+      position: [
+        { id: 'position', label: 'Position from exchange-side simulated fills', color: cssVar('--fg-0'), points: lastPerSecond(samples, (s) => s.position, at), stepped: true },
+        { id: 'known', label: 'Position known to strategy', color: cssVar('--accent'), points: lastPerSecond(samples, (s) => s.known_position, at), stepped: true, dashed: true },
+      ],
+    };
+  }, [page]);
   return (
     <Panel title="Account charts" basis="derived" fill actions={<button type="button" onClick={equity.reload} disabled={equity.loading}>Reload charts</button>}>
       <div className="col">
         <LoadState result={equity} label="Loading equity and position samples" />
-        {samples && samples.length === 0 ? <Empty>No account samples were recorded.</Empty> : null}
-        {samples && samples.length > 0 ? (
+        {page && page.items.length === 0 ? <Empty>No account samples were recorded.</Empty> : null}
+        {page && series && page.items.length > 0 ? (
           <>
+            {page.downsampled ? (
+              <Notice tag="DOWNSAMPLED" tone="info">
+                The run has more than {fmtInt(EQUITY_POINTS)} account samples, so the server returned {fmtInt(page.items.length)} buckets
+                {page.bucket_ns !== null ? ` of ${fmtDuration(page.bucket_ns)}` : ''}. The equity line plots each bucket&apos;s last equity at the bucket end; minima and maxima within a bucket are not drawn. Position is not part of the buckets and is not charted.
+              </Notice>
+            ) : null}
+            {!page.downsampled && page.next_cursor !== null ? (
+              <Notice tag="INCOMPLETE">The first {fmtInt(page.items.length)} account samples are charted; the response limit ended the page before the end of the run.</Notice>
+            ) : null}
             <section className="col">
               <h3 className="run-subhead">Equity <span className="unit">quote</span></h3>
               {series.equity.some((s) => s.points.length > 0) ? <TimeSeriesChart series={series.equity} formatValue={(v) => fmtPnl(v, 2)} ariaLabel="Simulated net equity over time after dataset origin" /> : <Empty>No finite equity samples.</Empty>}
-              <p className="note">Lightweight Charts has second-resolution time. Resampled to the last sample per second, without averaging; time is relative to dataset origin.</p>
+              <p className="note">Lightweight Charts has second-resolution time. Resampled to the last {page.downsampled ? 'bucket' : 'sample'} per second, without averaging; time is relative to dataset origin.</p>
             </section>
-            <section className="col">
-              <h3 className="run-subhead">Position <span className="unit">base quantity</span></h3>
-              {series.position.some((s) => s.points.length > 0) ? <TimeSeriesChart series={series.position} formatValue={(value) => quantity(value, instrument)} ariaLabel="Simulated position and strategy-known position over time after dataset origin" /> : <Empty>No finite position samples.</Empty>}
-              <p className="note">Lightweight Charts has second-resolution time. Resampled to the last sample per second. Dashed position includes only fill notifications already received by the strategy.</p>
-            </section>
+            {series.position ? (
+              <section className="col">
+                <h3 className="run-subhead">Position <span className="unit">base quantity</span></h3>
+                {series.position.some((s) => s.points.length > 0) ? <TimeSeriesChart series={series.position} formatValue={(value) => quantity(value, instrument)} ariaLabel="Simulated position and strategy-known position over time after dataset origin" /> : <Empty>No finite position samples.</Empty>}
+                <p className="note">Lightweight Charts has second-resolution time. Resampled to the last sample per second. Dashed position includes only fill notifications already received by the strategy.</p>
+              </section>
+            ) : null}
           </>
         ) : null}
         <p className="note">{ATTRIBUTION}</p>
@@ -374,7 +427,7 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
   const [outcome, setOutcome] = useState<OrderOutcome | ''>('');
   const [side, setSide] = useState<Side | ''>('');
   const [offset, setOffset] = useState(0);
-  const orders = useAsync(() => api.orders(runId, { outcome: outcome || undefined, side: side || undefined, offset, limit: PAGE_SIZE }), [runId, outcome, side, offset]);
+  const orders = useAsync((signal) => api.orders(runId, { outcome: outcome || undefined, side: side || undefined, offset, limit: PAGE_SIZE }, { signal }), [runId, outcome, side, offset]);
   const page = orders.data;
   const priceUnit = instrument ? undefined : 'ticks';
   const qtyUnit = instrument ? undefined : 'base units';
@@ -421,12 +474,15 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
       {page ? (
         <DataTable
           label="Orders"
-          rows={page.orders}
+          rows={page.items}
           rowKey={(o) => String(o.order_id)}
           columns={columns}
           onActivate={(o) => navigate(paths.order(runId, o.order_id))}
           empty={page.total === 0 ? 'No orders match these filters.' : 'No orders on this page. Return to the first page.'}
-          footer={<Pager offset={page.offset} limit={PAGE_SIZE} total={page.total} onOffset={setOffset} noun="orders" />}
+          footer={
+            // A byte-capped page holds fewer rows than asked; paging continues at `next_offset`.
+            <Pager offset={page.offset} limit={page.next_offset !== null ? page.next_offset - page.offset : PAGE_SIZE} total={page.total} onOffset={setOffset} noun="orders" />
+          }
           fill
         />
       ) : null}
@@ -436,8 +492,8 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
 
 function FillsTable({ runId, instrument }: { runId: string; instrument: InstrumentMeta | null }) {
   const navigate = useNavigate();
-  const fills = useAsync(() => api.fills(runId), [runId]);
-  const list = fills.data;
+  const fills = useAsync((signal) => api.fills(runId, { signal }), [runId]);
+  const list = fills.data?.items ?? null;
   const priceUnit = instrument ? undefined : 'ticks';
   const qtyUnit = instrument ? undefined : 'base units';
   const columns = useMemo<Column<FillRecord>[]>(() => [
@@ -471,7 +527,13 @@ function FillsTable({ runId, instrument }: { runId: string; instrument: Instrume
           columns={columns}
           onActivate={(f) => navigate(paths.order(runId, f.order_id))}
           empty="No simulated fills in this run."
-          footer={<span className="note">{fmtInt(list.length)} fills, all loaded</span>}
+          footer={
+            fills.data?.incomplete ? (
+              <Notice tag="List incomplete">First {fmtInt(list.length)} fills shown; the run has more. Open an order for its own fills.</Notice>
+            ) : (
+              <span className="note">{fmtInt(list.length)} fills, all loaded</span>
+            )
+          }
           fill
         />
       ) : null}

@@ -1,23 +1,16 @@
 // Experiment Comparison -> Set (UI_DESIGN_SPEC.md §11.8): several runs side by side, the first as
-// baseline. Every number is a stored run metric or a row of the server's comparison; every
-// interpretive sentence is the server's own interpretation note, rendered verbatim with its
-// evidence basis.
+// baseline. Every number is a stored run metric or a row of a comparison the server stored
+// (`/api/v1/comparisons`); every interpretive sentence is the server's own interpretation note,
+// rendered verbatim with its evidence basis. Missing comparisons are created only on request,
+// through a gated control; nothing is compared in the browser.
 
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
-import { api } from '../../api/client';
-import type {
-  Comparison,
-  DatasetManifest,
-  Demo,
-  InstrumentMeta,
-  MetricRow,
-  OrderPair,
-  PairClass,
-  RunSummary,
-} from '../../api/types';
+import { api, isAbort } from '../../api/client';
+import type { Comparison, Demo, RunDetail } from '../../api/model';
+import type { DatasetManifest, InstrumentMeta, MetricRow, OrderPair, PairClass } from '../../api/types';
 import { ConfigValue, metricLabel } from '../../components/configValue';
 import { DataTable, type Column } from '../../components/DataTable';
 import { assumptionsLabel, strategyLabel } from '../../components/describe';
@@ -28,6 +21,7 @@ import { SplitPane, type Pane } from '../../components/SplitPane';
 import { ToolbarDivider } from '../../components/Toolbar';
 import { Term } from '../../components/Tooltip';
 import { Badge, BasisBadge, ClockText, Empty, ErrorBox, HashText, Notice, Panel, SideBadge, Spinner, TimeDigitsContext, useAsync } from '../../components/ui';
+import { GatedButton } from '../../shell/access';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { CompareTabs } from '../experiments/CompareTabs';
@@ -143,19 +137,50 @@ type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
 function settle<T>(p: Promise<T>): Promise<Settled<T>> {
   return p.then(
     (value) => ({ ok: true, value }),
-    (error: unknown) => ({ ok: false, error }),
+    (error: unknown) => {
+      if (isAbort(error)) throw error;
+      return { ok: false, error };
+    },
   );
 }
 
-function runLabel(runs: Settled<RunSummary>[], ids: string[], i: number): string {
+/** The stored comparison of the baseline (A) with one run (B), as the server holds it. */
+type PairEntry =
+  | { kind: 'ok'; cmp: Comparison }
+  /** None stored with A = baseline; `reversedId` names one stored the other way round. */
+  | { kind: 'missing'; reversedId: string | null }
+  | { kind: 'error'; error: unknown };
+
+interface PairLookup {
+  entries: PairEntry[];
+  /** The comparison list was capped: an existing comparison may not have been seen. */
+  incomplete: boolean;
+  listed: number;
+}
+
+function runLabel(runs: Settled<RunDetail>[], ids: string[], i: number): string {
   const r = runs[i];
   return r && r.ok && r.value.label ? r.value.label : ids[i];
 }
 
 export default function LatencyLabPage() {
   const [params, setParams] = useSearchParams();
-  const ids = parseRuns(params.get('runs'));
+  const listed = parseRuns(params.get('runs'));
   const demoId = params.get('demo');
+
+  // With `runs`, the demo is looked up on the baseline's dataset; with a demo alone, its stored
+  // runs (`run_id`) are the set. Demo runs are matched by `run_id` only.
+  const baseListed = useAsync(
+    (signal) => (listed.length === 0 ? Promise.resolve(null) : api.run(listed[0], { signal })),
+    [listed[0] ?? null],
+  );
+  const demoDataset = listed.length === 0 ? undefined : (baseListed.data?.dataset.id ?? null);
+  const demos = useAsync(
+    (signal) => (demoId === null || demoDataset === null ? Promise.resolve(null) : api.demos(demoDataset, { signal })),
+    [demoId, demoDataset],
+  );
+  const demo = demos.data?.find((d) => d.id === demoId) ?? null;
+  const ids = listed.length > 0 ? listed : (demo?.runs.flatMap((r) => (r.run_id === null ? [] : [r.run_id])) ?? []);
   const key = ids.join(',');
 
   const setIds = (next: string[]) => {
@@ -165,30 +190,62 @@ export default function LatencyLabPage() {
     setParams(p);
   };
 
-  const all = useAsync(() => api.runs(), []);
-  const runs = useAsync(() => Promise.all(ids.map((id) => settle(api.run(id)))), [key]);
-  const comparisons = useAsync(
-    () =>
-      ids.length < 2
-        ? Promise.resolve([] as Settled<Comparison>[])
-        : Promise.all(ids.slice(1).map((id) => settle(api.compare(ids[0], id)))),
-    [key],
-  );
+  const all = useAsync((signal) => api.runs({}, { signal }), []);
+  const runs = useAsync((signal) => Promise.all(ids.map((id) => settle(api.run(id, { signal })))), [key]);
+  const [createdIds, setCreatedIds] = useState<Record<string, string>>({});
+  const comparisons = useAsync(async (signal): Promise<PairLookup | null> => {
+    if (ids.length < 2) return null;
+    const base = ids[0];
+    const list = await api.comparisons({ signal });
+    const entries = await Promise.all(
+      ids.slice(1).map(async (other): Promise<PairEntry> => {
+        const id = createdIds[`${base}|${other}`] ?? list.items.find((c) => c.run_a === base && c.run_b === other)?.id;
+        if (id === undefined) {
+          return { kind: 'missing', reversedId: list.items.find((c) => c.run_a === other && c.run_b === base)?.id ?? null };
+        }
+        // The list omits `alignment`; the resource carries it.
+        const cmp = await settle(api.comparison(id, { signal }));
+        return cmp.ok ? { kind: 'ok', cmp: cmp.value } : { kind: 'error', error: cmp.error };
+      }),
+    );
+    return { entries, incomplete: list.incomplete, listed: list.items.length };
+  }, [key, createdIds]);
+  const missing = (comparisons.data?.entries ?? []).flatMap((e, i) => (e.kind === 'missing' ? [ids[i + 1]] : []));
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<unknown>(null);
+  const createMissing = async () => {
+    const base = ids[0];
+    if (base === undefined || missing.length === 0) return;
+    setCreating(true);
+    setCreateError(null);
+    const next = { ...createdIds };
+    try {
+      for (const other of missing) {
+        const cmp = await api.createComparison(base, other);
+        next[`${base}|${other}`] = cmp.id;
+      }
+    } catch (e) {
+      setCreateError(e);
+    } finally {
+      setCreatedIds(next);
+      setCreating(false);
+    }
+  };
+
   const baseRun = runs.data?.[0]?.ok ? runs.data[0].value : null;
-  const baseDataset = baseRun?.manifest.dataset.id ?? null;
-  const demos = useAsync(
-    () => (demoId === null || baseDataset === null ? Promise.resolve(null) : api.demos(baseDataset)),
-    [demoId, baseDataset],
-  );
+  const baseDataset = baseRun?.dataset.id ?? null;
   const dataset = useAsync(
-    () => (baseDataset === null ? Promise.resolve(null) : api.dataset(baseDataset)),
+    (signal) => (baseDataset === null ? Promise.resolve(null) : api.dataset(baseDataset, { signal })),
     [baseDataset],
   );
-  const demo = demos.data?.find((d) => d.id === demoId) ?? null;
-  const manifest: DatasetManifest | null = dataset.data ?? null;
+  // Prices print with the instrument of the very dataset version the baseline replayed.
+  const manifest: DatasetManifest | null =
+    dataset.data?.current_version && baseRun && dataset.data.current_version.version === baseRun.dataset.version
+      ? dataset.data.current_version.manifest
+      : null;
 
   const [pick, setPick] = useState('');
-  const available = (all.data ?? []).filter((r) => !ids.includes(r.manifest.run_id));
+  const available = (all.data?.items ?? []).filter((r) => !ids.includes(r.run_id));
 
   const toolbar = (
     <>
@@ -208,8 +265,8 @@ export default function LatencyLabPage() {
         <select id="set-add" value={pick} onChange={(e) => setPick(e.target.value)} className="set-select">
           <option value="">{all.loading ? 'Loading runs\u2026' : 'Choose a stored run'}</option>
           {available.map((r) => (
-            <option key={r.manifest.run_id} value={r.manifest.run_id}>
-              {r.label || 'unlabelled'} · {r.manifest.run_id} · {r.manifest.dataset.id}
+            <option key={r.run_id} value={r.run_id}>
+              {r.label || 'unlabelled'} · {r.run_id} · {r.dataset.id}
             </option>
           ))}
         </select>
@@ -223,23 +280,48 @@ export default function LatencyLabPage() {
   // Body of every pair panel until the comparisons are available.
   let pairState: ReactNode = null;
   if (ids.length === 0) {
-    pairState = (
-      <Empty>
-        Choose at least two runs with Add run, or run one of the canonical experiments from the{' '}
-        <Link to={paths.overview()}>Overview</Link>.
-      </Empty>
-    );
+    pairState =
+      demoId !== null && (demos.loading || baseListed.loading) ? (
+        <Spinner label="Resolving the experiment's stored runs" />
+      ) : (
+        <Empty>
+          Choose at least two runs with Add run, or open one of the canonical experiments from the{' '}
+          <Link to={paths.overview()}>Overview</Link>.
+        </Empty>
+      );
   } else if (ids.length === 1) {
     pairState = <Empty>Add a second run to compare against the baseline.</Empty>;
-  } else if (comparisons.loading) {
-    pairState = <Spinner label="Comparing each run with the baseline" />;
+  } else if (comparisons.loading && !comparisons.data) {
+    pairState = <Spinner label="Looking up the stored comparisons with the baseline" />;
   } else if (comparisons.error) {
     pairState = <ErrorBox error={comparisons.error} onRetry={comparisons.reload} />;
   }
   const pair: PairPanelProps | null =
     pairState === null && comparisons.data && runs.data
-      ? { ids, runs: runs.data, comparisons: comparisons.data, inst: manifest?.instrument ?? null }
+      ? { ids, runs: runs.data, comparisons: comparisons.data.entries, inst: manifest?.instrument ?? null }
       : null;
+
+  const comparisonsNote =
+    comparisons.data && (missing.length > 0 || comparisons.data.incomplete || createError) ? (
+      <div className="col">
+        {comparisons.data.incomplete ? (
+          <Notice tag="List incomplete">
+            First {fmtInt(comparisons.data.listed)} stored comparisons searched; an older comparison of these runs may
+            exist beyond them.
+          </Notice>
+        ) : null}
+        {missing.length > 0 ? (
+          <Notice tag="Not compared" tone="info">
+            {missing.length} run{missing.length === 1 ? ' has' : 's have'} no stored comparison with the baseline (A =
+            baseline). The server computes comparisons; this page does not.{' '}
+            <GatedButton scope="run" onClick={() => void createMissing()} blockedReason={creating ? 'Creating comparisons\u2026' : null}>
+              {creating ? 'Creating\u2026' : `Create ${missing.length} missing comparison${missing.length === 1 ? '' : 's'}`}
+            </GatedButton>
+          </Notice>
+        ) : null}
+        {createError ? <ErrorBox error={createError} /> : null}
+      </div>
+    ) : null;
 
   const runSet = (
     <RunSetPanel
@@ -249,6 +331,9 @@ export default function LatencyLabPage() {
       error={runs.error}
       onChange={setIds}
       listError={all.error}
+      listIncomplete={all.data?.incomplete ? all.data.items.length : null}
+      demo={demo}
+      note={comparisonsNote}
     />
   );
 
@@ -263,7 +348,15 @@ export default function LatencyLabPage() {
             label: 'Experiment',
             defaultSize: '45%',
             minSize: '20%',
-            content: <DemoPanel demoId={demoId} demo={demo} loading={demos.loading} error={demos.error} />,
+            content: (
+              <DemoPanel
+                demoId={demoId}
+                demo={demo}
+                ids={ids}
+                loading={demos.loading || baseListed.loading}
+                error={demos.error ?? baseListed.error}
+              />
+            ),
           },
         ]}
       />
@@ -353,7 +446,9 @@ export default function LatencyLabPage() {
 interface SetRow {
   id: string;
   index: number;
-  run: Settled<RunSummary> | undefined;
+  run: Settled<RunDetail> | undefined;
+  /** The demo run with this `run_id`, when the set is a canonical experiment. */
+  demoLabel: string | null;
 }
 
 function RunSetPanel({
@@ -363,15 +458,27 @@ function RunSetPanel({
   error,
   onChange,
   listError,
+  listIncomplete,
+  demo,
+  note,
 }: {
   ids: string[];
-  runs: Settled<RunSummary>[] | null;
+  runs: Settled<RunDetail>[] | null;
   loading: boolean;
   error: Error | null;
   onChange: (ids: string[]) => void;
   listError: Error | null;
+  /** Runs shown in Add run when the run list was capped. */
+  listIncomplete: number | null;
+  demo: Demo | null;
+  note: ReactNode;
 }) {
-  const rows: SetRow[] = ids.map((id, index) => ({ id, index, run: runs?.[index] }));
+  const rows: SetRow[] = ids.map((id, index) => ({
+    id,
+    index,
+    run: runs?.[index],
+    demoLabel: demo?.runs.find((r) => r.run_id === id)?.label ?? null,
+  }));
   const failed = rows.filter((r) => r.run && !r.run.ok);
   const columns: Column<SetRow>[] = [
     {
@@ -381,6 +488,16 @@ function RunSetPanel({
       raw: (r) => (r.index === 0 ? 'baseline' : `run ${r.index + 1}`),
     },
     { id: 'run', header: 'Run', rowHeader: true, cell: (r) => <HashText hash={r.id} />, raw: (r) => r.id },
+    ...(demo
+      ? [
+          {
+            id: 'demo',
+            header: 'Experiment run',
+            cell: (r: SetRow) => (r.demoLabel === null ? <span className="dim">not in the experiment</span> : r.demoLabel),
+            raw: (r: SetRow) => r.demoLabel ?? '',
+          },
+        ]
+      : []),
     {
       id: 'label',
       header: 'Label',
@@ -400,15 +517,15 @@ function RunSetPanel({
     {
       id: 'strategy',
       header: 'Strategy',
-      cell: (r) => <span className="mono">{r.run?.ok ? strategyLabel(r.run.value.manifest.config.strategy.kind) : DASH}</span>,
+      cell: (r) => <span className="mono">{r.run?.ok ? strategyLabel(r.run.value.config.strategy.kind) : DASH}</span>,
     },
-    { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.run?.ok ? r.run.value.manifest.dataset.id : DASH}</span> },
+    { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.run?.ok ? `${r.run.value.dataset.id} v${r.run.value.dataset.version}` : DASH}</span> },
     {
       id: 'assumptions',
       header: 'Execution assumptions',
       cell: (r) => {
         if (!r.run?.ok) return DASH;
-        const text = assumptionsLabel(r.run.value.manifest.config);
+        const text = assumptionsLabel(r.run.value.config);
         return <span title={text}>{text}</span>;
       },
     },
@@ -447,11 +564,14 @@ function RunSetPanel({
       caption="Runs side by side on the same historical replay, the first as baseline. Differences are between simulations under different assumptions; they are not forecasts and say nothing about how the market would have reacted."
       flush
     >
-      {loading || error || listError || failed.length > 0 ? (
+      {loading || error || listError || listIncomplete !== null || failed.length > 0 || note ? (
         <div className="set-status col">
           {loading ? <Spinner label="Loading runs" /> : null}
           {error ? <ErrorBox error={error} /> : null}
           {listError ? <ErrorBox error={listError} /> : null}
+          {listIncomplete !== null ? (
+            <Notice tag="List incomplete">First {fmtInt(listIncomplete)} runs offered in Add run; older runs are not listed.</Notice>
+          ) : null}
           {failed.map((r) => (
             <div key={r.id} className="col">
               <p className="note">
@@ -460,6 +580,7 @@ function RunSetPanel({
               <ErrorBox error={r.run && !r.run.ok ? r.run.error : null} />
             </div>
           ))}
+          {note}
         </div>
       ) : null}
       <DataTable
@@ -479,11 +600,13 @@ function RunSetPanel({
 function DemoPanel({
   demoId,
   demo,
+  ids,
   loading,
   error,
 }: {
   demoId: string;
   demo: Demo | null;
+  ids: string[];
   loading: boolean;
   error: Error | null;
 }) {
@@ -522,6 +645,33 @@ function DemoPanel({
             </dd>
           </dl>
           <p className="note">{demo.how_to_read}</p>
+          <table className="table">
+            <caption>The experiment's runs, by the run id the server reports for each.</caption>
+            <thead>
+              <tr>
+                <th scope="col">Experiment run</th>
+                <th scope="col">Stored run</th>
+                <th scope="col">In this set</th>
+              </tr>
+            </thead>
+            <tbody>
+              {demo.runs.map((r) => (
+                <tr key={r.label}>
+                  <th scope="row">{r.label}</th>
+                  <td>
+                    {r.run_id === null ? (
+                      <span className="dim">not stored yet</span>
+                    ) : (
+                      <Link to={paths.run(r.run_id)}>
+                        <HashText hash={r.run_id} />
+                      </Link>
+                    )}
+                  </td>
+                  <td>{r.run_id !== null && ids.includes(r.run_id) ? 'yes' : 'no'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </>
       ) : null}
     </Panel>
@@ -532,14 +682,15 @@ function DemoPanel({
 
 interface PairPanelProps {
   ids: string[];
-  runs: Settled<RunSummary>[];
-  comparisons: Settled<Comparison>[];
+  runs: Settled<RunDetail>[];
+  /** One entry per run after the baseline. */
+  comparisons: PairEntry[];
   /** Instrument of the baseline's dataset, for prices and quantities. */
   inst: InstrumentMeta | null;
 }
 
 function ok(pair: PairPanelProps): (Comparison | null)[] {
-  return pair.comparisons.map((c) => (c.ok ? c.value : null));
+  return pair.comparisons.map((c) => (c.kind === 'ok' ? c.cmp : null));
 }
 
 function VariablesPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
@@ -550,27 +701,42 @@ function VariablesPanel({ pair, state }: { pair: PairPanelProps | null; state: R
         ? pair.comparisons.map((c, i) => {
             const other = pair.ids[i + 1];
             const name = runLabel(pair.runs, pair.ids, i + 1);
-            if (!c.ok) {
+            if (c.kind === 'error') {
               return (
                 <section key={other} className="col set-pair">
                   <p className="note">
-                    Comparison of the baseline with <span className="mono">{other}</span> failed:
+                    The stored comparison of the baseline with <span className="mono">{other}</span> could not be loaded:
                   </p>
                   <ErrorBox error={c.error} />
                 </section>
               );
             }
-            const cmp = c.value;
+            if (c.kind === 'missing') {
+              return (
+                <section key={other} className="col set-pair">
+                  <h3 className="set-pair-title">Baseline vs {name}</h3>
+                  <p className="note">
+                    No stored comparison with the baseline as A.
+                    {c.reversedId !== null ? (
+                      <>
+                        {' '}
+                        One exists the other way round (<Link to={paths.comparePair(other, pair.ids[0])}>open it as a pair</Link>);
+                        its deltas are baseline minus this run.
+                      </>
+                    ) : null}{' '}
+                    Create the missing comparisons from the Run set panel.
+                  </p>
+                </section>
+              );
+            }
+            const cmp = c.cmp;
             return (
               <section key={other} className="col set-pair">
                 <h3 className="set-pair-title row">
                   <span>Baseline vs {name}</span>
-                  <Badge kind={cmp.eligibility.aligned ? 'ok' : 'warn'}>
-                    {cmp.eligibility.aligned ? 'aligned by decision' : 'no per-order alignment'}
-                  </Badge>
-                  <Badge kind={cmp.eligibility.like_for_like ? 'ok' : 'warn'}>
-                    {cmp.eligibility.like_for_like ? 'like-for-like' : 'not like-for-like'}
-                  </Badge>
+                  <Link className="small" to={paths.comparePair(pair.ids[0], other)}>
+                    Full comparison
+                  </Link>
                 </h3>
                 <EligibilityNotice cmp={cmp} />
                 {cmp.config_diffs.length === 0 ? (
@@ -630,7 +796,7 @@ function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: Rea
       caption="Values and deltas exactly as returned by the comparison of each run with the baseline. Delta is this run minus baseline. A dash means the value is undefined for that run."
     >
       {state ? <div className="set-status">{state}</div> : null}
-      {pair && !first ? <Empty>No comparison with the baseline succeeded.</Empty> : null}
+      {pair && !first ? <Empty>No stored comparison with the baseline is available yet.</Empty> : null}
       {pair && first ? (
         <div className="table-scroll set-fill">
           <table className="table set-metrics">
@@ -665,7 +831,7 @@ function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: Rea
                         <MetricCells key={pair.ids[i + 1]} row={r} />
                       ) : (
                         <td key={pair.ids[i + 1]} colSpan={2} className="num dim">
-                          {DASH}
+                          {pair.comparisons[i]?.kind === 'ok' ? DASH : 'not compared'}
                         </td>
                       );
                     })}
@@ -727,14 +893,14 @@ function AlignmentPanel({ pair, state }: { pair: PairPanelProps | null; state: R
         ? ok(pair).map((cmp, i) => {
             if (!cmp) return null;
             const ids = pair.ids;
-            const al = cmp.alignment;
+            const al = cmp.status === 'aligned' ? cmp.alignment : null;
             const other = ids[i + 1];
             if (al === null) {
               return (
                 <section key={other} className="col set-pair">
                   <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, ids, i + 1)}</h3>
                   <p className="note">
-                    No per-order alignment: the runs differ in{' '}
+                    Status <span className="mono">{cmp.status}</span>: no per-order alignment; the runs differ in{' '}
                     {cmp.eligibility.reasons
                       .filter((r) => r.effect === 'no_alignment')
                       .map((r) => r.field)
@@ -852,7 +1018,7 @@ interface WaterfallStep {
   total?: boolean;
 }
 
-function GrossToNet({ ids, runs, loading }: { ids: string[]; runs: Settled<RunSummary>[] | null; loading: boolean }) {
+function GrossToNet({ ids, runs, loading }: { ids: string[]; runs: Settled<RunDetail>[] | null; loading: boolean }) {
   const rows = (runs ?? []).flatMap((r, i) => {
     if (!r || !r.ok) return [];
     const m = r.value.metrics;

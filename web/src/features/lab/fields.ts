@@ -4,36 +4,44 @@
 // explicit functions so milliseconds never silently become nanoseconds, nor basis points
 // fractions.
 
-import type {
-  AvellanedaStoikovParams,
-  ExchangeModel,
-  ExecutionConfig,
-  ImbalanceTakerParams,
-  InstrumentMeta,
-  OrdType,
-  OrderLatencyConfig,
-  Preset,
-  QueueModelConfig,
-  RiskConfig,
-  RunConfig,
-  ScriptedOrder,
-  Side,
-  StrategyKind,
-  Tif,
-  TouchMakerParams,
+import {
+  baseEntryNs,
+  baseResponseNs,
+  type AvellanedaStoikovParams,
+  type CubicLeg,
+  type ExchangeModel,
+  type ExecutionConfig,
+  type GlftParams,
+  type ImbalanceTakerParams,
+  type InstrumentMeta,
+  type LogNormalLeg,
+  type OrdType,
+  type OrderLatencyConfig,
+  type Preset,
+  type QueueModelConfig,
+  type RiskConfig,
+  type RunConfig,
+  type ScriptedOrder,
+  type Side,
+  type SigmaSource,
+  type StrategyKind,
+  type Tif,
+  type TouchMakerParams,
 } from '../../api/types';
 import {
   EXCHANGE_MODELS,
   EXCHANGE_MODEL_INFO,
   QUEUE_MODEL_INFO,
   QUEUE_MODEL_TYPES,
+  SIGMA_SOURCES,
+  SIGMA_SOURCE_INFO,
   STRATEGY_INFO,
   bpsToFraction,
   fractionToBps,
   queueModelHasExponent,
 } from '../../components/describe';
 import type { QueueModelType } from '../../components/describe';
-import { MAX_INTERVAL_NS, MAX_LATENCY_NS, MIN_INTERVAL_NS } from './validate';
+import { MAX_INTERVAL_NS, MAX_LATENCY_NS, MAX_LOG_NORMAL_SIGMA, MIN_INTERVAL_NS } from './validate';
 
 // ----- descriptor types -------------------------------------------------------------------
 
@@ -182,8 +190,14 @@ function patchImbalance(c: RunConfig, patch: Partial<ImbalanceTakerParams>): Run
   return k.type === 'imbalance_taker' ? withKind(c, { ...k, ...patch }) : c;
 }
 
+function patchGlft(c: RunConfig, patch: Partial<GlftParams>): RunConfig {
+  const k = c.strategy.kind;
+  return k.type === 'glft' ? withKind(c, { ...k, ...patch }) : c;
+}
+
 function withLatency(c: RunConfig, patch: { entry_ns?: number; response_ns?: number; jitter_ns?: number }): RunConfig {
   const l = c.execution.order_latency;
+  if (l.type !== 'constant' && l.type !== 'jitter') return c;
   const entry_ns = patch.entry_ns ?? l.entry_ns;
   const response_ns = patch.response_ns ?? l.response_ns;
   const next: OrderLatencyConfig =
@@ -191,6 +205,76 @@ function withLatency(c: RunConfig, patch: { entry_ns?: number; response_ns?: num
       ? { type: 'jitter', entry_ns, response_ns, jitter_ns: patch.jitter_ns ?? l.jitter_ns }
       : { type: 'constant', entry_ns, response_ns };
   return withExecution(c, { order_latency: next });
+}
+
+type LegName = 'entry' | 'response' | 'cancel';
+
+function patchLogNormalLeg(c: RunConfig, leg: LegName, patch: Partial<LogNormalLeg>): RunConfig {
+  const l = c.execution.order_latency;
+  if (l.type !== 'log_normal') return c;
+  const prev = l[leg];
+  if (!prev) return c;
+  const next = { ...l };
+  next[leg] = { ...prev, ...patch };
+  return withExecution(c, { order_latency: next });
+}
+
+function patchCubicLeg(c: RunConfig, leg: LegName, patch: Partial<CubicLeg>): RunConfig {
+  const l = c.execution.order_latency;
+  if (l.type !== 'heavy_tail') return c;
+  const prev = l[leg];
+  if (!prev) return c;
+  const next = { ...l };
+  next[leg] = { ...prev, ...patch };
+  return withExecution(c, { order_latency: next });
+}
+
+/** A new log-normal leg at `median_ns`; the spread starts blank so it has to be chosen. */
+function logNormalLeg(median_ns: number): LogNormalLeg {
+  return { median_ns, sigma: Number.NaN };
+}
+
+/** A new cubic leg at `min_ns`; the shape parameters start blank so they have to be chosen. */
+function cubicLeg(min_ns: number): CubicLeg {
+  return { min_ns, jitter: Number.NaN, clip: Number.NaN, unit: Number.NaN };
+}
+
+/** The cancel leg's location parameter, if the model has its own cancel leg. */
+function cancelBaseNs(l: OrderLatencyConfig): number | null {
+  if (l.type === 'log_normal') return l.cancel ? l.cancel.median_ns : null;
+  if (l.type === 'heavy_tail') return l.cancel ? l.cancel.min_ns : null;
+  return null;
+}
+
+/**
+ * The latency model `type` replacing `prev`. Entry and response keep their location (latency,
+ * median or minimum, in ns), as does a separate cancel leg; the new model's dimensionless
+ * parameters start blank.
+ */
+function switchLatencyModel(prev: OrderLatencyConfig, type: OrderLatencyConfig['type']): OrderLatencyConfig {
+  const entry_ns = baseEntryNs(prev);
+  const response_ns = baseResponseNs(prev);
+  const cancel_ns = cancelBaseNs(prev);
+  switch (type) {
+    case 'constant':
+      return { type, entry_ns, response_ns };
+    case 'jitter':
+      return { type, entry_ns, response_ns, jitter_ns: prev.type === 'jitter' ? prev.jitter_ns : 0 };
+    case 'log_normal':
+      return {
+        type,
+        entry: logNormalLeg(entry_ns),
+        response: logNormalLeg(response_ns),
+        cancel: cancel_ns === null ? null : logNormalLeg(cancel_ns),
+      };
+    case 'heavy_tail':
+      return {
+        type,
+        entry: cubicLeg(entry_ns),
+        response: cubicLeg(response_ns),
+        cancel: cancel_ns === null ? null : cubicLeg(cancel_ns),
+      };
+  }
 }
 
 // ----- defaults ---------------------------------------------------------------------------
@@ -227,6 +311,18 @@ export function strategyKindDefaults(
         gamma: Number.NaN,
         kappa: Number.NaN,
         horizon_s: Number.NaN,
+        vol_halflife_ticks: Number.NaN,
+      };
+    case 'glft':
+      // The sigma source is a choice among three series and cannot be blank; `mid` is listed first.
+      return {
+        type,
+        order_qty,
+        max_position,
+        gamma: Number.NaN,
+        kappa: Number.NaN,
+        intensity_a: Number.NaN,
+        sigma_source: 'mid',
         vol_halflife_ticks: Number.NaN,
       };
     case 'imbalance_taker':
@@ -300,6 +396,7 @@ export interface SectionContext {
 const STRATEGY_TYPES: StrategyKind['type'][] = [
   'touch_maker',
   'avellaneda_stoikov',
+  'glft',
   'imbalance_taker',
   'scripted',
 ];
@@ -314,6 +411,10 @@ function isQueueModelType(v: string): v is QueueModelType {
 
 function isExchangeModel(v: string): v is ExchangeModel {
   return (EXCHANGE_MODELS as string[]).includes(v);
+}
+
+function isSigmaSource(v: string): v is SigmaSource {
+  return (SIGMA_SOURCES as string[]).includes(v);
 }
 
 function strategyFields(c: RunConfig, ctx: SectionContext): Field<RunConfig>[] {
@@ -474,6 +575,79 @@ function strategyFields(c: RunConfig, ctx: SectionContext): Field<RunConfig>[] {
         },
       );
       break;
+    case 'glft':
+      fields.push(
+        {
+          kind: 'number',
+          id: 'strategy.kind.order_qty',
+          label: 'Order quantity',
+          help: 'Quote size Delta, in base units; also the trade size in the GLFT formulas. Must be a multiple of the lot size.',
+          integer: false,
+          unit: 'base units',
+          get: (x) => (x.strategy.kind.type === 'glft' ? x.strategy.kind.order_qty : Number.NaN),
+          set: (x, v) => patchGlft(x, { order_qty: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.max_position',
+          label: 'Strategy position limit',
+          help: 'Inventory bound Q: a side is not quoted when one more fill would take |position| past it.',
+          integer: false,
+          unit: 'base units',
+          get: (x) => (x.strategy.kind.type === 'glft' ? x.strategy.kind.max_position : Number.NaN),
+          set: (x, v) => patchGlft(x, { max_position: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.gamma',
+          label: 'Risk aversion gamma',
+          help: 'Absolute risk aversion of the CARA objective, per unit of wealth (1 / (price unit x base unit)). Finite and positive.',
+          integer: false,
+          get: (x) => (x.strategy.kind.type === 'glft' ? x.strategy.kind.gamma : Number.NaN),
+          set: (x, v) => patchGlft(x, { gamma: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.kappa',
+          label: 'Intensity decay kappa',
+          help: 'Decay k (per price unit) in Lambda(delta) = A * exp(-k * delta). Finite and positive.',
+          integer: false,
+          get: (x) => (x.strategy.kind.type === 'glft' ? x.strategy.kind.kappa : Number.NaN),
+          set: (x, v) => patchGlft(x, { kappa: v }),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.intensity_a',
+          label: 'Intensity scale A',
+          help: 'Fills per second of a quote at the reference price. An assumption, not estimated from the data. Finite and positive.',
+          integer: false,
+          unit: 'fills/s',
+          get: (x) => (x.strategy.kind.type === 'glft' ? x.strategy.kind.intensity_a : Number.NaN),
+          set: (x, v) => patchGlft(x, { intensity_a: v }),
+        },
+        {
+          kind: 'select',
+          id: 'strategy.kind.sigma_source',
+          label: 'Volatility source',
+          help: 'Observed price series whose clock-sampled changes estimate sigma.',
+          options: SIGMA_SOURCES.map((s) => ({ value: s, label: `${SIGMA_SOURCE_INFO[s].label} (${s})`, help: SIGMA_SOURCE_INFO[s].help })),
+          get: (x) => (x.strategy.kind.type === 'glft' ? x.strategy.kind.sigma_source : ''),
+          set: (x, v) => (isSigmaSource(v) ? patchGlft(x, { sigma_source: v }) : x),
+        },
+        {
+          kind: 'number',
+          id: 'strategy.kind.vol_halflife_ticks',
+          label: 'Volatility half-life',
+          help: 'Half-life of the exponentially weighted variance estimate. At least 1.',
+          integer: true,
+          unit: 'strategy ticks',
+          min: 0,
+          max: U32_MAX,
+          get: (x) => (x.strategy.kind.type === 'glft' ? x.strategy.kind.vol_halflife_ticks : Number.NaN),
+          set: (x, v) => patchGlft(x, { vol_halflife_ticks: v }),
+        },
+      );
+      break;
     case 'imbalance_taker':
       fields.push(
         {
@@ -591,6 +765,128 @@ function queueFields(c: RunConfig): Field<RunConfig>[] {
   return fields;
 }
 
+const LATENCY_MODELS: { value: OrderLatencyConfig['type']; label: string; help: string }[] = [
+  {
+    value: 'constant',
+    label: 'Constant (constant)',
+    help: 'Every request takes exactly the entry latency to reach the exchange, and every response the response latency to come back.',
+  },
+  {
+    value: 'jitter',
+    label: 'Constant plus seeded jitter (jitter)',
+    help: 'Each request\u2019s latency is the base plus a seeded uniform draw from [0, jitter]. The engine\u2019s order bus keeps requests in send order, so jitter never reorders them.',
+  },
+  {
+    value: 'log_normal',
+    label: 'Seeded log-normal (log_normal)',
+    help: 'Every leg is an independent seeded draw median \u00d7 exp(sigma \u00d7 Z), Z ~ N(0, 1). Cancels may have their own entry distribution. Messages never overtake.',
+  },
+  {
+    value: 'heavy_tail',
+    label: 'Seeded heavy tail, ABIDES cubic (heavy_tail)',
+    help: 'Every leg is min + (jitter / x\u00b3) \u00d7 (min / unit) with x uniform on (clip, 1]: a clipped power-law tail where rare messages are very slow. Messages never overtake.',
+  },
+];
+
+function isLatencyModel(v: string): v is OrderLatencyConfig['type'] {
+  return LATENCY_MODELS.some((m) => m.value === v);
+}
+
+const LEG_TEXT: Record<LegName, string> = {
+  entry: 'Entry (strategy host to exchange) of new orders',
+  response: 'Response (exchange to strategy host: acknowledgement, fill, cancel)',
+  cancel: 'Entry of cancel requests',
+};
+
+const LEG_LABEL: Record<LegName, string> = { entry: 'Entry', response: 'Response', cancel: 'Cancel entry' };
+
+function logNormalLegFields(leg: LegName): Field<RunConfig>[] {
+  const get = (x: RunConfig): LogNormalLeg | null => {
+    const l = x.execution.order_latency;
+    return l.type === 'log_normal' ? l[leg] : null;
+  };
+  return [
+    {
+      kind: 'number',
+      id: `execution.order_latency.${leg}.median_ns`,
+      label: `${LEG_LABEL[leg]} median`,
+      help: `${LEG_TEXT[leg]}: median latency, from 1 ns to 60 s.`,
+      integer: true,
+      unit: 'ms',
+      convert: MS_TO_NS,
+      min: 1,
+      max: MAX_LATENCY_NS,
+      get: (x) => get(x)?.median_ns ?? Number.NaN,
+      set: (x, v) => patchLogNormalLeg(x, leg, { median_ns: v }),
+    },
+    {
+      kind: 'number',
+      id: `execution.order_latency.${leg}.sigma`,
+      label: `${LEG_LABEL[leg]} sigma`,
+      help: `${LEG_TEXT[leg]}: standard deviation of ln(latency), from 0 to ${MAX_LOG_NORMAL_SIGMA}. Zero makes the leg constant at the median.`,
+      integer: false,
+      min: 0,
+      max: MAX_LOG_NORMAL_SIGMA,
+      get: (x) => get(x)?.sigma ?? Number.NaN,
+      set: (x, v) => patchLogNormalLeg(x, leg, { sigma: v }),
+    },
+  ];
+}
+
+function cubicLegFields(leg: LegName): Field<RunConfig>[] {
+  const get = (x: RunConfig): CubicLeg | null => {
+    const l = x.execution.order_latency;
+    return l.type === 'heavy_tail' ? l[leg] : null;
+  };
+  return [
+    {
+      kind: 'number',
+      id: `execution.order_latency.${leg}.min_ns`,
+      label: `${LEG_LABEL[leg]} minimum`,
+      help: `${LEG_TEXT[leg]}: minimum latency, also the scale of the tail. The largest latency, min + jitter \u00d7 min / (unit \u00d7 clip\u00b3), must be at most 60 s.`,
+      integer: true,
+      unit: 'ms',
+      convert: MS_TO_NS,
+      min: 0,
+      max: MAX_LATENCY_NS,
+      get: (x) => get(x)?.min_ns ?? Number.NaN,
+      set: (x, v) => patchCubicLeg(x, leg, { min_ns: v }),
+    },
+    {
+      kind: 'number',
+      id: `execution.order_latency.${leg}.jitter`,
+      label: `${LEG_LABEL[leg]} jitter`,
+      help: `${LEG_TEXT[leg]}: ABIDES jitter, the shape of the cubic curve, in [0, 1]. Zero makes the leg constant at the minimum.`,
+      integer: false,
+      min: 0,
+      max: 1,
+      get: (x) => get(x)?.jitter ?? Number.NaN,
+      set: (x, v) => patchCubicLeg(x, leg, { jitter: v }),
+    },
+    {
+      kind: 'number',
+      id: `execution.order_latency.${leg}.clip`,
+      label: `${LEG_LABEL[leg]} clip`,
+      help: `${LEG_TEXT[leg]}: ABIDES jitter_clip; x is drawn from (clip, 1], so clip must be strictly between 0 and 1. Smaller values allow longer tails.`,
+      integer: false,
+      min: 0,
+      max: 1,
+      get: (x) => get(x)?.clip ?? Number.NaN,
+      set: (x, v) => patchCubicLeg(x, leg, { clip: v }),
+    },
+    {
+      kind: 'number',
+      id: `execution.order_latency.${leg}.unit`,
+      label: `${LEG_LABEL[leg]} unit`,
+      help: `${LEG_TEXT[leg]}: ABIDES jitter_unit; the tail is measured in units of min / unit. Finite and positive.`,
+      integer: false,
+      min: 0,
+      get: (x) => get(x)?.unit ?? Number.NaN,
+      set: (x, v) => patchCubicLeg(x, leg, { unit: v }),
+    },
+  ];
+}
+
 function latencyFields(c: RunConfig): Field<RunConfig>[] {
   const l = c.execution.order_latency;
   const fields: Field<RunConfig>[] = [
@@ -598,70 +894,110 @@ function latencyFields(c: RunConfig): Field<RunConfig>[] {
       kind: 'select',
       id: 'execution.order_latency.type',
       label: 'Order latency model',
-      help:
-        l.type === 'constant'
-          ? 'Every request takes exactly the entry latency to reach the exchange, and every response the response latency to come back.'
-          : 'Each request\u2019s latency is the base plus a seeded uniform draw from [0, jitter]. The engine\u2019s order bus keeps requests in send order, so jitter never reorders them.',
-      options: [
-        { value: 'constant', label: 'Constant (constant)' },
-        { value: 'jitter', label: 'Constant plus seeded jitter (jitter)' },
-      ],
+      help: LATENCY_MODELS.find((m) => m.value === l.type)?.help ?? '',
+      options: LATENCY_MODELS,
       get: (x) => x.execution.order_latency.type,
       set: (x, v) => {
         const prev = x.execution.order_latency;
-        if (v === prev.type) return x;
-        const next: OrderLatencyConfig =
-          v === 'jitter'
-            ? { type: 'jitter', entry_ns: prev.entry_ns, response_ns: prev.response_ns, jitter_ns: 0 }
-            : { type: 'constant', entry_ns: prev.entry_ns, response_ns: prev.response_ns };
-        return withExecution(x, { order_latency: next });
+        if (v === prev.type || !isLatencyModel(v)) return x;
+        return withExecution(x, { order_latency: switchLatencyModel(prev, v) });
       },
     },
-    {
-      kind: 'number',
-      id: 'execution.order_latency.entry_ns',
-      label: 'Entry latency',
-      help: 'Time for a request to travel from the strategy host to the exchange, at most 60 s. Applies to new orders and cancels alike.',
-      integer: true,
-      unit: 'ms',
-      convert: MS_TO_NS,
-      min: 0,
-      max: MAX_LATENCY_NS,
-      get: (x) => x.execution.order_latency.entry_ns,
-      set: (x, v) => withLatency(x, { entry_ns: v }),
-    },
-    {
-      kind: 'number',
-      id: 'execution.order_latency.response_ns',
-      label: 'Response latency',
-      help: 'Time for the exchange\u2019s response (acknowledgement, fill, cancel) to reach the strategy host, at most 60 s.',
-      integer: true,
-      unit: 'ms',
-      convert: MS_TO_NS,
-      min: 0,
-      max: MAX_LATENCY_NS,
-      get: (x) => x.execution.order_latency.response_ns,
-      set: (x, v) => withLatency(x, { response_ns: v }),
-    },
   ];
-  if (l.type === 'jitter') {
-    fields.push({
-      kind: 'number',
-      id: 'execution.order_latency.jitter_ns',
-      label: 'Jitter range',
-      help: 'Upper end of the uniform draw added to each request\u2019s latency, at most 60 s. Draws are seeded, so a run is reproducible.',
-      integer: true,
-      unit: 'ms',
-      convert: MS_TO_NS,
-      min: 0,
-      max: MAX_LATENCY_NS,
-      get: (x) =>
-        x.execution.order_latency.type === 'jitter'
-          ? x.execution.order_latency.jitter_ns
-          : Number.NaN,
-      set: (x, v) => withLatency(x, { jitter_ns: v }),
-    });
+  switch (l.type) {
+    case 'constant':
+    case 'jitter':
+      fields.push(
+        {
+          kind: 'number',
+          id: 'execution.order_latency.entry_ns',
+          label: 'Entry latency',
+          help: 'Time for a request to travel from the strategy host to the exchange, at most 60 s. Applies to new orders and cancels alike.',
+          integer: true,
+          unit: 'ms',
+          convert: MS_TO_NS,
+          min: 0,
+          max: MAX_LATENCY_NS,
+          get: (x) => baseEntryNs(x.execution.order_latency),
+          set: (x, v) => withLatency(x, { entry_ns: v }),
+        },
+        {
+          kind: 'number',
+          id: 'execution.order_latency.response_ns',
+          label: 'Response latency',
+          help: 'Time for the exchange\u2019s response (acknowledgement, fill, cancel) to reach the strategy host, at most 60 s.',
+          integer: true,
+          unit: 'ms',
+          convert: MS_TO_NS,
+          min: 0,
+          max: MAX_LATENCY_NS,
+          get: (x) => baseResponseNs(x.execution.order_latency),
+          set: (x, v) => withLatency(x, { response_ns: v }),
+        },
+      );
+      if (l.type === 'jitter') {
+        fields.push({
+          kind: 'number',
+          id: 'execution.order_latency.jitter_ns',
+          label: 'Jitter range',
+          help: 'Upper end of the uniform draw added to each request\u2019s latency, at most 60 s. Draws are seeded, so a run is reproducible.',
+          integer: true,
+          unit: 'ms',
+          convert: MS_TO_NS,
+          min: 0,
+          max: MAX_LATENCY_NS,
+          get: (x) =>
+            x.execution.order_latency.type === 'jitter'
+              ? x.execution.order_latency.jitter_ns
+              : Number.NaN,
+          set: (x, v) => withLatency(x, { jitter_ns: v }),
+        });
+      }
+      break;
+    case 'log_normal':
+    case 'heavy_tail': {
+      const legFields = l.type === 'log_normal' ? logNormalLegFields : cubicLegFields;
+      fields.push(...legFields('entry'), ...legFields('response'), {
+        kind: 'select',
+        id: 'execution.order_latency.cancel',
+        label: 'Cancel entry latency',
+        help: 'Cancel requests either draw from the entry parameters (on their own seeded sub-stream) or from a distribution of their own.',
+        options: [
+          { value: 'as_entry', label: 'Same parameters as entry (cancel: null)' },
+          { value: 'own', label: 'Own distribution' },
+        ],
+        get: (x) => (cancelBaseNs(x.execution.order_latency) === null ? 'as_entry' : 'own'),
+        set: (x, v) => {
+          const prev = x.execution.order_latency;
+          if (prev.type === 'log_normal') {
+            const cancel = v === 'own' ? (prev.cancel ?? logNormalLeg(prev.entry.median_ns)) : null;
+            return withExecution(x, { order_latency: { ...prev, cancel } });
+          }
+          if (prev.type === 'heavy_tail') {
+            const cancel = v === 'own' ? (prev.cancel ?? cubicLeg(prev.entry.min_ns)) : null;
+            return withExecution(x, { order_latency: { ...prev, cancel } });
+          }
+          return x;
+        },
+      });
+      if (l.cancel) fields.push(...legFields('cancel'));
+      break;
+    }
   }
+  fields.push({
+    kind: 'number',
+    id: 'execution.think_time_ns',
+    label: 'Think time',
+    help: 'Strategy compute time: requests decided on a tick are handed to the order path this long after the decision. Must be below the evaluation interval (and at most 60 s); zero sends at the tick.',
+    integer: true,
+    unit: 'ms',
+    convert: MS_TO_NS,
+    min: 0,
+    max: MAX_LATENCY_NS,
+    get: (x) => x.execution.think_time_ns ?? 0,
+    // Zero is the server's default and is omitted from the configuration, as the server does.
+    set: (x, v) => withExecution(x, { think_time_ns: v === 0 ? undefined : v }),
+  });
   return fields;
 }
 
@@ -708,7 +1044,7 @@ export function buildSections(c: RunConfig, ctx: SectionContext): Section[] {
     {
       id: 'order_latency',
       title: 'Order latency',
-      description: 'Delay between the strategy host and the simulated exchange, in both directions.',
+      description: 'Delay between the strategy\u2019s decision and the simulated exchange, in both directions.',
       modeled: true,
       fields: latencyFields(c),
     },

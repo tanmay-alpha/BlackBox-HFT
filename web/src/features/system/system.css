@@ -1,0 +1,10 @@
+/* System / Admin (UI_DESIGN_SPEC.md §11.10). */
+
+.system-body {
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+
+.kv .contents {
+  display: contents;
+}

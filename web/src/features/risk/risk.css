@@ -1,0 +1,33 @@
+/* Risk & Performance (UI_DESIGN_SPEC.md §11.7). */
+
+.risk-body {
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+
+.risk-kpis {
+  flex-wrap: wrap;
+}
+
+.risk-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: start;
+}
+
+@media (max-width: 1199px) {
+  .risk-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.risk-charts {
+  gap: var(--sp-3);
+}
+
+.risk-gaps {
+  margin: 0;
+  padding-left: var(--sp-4);
+  color: var(--fg-1);
+}

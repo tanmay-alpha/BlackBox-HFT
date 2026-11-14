@@ -1,9 +1,10 @@
 // Pair classes and eligibility reasons as the server defines them (bb_core::compare). Shared by
-// Compare and Latency Lab so both pages read the same.
+// Compare Pair and Compare Set so both pages read the same.
 
-import type { Comparison, EligibilityEffect, PairClass } from '../../api/types';
+import type { Comparison } from '../../api/model';
+import type { PairClass } from '../../api/types';
 import { ConfigValue } from '../../components/configValue';
-import { Badge } from '../../components/ui';
+import { Badge, Pill } from '../../components/ui';
 
 /** Display order: identical first, then increasingly significant differences. */
 export const PAIR_CLASSES: readonly PairClass[] = [
@@ -47,55 +48,60 @@ export const CLASS_MEANING: Record<PairClass, string> = {
   only_b: 'The decision exists only in scenario B.',
 };
 
-const EFFECT_LABEL: Record<EligibilityEffect, string> = {
-  no_alignment: 'no alignment',
-  not_like_for_like: 'not like-for-like',
-};
-
-/** Why the runs are not aligned order by order, or not like-for-like. Nothing when they are. */
+/**
+ * The comparison's v1 `status` (`aligned` | `metrics_only`, exactly as served) and, when the runs
+ * differ in an eligibility field, every reason with its `effect` and `explanation` verbatim.
+ */
 export function EligibilityNotice({ cmp }: { cmp: Comparison }) {
   const { eligibility } = cmp;
-  if (eligibility.reasons.length === 0) return null;
   return (
-    <div className="cmp-warning" role="note" aria-label="Comparison eligibility">
+    <div className={eligibility.reasons.length === 0 ? 'cmp-eligible' : 'cmp-warning'} role="note" aria-label="Comparison eligibility">
       <p className="cmp-eligibility-head">
-        {eligibility.aligned ? (
-          <>
-            <Badge kind="warn">not like-for-like</Badge> Orders are aligned, but metric deltas and
-            pair differences also reflect the fields below.
-          </>
+        <Pill tone={cmp.status === 'aligned' ? 'ok' : 'warn'} title="Comparison status as returned by the server">
+          {cmp.status}
+        </Pill>{' '}
+        <Pill tone={eligibility.like_for_like ? 'ok' : 'warn'} title="eligibility.like_for_like">
+          {eligibility.like_for_like ? 'like-for-like' : 'not like-for-like'}
+        </Pill>{' '}
+        {cmp.status === 'aligned' ? (
+          eligibility.reasons.length === 0 ? (
+            <>Orders are aligned by decision and the metric deltas are like-for-like.</>
+          ) : (
+            <>Orders are aligned, but metric deltas and pair differences also reflect the fields below.</>
+          )
         ) : (
           <>
-            <Badge kind="warn">no per-order alignment</Badge> The same order id does not name the
-            same decision in both runs, so no pair is compared. Metric deltas are shown but are not
-            like-for-like.
+            <Badge kind="warn">no per-order alignment</Badge> The same order id does not name the same decision in both
+            runs, so no pair is compared. Metric deltas are shown but are not like-for-like.
           </>
         )}
       </p>
-      <table className="table cmp-eligibility">
-        <thead>
-          <tr>
-            <th scope="col">Field</th>
-            <th scope="col">A</th>
-            <th scope="col">B</th>
-            <th scope="col">Effect</th>
-            <th scope="col">Why</th>
-          </tr>
-        </thead>
-        <tbody>
-          {eligibility.reasons.map((r) => (
-            <tr key={r.field}>
-              <th scope="row" className="mono">
-                {r.field}
-              </th>
-              <ConfigValue path={r.field} value={r.a} />
-              <ConfigValue path={r.field} value={r.b} />
-              <td>{EFFECT_LABEL[r.effect]}</td>
-              <td className="dim">{r.explanation}</td>
+      {eligibility.reasons.length === 0 ? null : (
+        <table className="table cmp-eligibility">
+          <thead>
+            <tr>
+              <th scope="col">Field</th>
+              <th scope="col">A</th>
+              <th scope="col">B</th>
+              <th scope="col">Effect</th>
+              <th scope="col">Explanation</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {eligibility.reasons.map((r) => (
+              <tr key={r.field}>
+                <th scope="row" className="mono">
+                  {r.field}
+                </th>
+                <ConfigValue path={r.field} value={r.a} />
+                <ConfigValue path={r.field} value={r.b} />
+                <td className="mono">{r.effect}</td>
+                <td>{r.explanation}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

@@ -1,10 +1,10 @@
 // Sweep form model: drafts, explicit unit conversion, validation mirroring `GridSpec::validate`
 // in bb-core, and the result matrix's metric and colour definitions.
 
-import type { GridAxis, Metrics, QueueModelConfig } from "../../api/types";
-import { MARKOUT_HORIZONS_NS, MAX_GRID_CELLS } from "../../api/types";
+import type { SweepCell } from "../../api/model";
+import type { GridAxis, QueueModelConfig } from "../../api/types";
 import { bpsToFraction, fractionToBps } from "../../components/describe";
-import { fmtDuration, fmtDurationExact, fmtInt, fmtMoney, fmtNum, fmtPct, fmtPnl, fmtSigned } from "../../components/fmt";
+import { fmtDurationExact, fmtInt, fmtMoney, fmtPnl } from "../../components/fmt";
 import type { GlossaryKey } from "../../components/glossary";
 import { NsError, nsFromDecimal, nsToSafeNumber } from "../../components/ns";
 import { queueModelLabel } from "../forensics/labels";
@@ -191,8 +191,11 @@ export function parseAxis(draft: AxisDraft, name: "X" | "Y"): ParsedAxis {
   return { axis: { type: draft.param, values }, conversions, problems };
 }
 
-/** Problems that stop the grid from running; empty means it may be submitted. */
-export function validateGrid(x: ParsedAxis, y: ParsedAxis): string[] {
+/**
+ * Problems that stop the sweep from being submitted; empty means it may be. `maxCells` is the
+ * server's `limits.max_sweep_cells` (`MAX_GRID_CELLS` only while the status is unknown).
+ */
+export function validateGrid(x: ParsedAxis, y: ParsedAxis, maxCells: number): string[] {
   const problems = [...x.problems, ...y.problems];
   if (x.axis.values.length === 0 || y.axis.values.length === 0) {
     problems.push("both grid axes need at least one value");
@@ -205,8 +208,8 @@ export function validateGrid(x: ParsedAxis, y: ParsedAxis): string[] {
     problems.push("order_latency_ns and entry_latency_ns both set the entry latency");
   }
   const cells = x.axis.values.length * y.axis.values.length;
-  if (cells > MAX_GRID_CELLS) {
-    problems.push(`grid has ${cells} cells; the limit is ${MAX_GRID_CELLS}`);
+  if (cells > maxCells) {
+    problems.push(`grid has ${cells} cells; the limit is ${maxCells}`);
   }
   return problems;
 }
@@ -232,8 +235,11 @@ export function axisValueLabels(axis: GridAxis): string[] {
 // Result matrix metrics and colour scale
 // ---------------------------------------------------------------------------------------------
 
+/** The per-cell metrics a sweep serves (API_CONTRACT §8.7); nothing else exists per cell. */
+export type CellMetrics = NonNullable<SweepCell["metrics"]>;
+
 export interface MetricDef {
-  key: string;
+  key: keyof CellMetrics;
   label: string;
   /** Unit of the printed values, for headers. */
   unit: string;
@@ -241,109 +247,14 @@ export interface MetricDef {
   term?: GlossaryKey;
   /** Signed metrics use a diverging scale centred on zero; the others a sequential one. */
   signed: boolean;
-  get: (m: Metrics) => number | null;
   format: (v: number) => string;
 }
 
 export const METRICS: readonly MetricDef[] = [
-  {
-    key: "net_pnl",
-    label: "Net P&L",
-    unit: "quote",
-    signed: true,
-    get: (m) => m.net_pnl,
-    format: (v) => fmtPnl(v, 4),
-  },
-  {
-    key: "realized_pnl",
-    label: "Realized P&L",
-    unit: "quote",
-    signed: true,
-    get: (m) => m.realized_pnl,
-    format: (v) => fmtPnl(v, 4),
-  },
-  {
-    key: "fees",
-    label: "Fees (negative is a rebate)",
-    unit: "quote",
-    term: "fees",
-    signed: true,
-    get: (m) => m.fees,
-    format: (v) => fmtPnl(v, 4),
-  },
-  {
-    key: "fill_count",
-    label: "Simulated fills",
-    unit: "count",
-    signed: false,
-    get: (m) => m.fill_count,
-    format: (v) => fmtInt(v),
-  },
-  {
-    key: "fill_ratio_qty",
-    label: "Fill ratio by quantity",
-    unit: "% of submitted quantity",
-    term: "fill_ratio",
-    signed: false,
-    get: (m) => m.fill_ratio_qty,
-    format: (v) => fmtPct(v),
-  },
-  {
-    key: "volume",
-    label: "Volume (filled quantity)",
-    unit: "base",
-    signed: false,
-    get: (m) => m.volume,
-    format: (v) => fmtNum(v, 4),
-  },
-  {
-    key: "max_drawdown",
-    label: "Max drawdown",
-    unit: "quote",
-    term: "drawdown",
-    signed: false,
-    get: (m) => m.max_drawdown,
-    format: (v) => fmtMoney(v, 4),
-  },
-  {
-    key: "spread_capture",
-    label: "Spread capture",
-    unit: "quote",
-    term: "spread_capture",
-    signed: true,
-    get: (m) => m.spread_capture,
-    format: (v) => fmtPnl(v, 4),
-  },
-  {
-    key: "final_position",
-    label: "Final position",
-    unit: "base",
-    signed: true,
-    get: (m) => m.final_position,
-    format: (v) => fmtSigned(v, 4),
-  },
-  {
-    key: "orders_submitted",
-    label: "Orders submitted",
-    unit: "count",
-    signed: false,
-    get: (m) => m.orders_submitted,
-    format: (v) => fmtInt(v),
-  },
-  ...MARKOUT_HORIZONS_NS.map(
-    (horizon): MetricDef => ({
-      key: `markout_${horizon}`,
-      label: `Mean markout at +${fmtDuration(horizon)}`,
-      unit: "ticks; negative means adverse selection",
-      term: "markout",
-      signed: true,
-      get: (m) => {
-        const stat = m.markouts.find((s) => s.horizon_ns === horizon);
-        return stat ? stat.mean_ticks : null;
-      },
-      format: (v) => fmtSigned(v, 3),
-    }),
-  ),
+  { key: "net_pnl", label: "Net P&L", unit: "quote", signed: true, format: (v) => fmtPnl(v, 4) },
+  { key: "fees", label: "Fees (negative is a rebate)", unit: "quote", term: "fees", signed: true, format: (v) => fmtPnl(v, 4) },
+  { key: "fill_count", label: "Simulated fills", unit: "count", signed: false, format: (v) => fmtInt(v) },
+  { key: "max_drawdown", label: "Max drawdown", unit: "quote", term: "drawdown", signed: false, format: (v) => fmtMoney(v, 4) },
 ];
 
 export type Scale =

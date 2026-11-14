@@ -1,0 +1,70 @@
+/* Research Reports (UI_DESIGN_SPEC.md §11.9): the only workspace whose main panel scrolls as a
+   document. Prose 13 px, tables 12 px, lines at most 100ch. */
+
+.reports-index {
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+
+.reports-run {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  align-items: start;
+}
+
+@media (max-width: 1099px) {
+  .reports-run {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.reports-side {
+  gap: var(--sp-3);
+}
+
+.report-doc {
+  max-width: 100ch;
+  font-size: var(--text-md);
+  line-height: var(--lh-md);
+}
+
+.md h2,
+.md h3,
+.md h4 {
+  margin: var(--sp-4) 0 var(--sp-2);
+}
+
+.md p,
+.md ul,
+.md ol,
+.md blockquote {
+  margin: 0 0 var(--sp-2);
+}
+
+.md-code {
+  max-height: 480px;
+  overflow: auto;
+  padding: var(--sp-2);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.md-table-wrap {
+  overflow-x: auto;
+  margin-bottom: var(--sp-2);
+}
+
+.md-table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.md-table th,
+.md-table td {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+}

@@ -8,8 +8,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
-import { api, reportUrl } from '../../api/client';
-import type { DatasetManifest, FlightEvent, OrderDetail, OrderRecord, ReplayWindow, RunSummary, RunTimeline } from '../../api/types';
+import { api, saveText } from '../../api/client';
+import type { RunDetail } from '../../api/model';
+import type { DatasetManifest, FlightEvent, OrderDetail, OrderRecord, ReplayWindow } from '../../api/types';
+import type { RunTimeline } from '../../api/model';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
 import { assumptionsLabel, OUTCOME_MEANING, strategyLabel } from '../../components/describe';
@@ -98,23 +100,45 @@ function findStep(events: FlightEvent[], t: number, dir: 1 | -1): FlightEvent | 
 }
 
 function RunLinks({ runId }: { runId: string }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const download = async () => {
+    setPending(true);
+    setError(null);
+    try {
+      saveText(await api.runReport(runId), `run-${runId}-report.md`);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setPending(false);
+    }
+  };
   return (
     <>
       <Link className="btn" to={paths.run(runId)}>
         Run overview
       </Link>
-      <a className="btn" href={reportUrl(runId)} download>
-        Download report (.md)
-      </a>
+      <button type="button" onClick={() => void download()} disabled={pending}>
+        {pending ? 'Downloading report\u2026' : 'Download report (.md)'}
+      </button>
+      {error !== null ? <ErrorBox error={error} /> : null}
     </>
   );
 }
 
 export default function ReplayTerminalPage() {
   const { runId = '' } = useParams();
-  const run = useAsync(() => api.run(runId), [runId]);
-  const dsId = run.data?.manifest.dataset.id ?? null;
-  const dataset = useAsync(() => (dsId === null ? Promise.resolve(null) : api.dataset(dsId)), [dsId]);
+  const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
+  const runDataset = run.data?.dataset ?? null;
+  const dsId = runDataset?.id ?? null;
+  // The manifest of the exact dataset version this run used.
+  const dataset = useAsync(
+    (signal) =>
+      runDataset === null
+        ? Promise.resolve(null)
+        : api.datasetVersion(runDataset.id, runDataset.version, { signal }).then((v) => v.manifest),
+    [runDataset?.id, runDataset?.version],
+  );
 
   if (run.data && dataset.data) {
     return (
@@ -125,7 +149,7 @@ export default function ReplayTerminalPage() {
   }
   return (
     <Workspace
-      context={run.data?.label || runId}
+      context={run.data?.label ?? runId}
       toolbar={
         <>
           {dsId !== null ? <BookModeRun datasetId={dsId} query={null} /> : null}
@@ -142,14 +166,13 @@ export default function ReplayTerminalPage() {
   );
 }
 
-function Provenance({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
-  const m = run.manifest;
-  const c = m.config;
+function Provenance({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
+  const c = run.config;
   return (
     <section className="term-prov" aria-label="Run assumptions and dataset provenance">
       <div className="term-prov-group">
         <span className="term-prov-label">Run</span>
-        <span className="mono">{m.run_id}</span>
+        <span className="mono">{run.run_id}</span>
         <Badge kind="modeled">simulated</Badge>
         <span className="mono dim">
           {strategyLabel(c.strategy.kind)} · every {fmtDuration(c.strategy.interval_ns)} · seed {c.seed}
@@ -160,7 +183,7 @@ function Provenance({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
         <BasisBadge basis="modeled" />
         <span className="mono small">{assumptionsLabel(c)}</span>
         <span className="mono dim small">
-          {m.engine.name} {m.engine.version}
+          {run.engine.name} {run.engine.version}
         </span>
       </div>
       <div className="term-prov-group">
@@ -175,20 +198,15 @@ function Provenance({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
         <span>{ds.title}</span>
         <span className="mono dim small">
           {ds.source.vendor} · {ds.source.exchange} · {ds.source.symbol} · local timestamps {ds.timestamps.local_ts} ·
-          sha256 <HashText hash={m.dataset.sha256} chars={10} />
+          version {run.dataset.version} · sha256 <HashText hash={run.dataset.events_sha256} chars={10} />
         </span>
-        {ds.events_sha256 !== m.dataset.sha256 ? (
-          <Badge kind="warn" title="The dataset on the server has a different hash from the one this run used.">
-            dataset hash changed since this run
-          </Badge>
-        ) : null}
       </div>
     </section>
   );
 }
 
-function Terminal({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
-  const runId = run.manifest.run_id;
+function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
+  const runId = run.run_id;
   const inst = ds.instrument;
   const [searchParams, setSearchParams] = useSearchParams();
   const initialT = useMemo(() => intParam(searchParams.get('t')), []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -223,53 +241,49 @@ function Terminal({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
   // No time or order requested: start at the run start, learned from a count-only timeline call.
   useEffect(() => {
     if (!wantDefault || win !== null) return;
-    let stale = false;
+    const ctl = new AbortController();
     setLoading(true);
     setLoadError(null);
-    api.timeline(runId, { max_events: 0 }).then(
+    api.timeline(runId, { max_events: 0 }, { signal: ctl.signal }).then(
       (tl) => {
-        if (stale) return;
+        if (ctl.signal.aborted) return;
         const t = clampT(tl.run_start);
         setCursorRaw(t);
         setWin(windowAt(t, 0, ds));
       },
       (e: unknown) => {
-        if (stale) return;
+        if (ctl.signal.aborted) return;
         setLoadError(e);
         setLoading(false);
       },
     );
-    return () => {
-      stale = true;
-    };
+    return () => ctl.abort();
   }, [runId, ds, wantDefault, win, clampT, reloadNonce]);
 
   useEffect(() => {
     if (win === null) return;
-    let stale = false;
+    const ctl = new AbortController();
     setLoading(true);
     setLoadError(null);
     Promise.all([
-      api.timeline(runId, { t0: win.t0, t1: win.t1, max_events: MAX_EVENTS }),
-      api.replay(ds.id, { t0: win.t0, t1: win.t1, levels: LEVELS, max_trades: MAX_TRADES }),
+      api.timeline(runId, { t0: win.t0, t1: win.t1, max_events: MAX_EVENTS }, { signal: ctl.signal }),
+      api.replay(ds.id, { t0: win.t0, t1: win.t1, levels: LEVELS, max_trades: MAX_TRADES }, { signal: ctl.signal, version: run.dataset.version }),
     ]).then(
       ([tl, rp]) => {
-        if (stale) return;
+        if (ctl.signal.aborted) return;
         setLoaded({ win, tl, rp });
         setLoading(false);
       },
       (e: unknown) => {
-        if (stale) return;
+        if (ctl.signal.aborted) return;
         setLoadError(e);
         setLoading(false);
       },
     );
-    return () => {
-      stale = true;
-    };
+    return () => ctl.abort();
     // `win` is listed by value so an identical window is not fetched twice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, ds.id, win?.t0, win?.t1, reloadNonce]);
+  }, [runId, ds.id, run.dataset.version, win?.t0, win?.t1, reloadNonce]);
 
   // Refetch when the cursor leaves the requested window.
   useEffect(() => {
@@ -521,7 +535,7 @@ function Terminal({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
 
   // ----- selected order ------------------------------------------------------------------
   const detail = useAsync(
-    () => (selectedOrder === null ? Promise.resolve(null) : api.orderDetail(runId, selectedOrder)),
+    (signal) => (selectedOrder === null ? Promise.resolve(null) : api.orderDetail(runId, selectedOrder, { signal })),
     [runId, selectedOrder],
   );
 
@@ -883,6 +897,11 @@ function Terminal({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
             returned. Later events in this window are missing from the log and from event stepping.
           </Notice>
         ) : null}
+        {tl.truncated_by === 'bytes' ? (
+          <Notice tag="TRUNCATED">
+            The server&apos;s response size limit ended this window&apos;s timeline early; {fmtInt(tl.events.length)} tape events were returned.
+          </Notice>
+        ) : null}
         {rp.trades_truncated ? (
           <Notice tag="TRUNCATED">
             More than {fmtInt(MAX_TRADES)} market trades in this window; only the {fmtInt(rp.trades.ts.length)} largest are
@@ -963,7 +982,7 @@ function Terminal({ run, ds }: { run: RunSummary; ds: DatasetManifest }) {
   }
 
   return (
-    <Workspace context={run.label || runId} layout toolbar={toolbar}>
+    <Workspace context={run.label ?? runId} layout toolbar={toolbar}>
       {body}
     </Workspace>
   );

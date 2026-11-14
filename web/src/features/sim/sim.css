@@ -1,0 +1,37 @@
+/* Simulation Workbench and job presentation (UI_DESIGN_SPEC.md §10.4, §11.5). */
+
+.job-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.job-progress-bar {
+  position: relative;
+  display: inline-block;
+  width: 96px;
+  height: 6px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-subtle);
+  flex: none;
+}
+
+.job-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+}
+
+.job-progress-text {
+  white-space: nowrap;
+}
+
+.job-detail .kv > dd {
+  min-width: 0;
+}
+
+.job-run-links {
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
