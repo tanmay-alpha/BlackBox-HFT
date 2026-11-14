@@ -167,7 +167,7 @@ const QUEUE_COLUMNS: Column<QueueBucket & { key: string }>[] = [
     id: 'bucket',
     header: 'Queue ahead at entry',
     rowHeader: true,
-    cell: (b) => `${b.lower === null ? '\u2212\u221e' : fmtStat(b.lower)} \u2264 x < ${b.upper === null ? '\u221e' : fmtStat(b.upper)} ${b.covariate_unit}`,
+    cell: (b) => `${b.lower == null ? '\u2212\u221e' : fmtStat(b.lower)} \u2264 x < ${b.upper == null ? '\u221e' : fmtStat(b.upper)} ${b.covariate_unit}`,
   },
   { id: 'n', header: 'Orders', numeric: true, cell: (b) => fmtInt(b.estimate.n) },
   { id: 'p', header: 'Fill probability', numeric: true, cell: (b) => <ValueCell v={b.estimate.fill_probability} /> },

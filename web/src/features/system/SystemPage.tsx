@@ -7,7 +7,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
-import { api } from '../../api/client';
+import { api, PAGE_LIMIT } from '../../api/client';
 import type { ApiKeyInfo, DatasetSummary, DatasetVersion, SystemEvent, WorkerHeartbeat } from '../../api/model';
 import type { Readiness } from '../../api/v1';
 import { DataTable, type Column } from '../../components/DataTable';
@@ -149,7 +149,8 @@ function HealthTab() {
       { id: 'id', header: 'Worker', rowHeader: true, cell: (r) => <span className="mono">{r.worker_id}</span> },
       { id: 'mode', header: 'Mode', cell: (r) => r.mode },
       { id: 'platform', header: 'Platform', cell: (r) => <span className="mono">{r.platform}</span> },
-      { id: 'version', header: 'Version', cell: (r) => <span className="mono">{r.version}</span> },
+      { id: 'version', header: 'Version', cell: (r) => <span className="mono">{r.blackbox_version}</span> },
+      { id: 'slots', header: 'Slots', numeric: true, cell: (r) => fmtInt(r.slots) },
       { id: 'state', header: 'State', cell: (r) => r.state },
       { id: 'job', header: 'Current job', cell: (r) => (r.current_job_id ? <Link className="mono" to={paths.job(r.current_job_id)}>{r.current_job_id.slice(0, 13)}</Link> : DASH) },
       { id: 'hb', header: 'Heartbeat age', numeric: true, cell: (r) => fmtSeconds(Math.floor(r.last_heartbeat_age_ms / 1000)), sortValue: (r) => r.last_heartbeat_age_ms },
@@ -291,7 +292,7 @@ function AccessTab() {
     () => [
       { id: 'prefix', header: 'Key', rowHeader: true, cell: (k) => <span className="mono">{k.display_prefix}</span> },
       { id: 'label', header: 'Label', cell: (k) => k.label },
-      { id: 'workspace', header: 'Workspace', cell: (k) => <span className="mono">{k.workspace}</span> },
+      { id: 'workspace', header: 'Workspace', cell: (k) => <span className="mono">{k.workspace_id}</span> },
       { id: 'scopes', header: 'Scopes', cell: (k) => k.scopes.join(', ') },
       { id: 'created', header: 'Created', cell: (k) => <span className="mono">{utc(k.created_at_ns)}</span> },
       { id: 'expires', header: 'Expires', cell: (k) => <span className="mono">{utc(k.expires_at_ns)}</span> },
@@ -368,7 +369,7 @@ function AccessTab() {
 function DatasetsTab() {
   const datasets = useAsync((signal) => api.datasets({ signal }), []);
   const [selected, setSelected] = useState<string | null>(null);
-  const versions = useAsync((signal) => (selected ? api.datasetVersions(selected, { limit: 100 }, { signal }) : Promise.resolve(null)), [selected]);
+  const versions = useAsync((signal) => (selected ? api.datasetVersions(selected, { limit: PAGE_LIMIT }, { signal }) : Promise.resolve(null)), [selected]);
   const columns = useMemo<Column<DatasetSummary>[]>(
     () => [
       { id: 'id', header: 'Dataset', rowHeader: true, cell: (d) => <Link className="mono" to={paths.dataset(d.id)}>{d.id}</Link>, raw: (d) => d.id },
@@ -378,7 +379,7 @@ function DatasetsTab() {
       { id: 'version', header: 'Current version', numeric: true, cell: (d) => (d.current_version ? `v${d.current_version.version}` : DASH) },
       { id: 'rows', header: 'Rows', numeric: true, cell: (d) => fmtInt(d.current_version?.rows) },
       { id: 'span', header: 'Span', cell: (d) => (d.current_version ? fmtDuration(d.current_version.end_ns - d.current_version.start_ns) : DASH) },
-      { id: 'quality', header: 'Quality', cell: (d) => (d.current_version ? (d.current_version.quality.passed ? 'passed' : `${d.current_version.quality.error_count} errors`) : DASH) },
+      { id: 'quality', header: 'Quality', cell: (d) => { const q = d.current_version?.quality; return q ? (q.passed ? 'passed' : `${q.error_count} errors`) : DASH; } },
     ],
     [],
   );
@@ -389,7 +390,7 @@ function DatasetsTab() {
       { id: 'norm', header: 'Normalization', numeric: true, cell: (v) => `v${v.normalization_version}` },
       { id: 'contract', header: 'Contract', numeric: true, cell: (v) => `v${v.contract_version}` },
       { id: 'bytes', header: 'Events', numeric: true, cell: (v) => fmtBytes(v.events_bytes) },
-      { id: 'source', header: 'Source', cell: (v) => `${v.source.vendor} (${v.source.licence}${v.source.hostable ? '' : ', not hostable'})` },
+      { id: 'source', header: 'Source', cell: (v) => (v.source ? `${v.source.vendor} (${v.source.licence}${v.source.hostable ? '' : ', not hostable'})` : DASH) },
       { id: 'retired', header: 'Retired', cell: (v) => <span className="mono">{utc(v.retired_at_ns)}</span> },
     ],
     [],
@@ -424,10 +425,10 @@ function DatasetsTab() {
 
 function EventsTab() {
   const isAdmin = useAccess().hasScope('admin');
-  const ev = useAsync((signal) => (isAdmin ? api.systemEventsPage({ limit: 200 }, { signal }) : Promise.resolve(null)), [isAdmin]);
+  const ev = useAsync((signal) => (isAdmin ? api.systemEvents({ limit: 200 }, { signal }) : Promise.resolve(null)), [isAdmin]);
   const columns = useMemo<Column<SystemEvent>[]>(
     () => [
-      { id: 'at', header: 'At (UTC)', cell: (e) => <span className="mono">{utc(e.created_at_ns)}</span>, sortValue: (e) => BigInt(e.created_at_ns) },
+      { id: 'at', header: 'At (UTC)', cell: (e) => <span className="mono">{utc(e.at_ns)}</span>, sortValue: (e) => BigInt(e.at_ns) },
       { id: 'source', header: 'Source', cell: (e) => e.source },
       { id: 'level', header: 'Level', cell: (e) => e.level },
       { id: 'kind', header: 'Kind', cell: (e) => <span className="mono">{e.kind}</span> },
@@ -437,10 +438,10 @@ function EventsTab() {
   );
   return (
     <div className="col system-body">
-      <Panel title="System and audit events" flush caption={ev.data?.next_cursor ? 'Newest 200 shown.' : undefined}>
+      <Panel title="System and audit events" flush caption="Newest first, as the server returns them.">
         {!isAdmin ? <AdminOnly what="The event log" /> : null}
         <ErrorBox error={ev.error} onRetry={ev.reload} />
-        {ev.data ? <DataTable label="Events" columns={columns} rows={ev.data.items} rowKey={(e) => `${e.source}:${e.id}`} empty={<Empty>No events.</Empty>} /> : null}
+        {ev.data ? <DataTable label="Events" columns={columns} rows={ev.data} rowKey={(e) => `${e.source}:${e.id}`} empty={<Empty>No events.</Empty>} /> : null}
       </Panel>
     </div>
   );

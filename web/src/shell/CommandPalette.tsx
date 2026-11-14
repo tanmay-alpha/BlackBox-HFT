@@ -70,7 +70,7 @@ export function CommandPalette({ open, onClose, commands }: { open: boolean; onC
         id: `run-${r.run_id}`,
         group: 'Runs',
         label: `${r.run_id.slice(0, 12)} ${r.label ?? ''}`,
-        hint: r.strategy_kind,
+        hint: r.strategy_kind ?? undefined,
         run: go(paths.run(r.run_id)),
       })),
       ...commands.map((c) => ({ id: `cmd-${c.id}`, group: 'Commands', label: c.label, hint: c.hint, run: c.run })),

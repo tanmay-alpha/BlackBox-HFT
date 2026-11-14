@@ -3,7 +3,18 @@
 // `components/ns.ts`; absolute epoch nanoseconds (`*_at_ns`, `origin_ns`, `server_time_ns`) stay
 // decimal strings and are formatted with `fmtNsUtc`.
 
-import type { DatasetManifest, EquitySample, OrderPair, RunConfig } from './types';
+import type {
+  Comparison as CoreComparison,
+  DatasetManifest,
+  EngineStateCheck,
+  EquitySample,
+  GridSpec,
+  Metrics,
+  OrderDetail as CoreOrderDetail,
+  OrderPair,
+  RunConfig,
+  RunTimeline as CoreRunTimeline,
+} from './types';
 import type * as W from './v1';
 
 /** `T` with the decimal-string ns fields `K` as exact numbers. */
@@ -46,12 +57,24 @@ export type {
   WorkerState,
 } from './v1';
 
-export type Run = NsNum<W.RunSummary, 'interval_ns'>;
+/** A completed run as the views read it: nested bb-core values with exact ns numbers. */
+export type Run = Omit<W.RunSummary, 'interval_ns' | 'metrics' | 'engine_check' | 'config' | 'strategy_kind' | 'label'> & {
+  interval_ns: number | null;
+  strategy_kind: string | null;
+  label: string | null;
+  metrics: Metrics;
+  engine_check: EngineStateCheck;
+  config: RunConfig | null;
+};
 
 /** `GET /runs/{id}`: always carries the configuration. */
-export type RunDetail = Run & { config: RunConfig };
+export type RunDetail = Omit<Run, 'config'> & { config: RunConfig };
 
-export type Experiment = Omit<NsNum<W.Experiment, 'interval_ns'>, 'run'> & { run: Run | null };
+export type Experiment = Omit<W.Experiment, 'interval_ns' | 'run' | 'config'> & {
+  interval_ns: number | null;
+  run: Run | null;
+  config: RunConfig | null;
+};
 
 export interface SubmitExperimentResult {
   created: boolean;
@@ -60,7 +83,11 @@ export interface SubmitExperimentResult {
   run: Run | null;
 }
 
-export type DatasetVersion = NsNum<W.DatasetVersion, 'start_ns' | 'end_ns'>;
+export type DatasetVersion = Omit<W.DatasetVersion, 'start_ns' | 'end_ns' | 'manifest'> & {
+  start_ns: number;
+  end_ns: number;
+  manifest: DatasetManifest | null;
+};
 
 export type DatasetSummary = Omit<W.DatasetSummary, 'current_version'> & { current_version: DatasetVersion | null };
 
@@ -80,12 +107,17 @@ interface EquityPageCommon {
 export type EquityPage = EquityPageCommon &
   ({ downsampled: false; items: EquitySample[]; bucket_ns: null } | { downsampled: true; items: EquityBucket[]; bucket_ns: number | null });
 
-export type Comparison = W.Comparison;
+/** The resource fields of `W.Comparison` around the bb-core comparison (exact ns numbers). */
+export type Comparison = Omit<W.Comparison, keyof CoreComparison> & CoreComparison;
 export type ComparisonPair = OrderPair;
 
-export type Sweep = W.Sweep;
-export type Demo = W.Demo;
-export type DemoRun = W.DemoRun;
+export type Sweep = Omit<W.Sweep, 'spec'> & { spec: GridSpec | null };
+export type DemoRun = Omit<W.DemoRun, 'config'> & { config: RunConfig };
+export type Demo = Omit<W.Demo, 'runs'> & { runs: DemoRun[] };
+
+/** Dataset-relative timeline, bb-core names (`t0`, `run_start`, …) with exact ns numbers. */
+export type RunTimeline = CoreRunTimeline & { truncated_by: W.TruncatedBy };
+export type OrderDetail = CoreOrderDetail;
 
 /** Whether `items` are downsampled buckets rather than raw samples. */
 export function isBucketed(page: EquityPage): page is Extract<EquityPage, { downsampled: true }> {

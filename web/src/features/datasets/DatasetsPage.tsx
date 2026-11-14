@@ -293,10 +293,10 @@ function IdentityTab({ ds, version }: { ds: DatasetManifest; version: DatasetVer
           </dd>
           <dt>Source</dt>
           <dd>
-            <span className="mono">{version.source.vendor}</span>{' '}
+            <span className="mono">{version.source?.vendor ?? 'source not reported'}</span>{' '}
             <span className="dim">
-              licence {version.source.licence}
-              {version.source.hostable ? '' : '; not hostable'}
+              {version.source ? `licence ${version.source.licence}` : ''}
+              {version.source && !version.source.hostable ? '; not hostable' : ''}
             </span>
           </dd>
         </dl>

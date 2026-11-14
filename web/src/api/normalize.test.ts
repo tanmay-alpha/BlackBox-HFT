@@ -66,10 +66,10 @@ describe('normalize: ns strings', () => {
     const t = normalize.timeline({
       run_id: 'r',
       dataset_id: 'd',
-      t0: '0',
-      t1: '5',
-      run_start: '0',
-      run_end: '5',
+      t0_ns: '0',
+      t1_ns: '5',
+      run_start_ns: '0',
+      run_end_ns: '5',
       events: [
         { seq: 0, ts: '1', clock: 'local', source: 'engine', order_id: 1, body: { type: 'request_sent', req: 'new', entry_latency_ns: '1000000', exch_arrival_ts: '1000001' } },
         { seq: 1, ts: '2', clock: 'exchange', source: 'engine', order_id: 1, body: { type: 'local_response', exch_ts: '3' } },

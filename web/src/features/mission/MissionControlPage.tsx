@@ -373,7 +373,7 @@ const DATASET_COLUMNS: Column<DatasetSummary>[] = [
   {
     id: 'source',
     header: 'Source',
-    cell: (d) => (d.current_version ? <span className="mono">{d.current_version.source.vendor} · {d.current_version.instrument.exchange} · {d.current_version.instrument.symbol}</span> : DASH),
+    cell: (d) => (d.current_version ? <span className="mono">{d.current_version.source?.vendor ?? DASH} · {d.current_version.instrument.exchange} · {d.current_version.instrument.symbol}</span> : DASH),
   },
   {
     id: 'span',
@@ -517,7 +517,7 @@ function System() {
           ) : null}
         </dd>
         <dt>Build</dt>
-        <dd className="mono">{s ? `${s.blackbox_version} \u00b7 ${s.git_sha.slice(0, 12)}` : DASH}</dd>
+        <dd className="mono">{s ? `${s.blackbox_version} \u00b7 ${s.git_sha?.slice(0, 12) ?? 'commit not reported'}` : DASH}</dd>
         <dt>Engine</dt>
         <dd>{s ? `${s.engine.name} ${s.engine.version}` : DASH}</dd>
         <dt>Access</dt>

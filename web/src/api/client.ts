@@ -82,6 +82,9 @@ export interface OrdersQuery {
 /** How many list items a "load everything" view reads before saying the list is incomplete. */
 export const LIST_CAP = 1000;
 
+/** Items per list page the console requests (the server accepts at most 100). */
+export const PAGE_LIMIT = 50;
+
 export const api = {
   // ----- health, identity ----------------------------------------------------------------------
   status: (o: Opts = {}) => request<W.Status>('GET', '/status', o).then(normalize.status),
@@ -94,7 +97,7 @@ export const api = {
   datasetsPage: (q: Cursor = {}, o: Opts = {}) =>
     request<W.CursorPage<W.DatasetSummary>>('GET', '/datasets', { query: q, ...o }).then(normalize.datasets),
   datasets: (o: Opts = {}): Promise<Collected<M.DatasetSummary>> =>
-    collectAll((cursor, signal) => api.datasetsPage({ cursor, limit: 100 }, { signal }), { maxItems: LIST_CAP, signal: o.signal }),
+    collectAll((cursor, signal) => api.datasetsPage({ cursor, limit: PAGE_LIMIT }, { signal }), { maxItems: LIST_CAP, signal: o.signal }),
   dataset: (id: string, o: Opts = {}) => request<W.Dataset>('GET', `/datasets/${enc(id)}`, o).then(normalize.dataset),
   /** The current version's manifest (`GET /datasets/{id}` embeds it). */
   async manifest(id: string, o: Opts = {}) {
@@ -141,7 +144,7 @@ export const api = {
   runsPage: (q: RunsQuery = {}, o: Opts = {}) =>
     request<W.CursorPage<W.RunSummary>>('GET', '/runs', { query: q, ...o }).then(normalize.runs),
   runs: (q: RunsQuery = {}, o: Opts = {}): Promise<Collected<M.Run>> =>
-    collectAll((cursor, signal) => api.runsPage({ ...q, cursor, limit: 100 }, { signal }), { maxItems: LIST_CAP, signal: o.signal }),
+    collectAll((cursor, signal) => api.runsPage({ ...q, cursor, limit: PAGE_LIMIT }, { signal }), { maxItems: LIST_CAP, signal: o.signal }),
   run: (id: string, o: Opts = {}) => request<W.RunSummary>('GET', `/runs/${enc(id)}`, o).then((r) => normalize.run(r) as M.RunDetail),
   engineCheck: (id: string, o: Opts = {}) => request<M.Run['engine_check']>('GET', `/runs/${enc(id)}/engine-check`, o),
   /** bb-analytics execution and risk reports of a run (`GET /runs/{id}/analytics`). */
@@ -180,7 +183,7 @@ export const api = {
   comparisonsPage: (q: Cursor & { workspace?: string } = {}, o: Opts = {}) =>
     request<W.CursorPage<W.Comparison>>('GET', '/comparisons', { query: q, ...o }).then(normalize.comparisons),
   comparisons: (o: Opts & { workspace?: string } = {}): Promise<Collected<M.Comparison>> =>
-    collectAll((cursor, signal) => api.comparisonsPage({ cursor, limit: 100, workspace: o.workspace }, { signal }), {
+    collectAll((cursor, signal) => api.comparisonsPage({ cursor, limit: PAGE_LIMIT, workspace: o.workspace }, { signal }), {
       maxItems: LIST_CAP,
       signal: o.signal,
     }),
@@ -214,8 +217,8 @@ export const api = {
   systemWorkers: (o: Opts = {}) => request<W.WorkerHeartbeat[]>('GET', '/system/workers', o),
   systemQueue: (o: Opts = {}) => request<W.QueueSummary>('GET', '/system/queue', o),
   systemUsage: (o: Opts = {}) => request<W.Usage>('GET', '/system/usage', o),
-  systemEventsPage: (q: Cursor & { kind?: string; level?: string } = {}, o: Opts = {}) =>
-    request<W.CursorPage<W.SystemEvent>>('GET', '/system/events', { query: q, ...o }).then(normalize.events),
+  systemEvents: (q: { kind?: string; level?: string; limit?: number } = {}, o: Opts = {}) =>
+    request<W.SystemEvent[]>('GET', '/system/events', { query: q, ...o }).then(normalize.events),
   systemApiKeys: (o: Opts = {}) => request<W.ApiKeyInfo[]>('GET', '/system/api-keys', o).then(normalize.apiKeys),
 };
 

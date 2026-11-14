@@ -11,7 +11,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, saveText } from '../../api/client';
 import type { RunDetail } from '../../api/model';
 import type { DatasetManifest, FlightEvent, OrderDetail, OrderRecord, ReplayWindow } from '../../api/types';
-import type { RunTimeline } from '../../api/v1';
+import type { RunTimeline } from '../../api/model';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
 import { assumptionsLabel, OUTCOME_MEANING, strategyLabel } from '../../components/describe';

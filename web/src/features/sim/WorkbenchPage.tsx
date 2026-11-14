@@ -6,7 +6,7 @@
 import { useMemo, useRef } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
-import { api } from '../../api/client';
+import { api, PAGE_LIMIT } from '../../api/client';
 import { LIVE_JOB_STATES, type Job, type JobState } from '../../api/model';
 import { DataTable, type Column } from '../../components/DataTable';
 import { SplitPane } from '../../components/SplitPane';
@@ -30,7 +30,7 @@ const FILTERS: { id: string; label: string; states: readonly JobState[] | undefi
   ...ALL_STATES.map((s) => ({ id: s, label: s, states: [s] as const })),
 ];
 
-const PAGE = 100;
+const PAGE = PAGE_LIMIT;
 
 export function SimTabs() {
   return (

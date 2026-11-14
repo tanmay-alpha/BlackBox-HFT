@@ -88,7 +88,8 @@ function absNsOpt(obj: object, key: string, path: string): void {
   absNs(obj, key, path);
 }
 
-function config(c: RunConfig, path: string): RunConfig {
+function config(raw: object, path: string): RunConfig {
+  const c = raw as RunConfig;
   ns(c, 'seed', path);
   ns(c.strategy, 'interval_ns', `${path}.strategy`);
   ns(c.execution, 'feed_latency_offset_ns', `${path}.execution`);
@@ -138,14 +139,15 @@ function latencyOut(lat: OrderLatencyConfig): unknown {
   }
 }
 
-function markouts(list: MarkoutStat[], path: string): void {
+function markouts(raw: readonly object[], path: string): void {
+  const list = raw as MarkoutStat[];
   list.forEach((m, i) => ns(m, 'horizon_ns', `${path}[${i}]`));
 }
 
 function run(r: W.RunSummary, path: string): M.Run {
   absNs(r.dataset, 'origin_ns', `${path}.dataset`);
   absNs(r, 'created_at_ns', path);
-  ns(r, 'interval_ns', path);
+  nsOpt(r, 'interval_ns', path);
   markouts(r.metrics.markouts, `${path}.metrics.markouts`);
   if (r.config) config(r.config, `${path}.config`);
   return r as unknown as M.Run;
@@ -161,14 +163,15 @@ function job(j: W.Job, path: string): W.Job {
 
 function experiment(e: W.Experiment, path: string): M.Experiment {
   absNs(e, 'created_at_ns', path);
-  ns(e, 'interval_ns', path);
+  nsOpt(e, 'interval_ns', path);
   if (e.job) job(e.job, `${path}.job`);
   if (e.run) run(e.run, `${path}.run`);
   if (e.config) config(e.config, `${path}.config`);
   return e as unknown as M.Experiment;
 }
 
-function manifest(d: DatasetManifest, path: string): DatasetManifest {
+function manifest(raw: object, path: string): DatasetManifest {
+  const d = raw as DatasetManifest;
   absNs(d, 'origin_ns', path);
   ns(d, 'start', path);
   ns(d, 'end', path);
@@ -196,7 +199,8 @@ function market(m: MarketView, path: string): void {
   nsOpt(m, 'feed_local_ts', path);
 }
 
-function event(e: FlightEvent, path: string): void {
+function event(raw: object, path: string): void {
+  const e = raw as FlightEvent;
   ns(e, 'ts', path);
   const b = e.body;
   const bp = `${path}.body`;
@@ -221,29 +225,34 @@ function event(e: FlightEvent, path: string): void {
   }
 }
 
-function events(list: FlightEvent[], path: string): FlightEvent[] {
+function events(raw: readonly object[], path: string): FlightEvent[] {
+  const list = raw as FlightEvent[];
   list.forEach((e, i) => event(e, `${path}[${i}]`));
   return list;
 }
 
 const ORDER_TS = ['exch_arrival_ts', 'first_response_ts', 'first_fill_ts', 'last_fill_ts', 'cancel_sent_ts', 'terminal_ts'] as const;
 
-function order(o: OrderRecord, path: string): void {
+function order(raw: object, path: string): void {
+  const o = raw as OrderRecord;
   ns(o, 'decision_ts', path);
   for (const k of ORDER_TS) nsOpt(o, k, path);
 }
 
-function orders(list: OrderRecord[], path: string): OrderRecord[] {
+function orders(raw: readonly object[], path: string): OrderRecord[] {
+  const list = raw as OrderRecord[];
   list.forEach((o, i) => order(o, `${path}[${i}]`));
   return list;
 }
 
-function fills(list: FillRecord[], path: string): FillRecord[] {
+function fills(raw: readonly object[], path: string): FillRecord[] {
+  const list = raw as FillRecord[];
   list.forEach((f, i) => ns(f, 'ts', `${path}[${i}]`));
   return list;
 }
 
-function equity(list: EquitySample[], path: string): EquitySample[] {
+function equity(raw: readonly object[], path: string): EquitySample[] {
+  const list = raw as EquitySample[];
   list.forEach((s, i) => ns(s, 'ts', `${path}[${i}]`));
   return list;
 }
@@ -258,20 +267,23 @@ const LATENCY_KEYS = [
   'cancel_entry_latency_ns',
 ] as const;
 
-function explanation(x: Explanation, path: string): void {
+function explanation(raw: object, path: string): void {
+  const x = raw as Explanation;
   for (const k of LATENCY_KEYS) nsOpt(x.latency, k, `${path}.latency`);
   x.queue_path.forEach((q, i) => ns(q, 'ts', `${path}.queue_path[${i}]`));
 }
 
 const PAIR_TIMING = ['decision_ns', 'exch_arrival_ns', 'first_response_ns', 'first_fill_ns', 'completion_ns'] as const;
 
-function decision(d: DecisionOutcome | null, path: string): void {
+function decision(raw: object | null | undefined, path: string): void {
+  const d = (raw ?? null) as DecisionOutcome | null;
   if (!d) return;
   ns(d, 'decision_ts', path);
   for (const k of ORDER_TS) nsOpt(d, k, path);
 }
 
-function pair(p: OrderPair, path: string): OrderPair {
+function pair(raw: object, path: string): OrderPair {
+  const p = raw as OrderPair;
   ns(p, 'decision_ts', path);
   decision(p.a, `${path}.a`);
   decision(p.b, `${path}.b`);
@@ -279,7 +291,8 @@ function pair(p: OrderPair, path: string): OrderPair {
   return p;
 }
 
-function axis(a: GridAxis, path: string): void {
+function axis(raw: object, path: string): void {
+  const a = raw as GridAxis;
   if (a.type === 'order_latency_ns' || a.type === 'entry_latency_ns' || a.type === 'feed_latency_offset_ns') {
     nsArray(a.values, `${path}.values`);
   }
@@ -289,11 +302,11 @@ function comparison(c: W.Comparison, path: string): M.Comparison {
   absNs(c, 'created_at_ns', path);
   const al = c.alignment;
   if (al) {
-    al.pairs.forEach((p, i) => pair(p, `${path}.alignment.pairs[${i}]`));
+    (al.pairs ?? []).forEach((p, i) => pair(p, `${path}.alignment.pairs[${i}]`));
     if (al.first_divergence) pair(al.first_divergence, `${path}.alignment.first_divergence`);
     if (al.first_outcome_divergence) pair(al.first_outcome_divergence, `${path}.alignment.first_outcome_divergence`);
   }
-  return c;
+  return c as unknown as M.Comparison;
 }
 
 function sweep(s: W.Sweep, path: string): M.Sweep {
@@ -303,7 +316,7 @@ function sweep(s: W.Sweep, path: string): M.Sweep {
     axis(s.spec.x, `${path}.spec.x`);
     axis(s.spec.y, `${path}.spec.y`);
   }
-  return s;
+  return s as unknown as M.Sweep;
 }
 
 function cursorPage<T, U>(p: W.CursorPage<T>, path: string, each: (item: T, path: string) => U): W.CursorPage<U> {
@@ -345,7 +358,7 @@ export const normalize = {
   },
   demos(list: W.Demo[]): M.Demo[] {
     list.forEach((d, i) => d.runs.forEach((r, j) => config(r.config, `demos[${i}].runs[${j}].config`)));
-    return list;
+    return list as unknown as M.Demo[];
   },
   run: (r: W.RunSummary) => run(r, 'run'),
   runs: (p: W.CursorPage<W.RunSummary>) => cursorPage(p, 'runs', run),
@@ -365,12 +378,12 @@ export const normalize = {
     orders(page.items, 'orders.items');
     return page;
   },
-  orderDetail(d: W.OrderDetail): W.OrderDetail {
+  orderDetail(d: W.OrderDetail): M.OrderDetail {
     order(d.order, 'order');
     events(d.events, 'events');
     fills(d.fills, 'fills');
     explanation(d.explanation, 'explanation');
-    return d;
+    return d as unknown as M.OrderDetail;
   },
   fills(p: W.CursorPage<FillRecord>): W.CursorPage<FillRecord> {
     fills(p.items, 'fills.items');
@@ -384,7 +397,7 @@ export const normalize = {
         ns(b, 't1_ns', `equity.items[${i}]`);
       });
     } else {
-      equity(p.items as EquitySample[], 'equity.items');
+      equity(p.items, 'equity.items');
     }
     return p as unknown as M.EquityPage;
   },
@@ -392,16 +405,25 @@ export const normalize = {
     events(p.items, 'tape.items');
     return p;
   },
-  timeline(t: W.RunTimeline): W.RunTimeline {
-    ns(t, 't0', 'timeline');
-    ns(t, 't1', 'timeline');
-    ns(t, 'run_start', 'timeline');
-    ns(t, 'run_end', 'timeline');
-    events(t.events, 'timeline.events');
-    fills(t.fills, 'timeline.fills');
-    equity(t.equity, 'timeline.equity');
-    orders(t.orders, 'timeline.orders');
-    return t;
+  /** The wire's `t0_ns`/`t1_ns`/`run_start_ns`/`run_end_ns` become the bb-core view names. */
+  timeline(t: W.RunTimeline): M.RunTimeline {
+    for (const k of ['t0_ns', 't1_ns', 'run_start_ns', 'run_end_ns'] as const) ns(t, k, 'timeline');
+    const view = {
+      run_id: t.run_id,
+      dataset_id: t.dataset_id,
+      t0: t.t0_ns as unknown as number,
+      t1: t.t1_ns as unknown as number,
+      run_start: t.run_start_ns as unknown as number,
+      run_end: t.run_end_ns as unknown as number,
+      events: events(t.events, 'timeline.events'),
+      events_total: t.events_total,
+      events_truncated: t.events.length < t.events_total,
+      fills: fills(t.fills, 'timeline.fills'),
+      equity: equity(t.equity, 'timeline.equity'),
+      orders: orders(t.orders, 'timeline.orders'),
+      truncated_by: t.truncated_by,
+    };
+    return view;
   },
   comparison: (c: W.Comparison) => comparison(c, 'comparison'),
   comparisons: (p: W.CursorPage<W.Comparison>) => cursorPage(p, 'comparisons', comparison),
@@ -417,11 +439,10 @@ export const normalize = {
       absNs(r, 'created_at_ns', path);
       return r;
     }),
-  events: (p: W.CursorPage<W.SystemEvent>) =>
-    cursorPage(p, 'events', (e: W.SystemEvent, path) => {
-      absNs(e, 'created_at_ns', path);
-      return e;
-    }),
+  events(list: W.SystemEvent[]): W.SystemEvent[] {
+    list.forEach((e, i) => absNs(e, 'at_ns', `events[${i}]`));
+    return list;
+  },
   /** Integer ns fields of the analytics stay strings; each is checked to be an exact i64. */
   analytics(a: W.RunAnalytics): W.RunAnalytics {
     const walk = (v: unknown, path: string): void => {

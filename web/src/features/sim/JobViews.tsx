@@ -204,15 +204,6 @@ export function JobDetail({ job, nowMs, onChanged }: { job: Job; nowMs: number; 
             <dd className="mono">{utc(job.cancel_requested_at_ns)}</dd>
           </>
         ) : null}
-        {job.estimate ? (
-          <>
-            <dt>Admission estimate</dt>
-            <dd className="mono">
-              {fmtInt(job.estimate.ticks)} ticks {'\u00b7'} {'\u2264'} {fmtInt(job.estimate.tape_events_upper)} tape events {'\u00b7'} {'\u2264'}{' '}
-              {fmtBytes(job.estimate.output_bytes_upper)}
-            </dd>
-          </>
-        ) : null}
         <dt>Run</dt>
         <dd>
           {runIds.length === 0

@@ -234,7 +234,7 @@ function Manifest({ run, dataset }: { run: RunDetail; dataset: AsyncResult<Datas
           <dt>Config fingerprint</dt><dd className="mono wrap-anywhere">{run.fingerprint}</dd>
           <dt>Result SHA-256</dt><dd className="mono wrap-anywhere">{run.result_sha256}</dd>
           <dt>Summary SHA-256</dt><dd className="mono wrap-anywhere">{run.summary_sha256}</dd>
-          <dt>Bundle SHA-256</dt><dd className="mono wrap-anywhere">{run.bundle.sha256}</dd>
+          <dt>Bundle SHA-256</dt><dd className="mono wrap-anywhere">{run.bundle?.sha256 ?? 'no bundle recorded'}</dd>
           <dt>BlackBox / contract</dt><dd className="mono">{run.blackbox_version} / v{run.contract_version}</dd>
           <dt>Simulation revision</dt><dd className="mono">{run.simulation_revision}</dd>
           <dt>Engine</dt><dd className="mono">{run.engine.name} {run.engine.version}</dd>

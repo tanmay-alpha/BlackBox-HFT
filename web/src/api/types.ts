@@ -15,8 +15,8 @@
 // lib.rs
 // ---------------------------------------------------------------------------------------------
 
-/** The API contract this console reads (`Status.contract_version`; ns values as strings). */
-export const CONTRACT_VERSION = 2;
+/** The API contract this console reads (`Status.contract_version` of the v1 server). */
+export const CONTRACT_VERSION = 1;
 export const ENGINE_NAME = 'hftbacktest';
 export const ENGINE_VERSION = '0.9.4';
 

@@ -7,7 +7,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
-import { api, saveDownload, saveText } from '../../api/client';
+import { api, PAGE_LIMIT, saveDownload, saveText } from '../../api/client';
 import type { Report, Run, RunDetail } from '../../api/model';
 import { DataTable, type Column } from '../../components/DataTable';
 import { RouteTabs } from '../../components/Tabs';
@@ -34,7 +34,7 @@ async function sha256Hex(text: string): Promise<string> {
 
 function ReportsIndex() {
   const navigate = useNavigate();
-  const saved = useAsync((signal) => api.reportsPage({ limit: 100 }, { signal }), []);
+  const saved = useAsync((signal) => api.reportsPage({ limit: PAGE_LIMIT }, { signal }), []);
   const runs = useAsync((signal) => api.runs({}, { signal }), []);
 
   const savedColumns = useMemo<Column<Report>[]>(
@@ -66,7 +66,7 @@ function ReportsIndex() {
         <Panel
           title="Saved reports"
           flush
-          caption={saved.data?.next_cursor ? 'First 100 saved reports shown.' : 'Immutable snapshots; each body is stored with its SHA-256.'}
+          caption={saved.data?.next_cursor ? `First ${PAGE_LIMIT} saved reports shown.` : 'Immutable snapshots; each body is stored with its SHA-256.'}
         >
           {saved.loading ? <Spinner label="Loading saved reports" /> : null}
           <ErrorBox error={saved.error} onRetry={saved.reload} />
@@ -129,7 +129,7 @@ function ManifestPanel({ run }: { run: RunDetail }) {
         <dd className="mono wrap-anywhere">{run.summary_sha256}</dd>
         <dt>Bundle</dt>
         <dd className="mono wrap-anywhere">
-          format v{run.bundle.format_version} {'\u00b7'} {fmtBytes(run.bundle.size_bytes)} {'\u00b7'} {run.bundle.sha256}
+          {run.bundle ? `format v${run.bundle.format_version} \u00b7 ${fmtBytes(run.bundle.size_bytes)} \u00b7 ${run.bundle.sha256}` : 'no bundle recorded'}
         </dd>
         <dt>Engine</dt>
         <dd className="mono">
@@ -248,7 +248,7 @@ function SavedReport({ reportId }: { reportId: string }) {
       <button type="button" disabled={!body.data} onClick={() => body.data && saveText(body.data.text, `report-${reportId}.md`)}>
         Download .md
       </button>
-      {m?.kind === 'run' ? <Link to={paths.report(m.subject_id)}>Live run report</Link> : null}
+      {m?.kind === 'run' && m.subject_id ? <Link to={paths.report(m.subject_id)}>Live run report</Link> : null}
     </>
   );
 

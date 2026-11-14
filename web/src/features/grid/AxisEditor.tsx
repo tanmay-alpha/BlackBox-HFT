@@ -27,7 +27,7 @@ export function BaseSummary({ run }: { run: RunDetail }) {
       </dd>
       <dt>Strategy</dt>
       <dd>
-        {run.strategy_kind}, every {fmtDurationExact(run.interval_ns)}
+        {run.strategy_kind ?? 'strategy not reported'}, every {run.interval_ns === null ? 'interval not reported' : fmtDurationExact(run.interval_ns)}
       </dd>
       <dt>Dataset</dt>
       <dd>

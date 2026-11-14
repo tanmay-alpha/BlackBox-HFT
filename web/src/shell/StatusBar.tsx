@@ -87,7 +87,7 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
         : 'GET /api/v1/status, polled every 30 s while this tab is visible. Activate to check now.';
   const s = h.status;
   const build = s
-    ? `v${s.blackbox_version} \u00b7 ${s.git_sha.slice(0, 7)} \u00b7 contract v${s.contract_version} \u00b7 ${s.engine.name} ${s.engine.version}`
+    ? `v${s.blackbox_version} \u00b7 ${s.git_sha?.slice(0, 7) ?? 'no sha'} \u00b7 contract v${s.contract_version} \u00b7 ${s.engine.name} ${s.engine.version}`
     : null;
   const worker = s ? workerHealth(s, h.checkedAt, now.getTime()) : null;
   const utc = `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())} UTC`;

@@ -106,7 +106,7 @@ export function HelpDialog({ open, onClose }: { open: boolean; onClose: () => vo
         {status ? (
           <>
             <p className="mono">
-              blackbox {status.blackbox_version} ({status.git_sha.slice(0, 12)}) {'\u00b7'} API {status.api_version} {'\u00b7'} contract v
+              blackbox {status.blackbox_version} ({status.git_sha?.slice(0, 12) ?? 'commit not reported'}) {'\u00b7'} API {status.api_version} {'\u00b7'} contract v
               {status.contract_version} {'\u00b7'} {status.engine.name} {status.engine.version}
             </p>
             <p className="mono">
