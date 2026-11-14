@@ -96,52 +96,63 @@ function RunPicker({
   if (runs.error) return <ErrorBox error={runs.error} onRetry={runs.reload} />;
   if (!runs.data) return <Spinner label="Loading runs" />;
   const list = runs.data.items;
-  if (list.length < 2) {
-    return (
-      <Empty>
-        A comparison needs two stored runs; {list.length === 0 ? "none exists" : "one exists"} so far.{" "}
-        <Link to={paths.strategy()}>Run a simulation in the Strategy Lab</Link>
-      </Empty>
-    );
-  }
 
+  // A combobox, not a select: the list holds this workspace's runs, but any readable run (a public
+  // demo run, for example) can be compared by typing or pasting its id.
   const select = (id: string, value: string, onChange: (v: string) => void, legend: string) => (
     <label className="cmp-pick" htmlFor={id}>
       <span className="cmp-pick-label">{legend}</span>
-      <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">Select a run</option>
-        {value !== "" && !list.some((r) => r.run_id === value) ? (
-          <option value={value}>{value} (not among the listed runs)</option>
-        ) : null}
-        {list.map((r) => (
-          <option key={r.run_id} value={r.run_id}>
-            {runOptionText(r)}
-          </option>
-        ))}
-      </select>
+      <input
+        id={id}
+        type="text"
+        list="cmp-run-options"
+        value={value}
+        placeholder="Select a run or paste a run id"
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value.trim())}
+      />
     </label>
   );
   const same = pickA !== "" && pickA === pickB;
+  const ready = /^[0-9a-f]{16}$/.test(pickA) && /^[0-9a-f]{16}$/.test(pickB) && !same;
 
   return (
     <Panel title="Choose two runs">
       {runs.data.incomplete ? (
         <Notice tag="List incomplete">First {fmtInt(list.length)} runs shown; older runs are not listed here.</Notice>
       ) : null}
+      {list.length === 0 ? (
+        <p className="dim">
+          This workspace has no stored runs yet. <Link to={paths.strategy()}>Run a simulation in the Strategy Lab</Link>, or
+          paste the ids of two runs you can open.
+        </p>
+      ) : null}
+      <datalist id="cmp-run-options">
+        {list.map((r) => (
+          <option key={r.run_id} value={r.run_id}>
+            {runOptionText(r)}
+          </option>
+        ))}
+      </datalist>
       <form
         className="cmp-picker"
         onSubmit={(e) => {
           e.preventDefault();
-          if (pickA !== "" && pickB !== "" && !same) onPick(pickA, pickB);
+          if (ready) onPick(pickA, pickB);
         }}
       >
         {select("cmp-pick-a", pickA, setPickA, "Scenario A")}
         {select("cmp-pick-b", pickB, setPickB, "Scenario B")}
         <div className="cmp-picker-go">
-          <button type="submit" className="cmp-btn" disabled={pickA === "" || pickB === "" || same}>
+          <button type="submit" className="cmp-btn" disabled={!ready}>
             Compare
           </button>
-          {same ? <span className="dim">Choose two different runs.</span> : null}
+          {same ? (
+            <span className="dim">Choose two different runs.</span>
+          ) : !ready && (pickA !== "" || pickB !== "") ? (
+            <span className="dim">A run id is 16 hexadecimal characters.</span>
+          ) : null}
         </div>
       </form>
     </Panel>
@@ -416,7 +427,7 @@ function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunD
       <p className="dim small">
         Comparison <HashText hash={cmp.id} /> {cmp.label === "" ? null : <strong>{cmp.label}</strong>} · version{" "}
         <span className="mono">{cmp.version}</span> · comparator version <span className="mono">{cmp.comparator_version}</span>{" "}
-        · created <span className="mono">{fmtNsUtc(cmp.created_at_ns, 0)}</span> UTC
+        · created <span className="mono">{fmtNsUtc(cmp.created_at_ns, 0)}</span>
       </p>
 
       <section className="cmp-scenarios" aria-label="Scenarios">

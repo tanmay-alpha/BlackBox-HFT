@@ -6,7 +6,7 @@
 // Mutating controls stay rendered and focusable with `aria-disabled` and the reason; activating
 // one without the needed scope opens the key dialog instead of acting.
 
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState } from 'react';
+import { createContext, Fragment, useCallback, useContext, useEffect, useId, useMemo, useState } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { Lock } from 'lucide-react';
 
@@ -43,8 +43,19 @@ export function AccessProvider({ children, announce }: { children: ReactNode; an
   const [state, setState] = useState<AccessState>({ whoami: null, error: null, loading: true });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [keyVersion, setKeyVersion] = useState(0);
+  // Bumped whenever the key is set, changed or removed: the children remount under it, so no
+  // workspace keeps showing data fetched under the previous identity (e.g. a private run after
+  // signing out).
+  const [keyEpoch, setKeyEpoch] = useState(0);
 
-  useEffect(() => subscribeApiKey(() => setKeyVersion((v) => v + 1)), []);
+  useEffect(
+    () =>
+      subscribeApiKey(() => {
+        setKeyVersion((v) => v + 1);
+        setKeyEpoch((v) => v + 1);
+      }),
+    [],
+  );
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
@@ -95,7 +106,7 @@ export function AccessProvider({ children, announce }: { children: ReactNode; an
 
   return (
     <AccessContext.Provider value={value}>
-      {children}
+      <Fragment key={keyEpoch}>{children}</Fragment>
       <KeyDialog
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}

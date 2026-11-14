@@ -15,7 +15,7 @@ import type { Preset, RunConfig } from '../../api/types';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
 import { JsonBlock } from '../../components/data';
-import { assumptionsLabel, strategyLabel } from '../../components/describe';
+import { assumptionsLabel, STRATEGY_INFO } from '../../components/describe';
 import { SplitPane } from '../../components/SplitPane';
 import { Tabs } from '../../components/Tabs';
 import { Badge, Empty, ErrorBox, Panel, Pill, Spinner, useAsync } from '../../components/ui';
@@ -27,6 +27,7 @@ import { Workspace } from '../../shell/Workspace';
 import { FieldRow } from './FieldInput';
 import { ScriptedOrdersEditor } from './ScriptedOrdersEditor';
 import { buildSections, fieldProblem, startingConfig } from './fields';
+import type { Field } from './fields';
 import { configAdvisories, diffConfigs, validateRunConfig } from './validate';
 import type { ConfigChange } from './validate';
 import './lab.css';
@@ -51,9 +52,14 @@ function originText(o: Origin, current: RunConfig | null): string {
   return `Values loaded from ${source}, then edited by you (${edits} field${edits === 1 ? ' differs' : 's differ'}).`;
 }
 
+/** The plain name of a strategy kind; unknown kinds (newer servers) show as sent. */
+function strategyName(type: string | null): string {
+  return type !== null && type in STRATEGY_INFO ? STRATEGY_INFO[type as keyof typeof STRATEGY_INFO].label : (type ?? 'unknown strategy');
+}
+
 function runOptionLabel(r: Run): string {
   const name = r.label ? `${r.label} ` : '';
-  return `${name}${r.run_id} \u00b7 ${r.strategy_kind} \u00b7 ${r.dataset.id}`;
+  return `${name}${r.run_id} \u00b7 ${strategyName(r.strategy_kind)} \u00b7 ${r.dataset.id}`;
 }
 
 const PRESET_COLUMNS: Column<Preset>[] = [
@@ -61,10 +67,61 @@ const PRESET_COLUMNS: Column<Preset>[] = [
   {
     id: 'strategy',
     header: 'Strategy',
-    cell: (p) => <span className="mono">{strategyLabel(p.config.strategy.kind)}</span>,
-    sortValue: (p) => strategyLabel(p.config.strategy.kind),
+    cell: (p) => strategyName(p.config.strategy.kind.type),
+    sortValue: (p) => strategyName(p.config.strategy.kind.type),
   },
 ];
+
+type FormMode = 'guided' | 'advanced';
+const MODE_STORAGE_KEY = 'bb.lab.mode';
+
+/**
+ * Guided mode: the essentials, each with a one-line plain explanation. The fields are the same
+ * descriptors as the Advanced form (same ids, getters and setters on the same `RunConfig`); only
+ * the explanation is shorter.
+ */
+const GUIDED_GROUPS: { title: string; modeled: boolean; fields: Record<string, string> }[] = [
+  {
+    title: 'Strategy',
+    modeled: false,
+    fields: {
+      'strategy.kind.type': 'The rule that decides when and at what price to place orders.',
+      'strategy.kind.order_qty': 'How much each order asks to buy or sell.',
+    },
+  },
+  {
+    title: 'Latency',
+    modeled: true,
+    fields: {
+      'execution.order_latency.entry_ns': 'How long an order takes to reach the simulated exchange.',
+      'execution.order_latency.response_ns': 'How long the exchange\u2019s reply takes to come back.',
+    },
+  },
+  {
+    title: 'Fees',
+    modeled: true,
+    fields: {
+      'execution.fees.maker': 'Paid when an order that waited in the book is filled; negative is a rebate.',
+      'execution.fees.taker': 'Paid when an order trades immediately against the book.',
+    },
+  },
+];
+
+/** A changed value in the unit the form uses (ms, bp, option names), or as stored when unknown. */
+function changeValue(field: Field<RunConfig> | undefined, raw: string): string {
+  if (!field || raw === '(absent)') return raw;
+  if (field.kind === 'select') {
+    const v: unknown = JSON.parse(raw);
+    return field.options.find((o) => o.value === v)?.label ?? raw;
+  }
+  if (field.kind === 'number' || field.kind === 'optional_number') {
+    const n = Number(raw);
+    if (raw === 'null' || !Number.isFinite(n)) return raw === 'null' ? 'off' : raw;
+    const shown = field.kind === 'number' && field.convert ? Number(field.convert.toDisplay(n).toPrecision(12)) : n;
+    return field.unit ? `${shown} ${field.unit}` : String(shown);
+  }
+  return raw;
+}
 
 const MODELED_TITLE =
   'An execution assumption. Results produced under it are estimates of what could have happened, not observations.';
@@ -76,7 +133,7 @@ function PresetInspector({ preset, onApply }: { preset: Preset; onApply: (p: Pre
       <p className="prose">{preset.description}</p>
       <dl className="kv">
         <dt>Strategy</dt>
-        <dd className="mono">{strategyLabel(preset.config.strategy.kind)}</dd>
+        <dd>{strategyName(preset.config.strategy.kind.type)}</dd>
         <dt>Demonstrates</dt>
         <dd className="prose">{preset.demonstrates}</dd>
         <dt>Execution assumptions</dt>
@@ -93,28 +150,49 @@ function PresetInspector({ preset, onApply }: { preset: Preset; onApply: (p: Pre
   return null;
 }
 
-function ChangesTable({ caption, a, b, changes }: { caption: string; a: string; b: string; changes: ConfigChange[] }) {
+function ChangesTable({
+  caption,
+  a,
+  b,
+  changes,
+  fields,
+}: {
+  caption: string;
+  a: string;
+  b: string;
+  changes: ConfigChange[];
+  fields: Map<string, Field<RunConfig>>;
+}) {
   return (
     <div className="table-scroll">
       <table className="table">
         <caption>{caption}</caption>
         <thead>
           <tr>
-            <th scope="col">Configuration path</th>
+            <th scope="col">Setting</th>
             <th scope="col">{a}</th>
             <th scope="col">{b}</th>
           </tr>
         </thead>
         <tbody>
-          {changes.map((c) => (
-            <tr key={c.path}>
-              <th scope="row" className="mono">
-                {c.path}
-              </th>
-              <td className="mono">{c.a}</td>
-              <td className="mono">{c.b}</td>
-            </tr>
-          ))}
+          {changes.map((c) => {
+            const f = fields.get(c.path);
+            return (
+              <tr key={c.path}>
+                <th scope="row">
+                  {f ? (
+                    <>
+                      {f.label} <span className="note mono">{c.path}</span>
+                    </>
+                  ) : (
+                    <span className="mono">{c.path}</span>
+                  )}
+                </th>
+                <td className="mono">{changeValue(f, c.a)}</td>
+                <td className="mono">{changeValue(f, c.b)}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -146,6 +224,13 @@ export default function LabPage() {
   const [submitNote, setSubmitNote] = useState<ReactNode>(null);
   const [activeSection, setActiveSection] = useState('strategy');
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const [mode, setModeState] = useState<FormMode>(() =>
+    window.localStorage.getItem(MODE_STORAGE_KEY) === 'advanced' ? 'advanced' : 'guided',
+  );
+  const setMode = (m: FormMode) => {
+    setModeState(m);
+    window.localStorage.setItem(MODE_STORAGE_KEY, m);
+  };
 
   const presets = useAsync<Preset[]>(
     (signal) => (datasetId ? api.presets(datasetId, { signal }) : Promise.resolve([])),
@@ -181,6 +266,7 @@ export default function LabPage() {
     () => (config ? buildSections(config, { instrument, presets: presets.data ?? [] }) : []),
     [config, instrument, presets.data],
   );
+  const fieldsById = useMemo(() => new Map(sections.flatMap((s) => s.fields.map((f) => [f.id, f] as const))), [sections]);
 
   const problemsBySection = useMemo(() => {
     const out = new Map<string, string[]>();
@@ -189,7 +275,7 @@ export default function LabPage() {
       const list: string[] = [];
       for (const f of s.fields) {
         const p = fieldProblem(f, config);
-        if (p) list.push(`${f.label} (${f.id}): ${p}`);
+        if (p) list.push(`${s.title} \u203a ${f.label}: ${p}`);
       }
       out.set(s.id, list);
     }
@@ -396,6 +482,62 @@ export default function LabPage() {
     </Panel>
   );
 
+  const modeToggle = (
+    <div className="row lab-mode" role="group" aria-label="Form mode">
+      <button type="button" aria-pressed={mode === 'guided'} className={mode === 'guided' ? 'btn-primary' : undefined} onClick={() => setMode('guided')}>
+        Guided
+      </button>
+      <button type="button" aria-pressed={mode === 'advanced'} className={mode === 'advanced' ? 'btn-primary' : undefined} onClick={() => setMode('advanced')}>
+        Advanced
+      </button>
+      <span className="note">
+        {mode === 'guided'
+          ? 'The essentials only. Every other setting keeps its current value; Advanced shows all of them.'
+          : 'Every setting of the run configuration, by section.'}
+      </span>
+    </div>
+  );
+
+  const guidedForm = config ? (
+    <div className="col">
+      {GUIDED_GROUPS.map((g) => {
+        const rows = Object.entries(g.fields).flatMap(([id, help]) => {
+          const f = fieldsById.get(id);
+          return f ? [{ ...f, help }] : [];
+        });
+        return (
+          <fieldset key={g.title} className="col lab-section">
+            <legend className="lab-section-head">
+              <span>{g.title}</span>
+              {g.modeled ? (
+                <Badge kind="modeled" title={MODELED_TITLE}>
+                  modeled
+                </Badge>
+              ) : null}
+            </legend>
+            <div className="lab-fields">
+              {rows.map((f) => (
+                <FieldRow key={f.id} field={f} obj={config} onChange={edit} scope="lab" />
+              ))}
+            </div>
+            {g.title === 'Latency' && rows.length === 0 ? (
+              <p className="note">
+                This configuration uses the {changeValue(fieldsById.get('execution.order_latency.type'), JSON.stringify(config.execution.order_latency.type))} latency
+                model; edit its parameters in Advanced.
+              </p>
+            ) : null}
+            {g.title === 'Strategy' && config.strategy.kind.type === 'scripted' ? (
+              <p className="note">A scripted strategy places a fixed list of orders; edit the list in Advanced.</p>
+            ) : null}
+          </fieldset>
+        );
+      })}
+      {fieldProblems.length > 0 || ruleProblems.length > 0 ? (
+        <p className="note">Some settings need fixing before this can run; the Validation panel lists them.</p>
+      ) : null}
+    </div>
+  ) : null;
+
   const configPane = (
     <Panel title="Configuration" fill>
       {config && active ? (
@@ -408,43 +550,48 @@ export default function LabPage() {
             void submit('run');
           }}
         >
-          <Tabs
-            label="Configuration sections"
-            active={active.id}
-            onChange={setActiveSection}
-            tabs={sections.map((s) => {
-              const n = problemsBySection.get(s.id)?.length ?? 0;
-              return { id: s.id, label: s.title, count: n > 0 ? `${n} invalid` : undefined };
-            })}
-          >
-            <fieldset className="col lab-section">
-              <legend className="lab-section-head">
-                <span>{active.title}</span>
-                {active.modeled ? (
-                  <Badge kind="modeled" title={MODELED_TITLE}>
-                    modeled
-                  </Badge>
+          {modeToggle}
+          {mode === 'guided' ? (
+            guidedForm
+          ) : (
+            <Tabs
+              label="Configuration sections"
+              active={active.id}
+              onChange={setActiveSection}
+              tabs={sections.map((s) => {
+                const n = problemsBySection.get(s.id)?.length ?? 0;
+                return { id: s.id, label: s.title, count: n > 0 ? `${n} invalid` : undefined };
+              })}
+            >
+              <fieldset className="col lab-section">
+                <legend className="lab-section-head">
+                  <span>{active.title}</span>
+                  {active.modeled ? (
+                    <Badge kind="modeled" title={MODELED_TITLE}>
+                      modeled
+                    </Badge>
+                  ) : null}
+                </legend>
+                <p className="note">{active.description}</p>
+                <div className="lab-fields">
+                  {active.fields.map((f) => (
+                    <FieldRow key={f.id} field={f} obj={config} onChange={edit} scope="lab" />
+                  ))}
+                </div>
+                {active.id === 'strategy' && config.strategy.kind.type === 'scripted' ? (
+                  <ScriptedOrdersEditor
+                    orders={config.strategy.kind.orders}
+                    onChange={(orders) =>
+                      edit({
+                        ...config,
+                        strategy: { ...config.strategy, kind: { type: 'scripted', orders } },
+                      })
+                    }
+                  />
                 ) : null}
-              </legend>
-              <p className="note">{active.description}</p>
-              <div className="lab-fields">
-                {active.fields.map((f) => (
-                  <FieldRow key={f.id} field={f} obj={config} onChange={edit} scope="lab" />
-                ))}
-              </div>
-              {active.id === 'strategy' && config.strategy.kind.type === 'scripted' ? (
-                <ScriptedOrdersEditor
-                  orders={config.strategy.kind.orders}
-                  onChange={(orders) =>
-                    edit({
-                      ...config,
-                      strategy: { ...config.strategy, kind: { type: 'scripted', orders } },
-                    })
-                  }
-                />
-              ) : null}
-            </fieldset>
-          </Tabs>
+              </fieldset>
+            </Tabs>
+          )}
         </form>
       ) : null}
     </Panel>
@@ -531,6 +678,7 @@ export default function LabPage() {
               a="Loaded"
               b="This form"
               changes={originChanges}
+              fields={fieldsById}
             />
           )}
         </section>
@@ -588,6 +736,7 @@ export default function LabPage() {
                   a="A"
                   b="B (this form)"
                   changes={changes}
+                  fields={fieldsById}
                 />
               )}
             </>
@@ -627,7 +776,7 @@ export default function LabPage() {
             <span className="field-help">A name for the run list, for example the scenario. Not part of any hash.</span>
           </div>
           <p className="note">
-            Seed: <span className="mono">{config.seed}</span> (edit it in the Seed tab).
+            Seed: <span className="mono">{config.seed}</span> (edit it in Advanced, Seed tab).
           </p>
           {submitError !== null ? <ErrorBox error={submitError} /> : null}
           {submitNote ? (

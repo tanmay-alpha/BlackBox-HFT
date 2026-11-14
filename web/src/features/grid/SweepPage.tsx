@@ -203,7 +203,7 @@ function SweepView({ id }: { id: string }) {
           <HashText hash={sweep.id} /> <span className="dim">version {sweep.version} {"\u00b7"} spec <HashText hash={sweep.fingerprint} /></span>
         </dd>
         <dt>Created</dt>
-        <dd className="mono">{fmtNsUtc(sweep.created_at_ns, 0)} UTC</dd>
+        <dd className="mono">{fmtNsUtc(sweep.created_at_ns, 0)}</dd>
       </dl>
     </Panel>
   );
