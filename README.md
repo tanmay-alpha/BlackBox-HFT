@@ -96,21 +96,19 @@ The first start migrates the database, computes the demo runs, stores the curate
 reports, prints one research API key (`docker compose logs app | grep bbk_`; it is shown only once) and serves the
 console and `/api/v1` on http://127.0.0.1:8787. Paste the key into the console to run your own experiments.
 
-Without Docker, against a Postgres you run yourself
-([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#local) has the details):
+Without Docker, against an existing (empty) Postgres database you run yourself, one command builds the binary and the
+console, migrates, seeds the demo workspace and serves the console and `/api/v1` on http://127.0.0.1:8787
+([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#local) has the details and the individual steps):
 
 ```
-cargo build --release
-cd web && npm ci && npm run build && cd ..
-export DATABASE_URL=postgres://user:password@127.0.0.1:5432/blackbox
-target/release/blackbox --data-dir data migrate
-target/release/blackbox --data-dir data demo seed --wait
-target/release/blackbox --data-dir data keys mint --workspace lab --scopes read,run --label me
-target/release/blackbox --data-dir data serve --web-dir web/dist
+# bash (Git Bash on Windows)
+DATABASE_URL=postgres://user:password@127.0.0.1:5432/blackbox scripts/local-stack.sh
+# Windows PowerShell
+$env:DATABASE_URL = 'postgres://user:password@127.0.0.1:5432/blackbox'; scripts/local-stack.ps1
 ```
 
-`blackbox demo` (no database) still starts the deprecated file-based `/api` server; the bundled console does not
-work with it, because it talks to `/api/v1` (`blackbox serve`).
+To run your own experiments, mint a key in a second terminal (same `DATABASE_URL`) and paste it into the console:
+`target/release/blackbox --data-dir data keys mint --workspace lab --scopes read,run --label me`.
 
 ### Command line
 

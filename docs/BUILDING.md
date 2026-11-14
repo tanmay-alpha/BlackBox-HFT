@@ -54,7 +54,7 @@ After that, plain `cargo build` and `cargo test` work from the repository root.
 
 ## Shell scripts on Windows
 
-Run `scripts/*.sh` from Git Bash. On a machine where WSL is enabled but has no distribution
+Run `scripts/*.sh` from Git Bash (the local stack also has `scripts/local-stack.ps1` for PowerShell). On a machine where WSL is enabled but has no distribution
 installed, the `bash` found first on `PATH` may be the WSL launcher, which fails with
 `execvpe(/bin/bash) failed`.
 

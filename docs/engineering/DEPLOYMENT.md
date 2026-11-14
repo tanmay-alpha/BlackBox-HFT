@@ -234,7 +234,7 @@ no second `BLACKBOX_` convention.
 | Name | Required (hosted) | Secret | Example | Set by | Consumer |
 |---|---|---|---|---|---|
 | `PORT` | yes | no | `10000` | render.yaml (Render's default is 10000 [R7], [R8]); image default `8787` | `serve`: listen on `0.0.0.0:$PORT` |
-| `BB_ADDR` | no | no | `127.0.0.1:9000` | operator | `serve`/`demo`: full listen address; precedence `--addr` > `BB_ADDR` > `0.0.0.0:$PORT` > `127.0.0.1:8787` |
+| `BB_ADDR` | no | no | `127.0.0.1:9000` | operator | `serve`: full listen address; precedence `--addr` > `BB_ADDR` > `0.0.0.0:$PORT` > `127.0.0.1:8787` |
 | `BB_PROFILE` | yes | no | `hosted` (default `local`) | render.yaml | `ExecutionLimits::hosted()`, hosted quotas/rate limits, demo workspace read-only, JSON logs |
 | `DATABASE_URL` | yes | **yes** | `postgres://u:p@ep-…-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=verify-full` | Render secret | `PgPool` (pooled; DATABASE_DESIGN §12); hosted config validates the effective SQLx TLS mode |
 | `DATABASE_URL_UNPOOLED` | yes | **yes** | same host without `-pooler`, also `sslmode=verify-full` | Render secret | migrations (advisory lock), `blackbox migrate`, `pg_dump` |

@@ -100,8 +100,7 @@ pub fn router(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router {
         .with_state(state);
 
     let app = Router::new().nest("/api", api);
-    // No CORS layer: the UI is same-origin. Cross-origin and DNS-rebinding access is refused by
-    // `access::guard`, which the binary wraps around this router.
+    // No CORS layer: the UI is same-origin.
     match web_dir {
         Some(dir) => {
             let index = ServeFile::new(dir.join("index.html"));
@@ -109,13 +108,6 @@ pub fn router(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router {
         }
         None => app.fallback(no_such_endpoint),
     }
-}
-
-/// Serves `app` on `listener` until SIGTERM or Ctrl-C.
-pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::Result<()> {
-    axum::serve(listener, app)
-        .with_graceful_shutdown(crate::runtime::shutdown_signal())
-        .await
 }
 
 /// The health payload.

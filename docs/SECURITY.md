@@ -28,8 +28,7 @@ verification boundaries. Production deployment must be checked separately from s
 ## Deprecated local `/api` tooling
 
 The remaining sections document the earlier file-store server and its 2026-11-14 review.
-They apply to `blackbox demo` and the local `serve` legacy fallback, **not** hosted `/api/v1`.
-The current console requires the [local v1 stack](DEPLOYMENT.md#local), not `blackbox demo`.
+They describe the removed `blackbox demo` server and its Host/Origin guard (`access.rs`, also removed), **not** `/api/v1`.
 
 ## Threat model
 
