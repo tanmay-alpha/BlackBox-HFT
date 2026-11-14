@@ -4,7 +4,13 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Deployed; close-out (final independent audit).** Hosted system live since 2026-11-14:
+**Rebuild integrated on `rebuild/explore`; release pending.** The product rebuild (public latency
+experiment at `/`, five navigation sections, event-complete replay, ITCH local reconstruction) is
+merged on `rebuild/explore` (HEAD `b71a46a`); release and production verification are task T12 in
+[../rebuild/IMPLEMENTATION_TRACKER.md](../rebuild/IMPLEMENTATION_TRACKER.md). Review:
+[../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md).
+
+Hosted system (pre-rebuild source) live since 2026-11-14:
 
 | Component | Where | Notes |
 |---|---|---|
@@ -38,6 +44,11 @@ Secrets (never committed): `data/secrets/{neon.env,vercel-prod.env,render.env,ap
 | Hosted data | Synthetic only (Tardis terms §9.2 forbid hosting; no openly licensed L2 source found, see MARKET_MICROSTRUCTURE §7) |
 | Queue | Postgres `FOR UPDATE SKIP LOCKED` with leases; no Redis |
 | Platform policy | Results keyed by `<os>-<arch>[-env]+libm-<fingerprint>`; canonical = glibc `53154a4e`; GitHub's Windows runner (`9a463940`) reproduces every canonical pin |
+| Anonymous egress budget (rebuild) | Keep 60 MB/day of uncompressed response bodies; shrink the page instead (public page measured at 236,675 B API data per fresh visit, local) — user, 2026-11-14 (rebuild T15) |
+| Public page (rebuild) | The latency experiment is the public page at `/`; the experiment catalogue moves to `/experiments` (b819427) |
+| QuantReplay (rebuild) | No-go for product and hosting; reference only after a local Docker PoC (QUANTREPLAY_EVALUATION §6, ef168cf) |
+| Analytics grid (rebuild) | Perspective and Glide Data Grid not adopted; TanStack Table + Virtual kept (PERFORMANCE_RESULTS, a2f754e) |
+| ITCH data (rebuild) | ITCH 5.0 reconstruction is local-only; no ITCH data is hosted or committed (no hosting grant found; REUSE_MATRIX §3) |
 
 ## Infrastructure notes
 
@@ -58,7 +69,15 @@ analytics crate, the persistence crates (bb-db, bb-artifacts) and the final audi
 assignments (audit, quant research) failed with `usage_limit_reached` and were rerun on Opus.
 Opus agents hit one rate-limit window (HTTP 429) and were resumed on their own transcripts.
 
+Rebuild (2026-11-14): lead Claude Opus 5.5. GPT-6.1 Sol returned `usage_limit_reached` on both
+rebuild spawns (replay task, prototype review); both were reassigned to Opus 5.5 with unchanged
+acceptance criteria. All other rebuild agents ran on Opus 5.5.
+
 ## Open items
+
+Rebuild open items: [../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) §J (narrow split panes
+at 390 px, Explore Tab order on wide screens, raw `net_pnl` in sweep caveats) and the pending
+release (T12).
 
 All ten ranked defects of `FINAL_AUDIT.md` §4 have source fixes on `main` (§7, with commits and
 tests). Source fixes do not establish deployment: re-check production after release

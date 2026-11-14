@@ -1,20 +1,28 @@
 # BlackBox HFT
 
-A market-microstructure and execution research laboratory for high-frequency trading research.
+A market-microstructure and execution research laboratory. It replays Level-2 market data through the
+[HftBacktest](https://github.com/nkaz001/hftbacktest) engine, records the complete lifecycle of every simulated
+order, and answers: **why did the strategy behave differently when latency, queue position, fees or risk changed?**
 
-Most backtesters answer "how much would this strategy have made?". BlackBox is built to answer
-the question underneath it:
+**Start at `/`: the public latency experiment** (no sign-in). One strategy at 1 ms and 50 ms order latency: the
+answer first (both runs lose; the 50 ms run loses less because it fills less and so pays less in fees, which is not
+evidence that slower is better), then the equity curves, the first divergence, the replayed book with both runs'
+orders, and each order's lifecycle in both scenarios. The console has five sections:
+**Explore** (latency experiment at `/`, all experiments at `/experiments`) · **Research Studio** (Strategy Lab,
+Jobs & Sweeps, Reports; submitting needs an API key) · **Market Lab** (Datasets, Order Book Replay) ·
+**Execution Analysis** (Runs & Forensics, Comparisons, Risk & P&L) · **System** (worker, queue, readiness).
 
-> **Why did the strategy behave differently when latency, queue position, fees or risk limits
-> changed?**
+- **Event-complete replay.** Run timelines are cursor-paged and byte-bounded; a replay window is loaded completely
+  or labelled incomplete, never silently capped.
+- **ITCH 5.0 local reconstruction.** `blackbox itch-reconstruct` rebuilds the order-by-order (L3) book of every
+  stock in a NASDAQ ITCH file, checks its invariants, normalizes chosen symbols to Level 2 and writes a manifest.
+  Local use only.
+- **Synthetic-only hosted data.** The hosted service serves the generated `synthetic-demo` dataset; vendor and
+  exchange data stay on your machine (their terms do not allow hosting).
 
-It replays historical Level-2 market data through the [HftBacktest](https://github.com/nkaz001/hftbacktest)
-engine, records the complete lifecycle of every simulated order, explains each outcome with
-deterministic rules that cite their evidence, and compares scenarios decision by decision.
-
-**Research and simulation only.** BlackBox cannot connect to an exchange account, stores no
-trading credentials and cannot place an order. Everything it reports is simulated on historical
-replay; simulated orders do not affect historical prices. See [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+**Research and simulation only.** BlackBox cannot connect to an exchange account, stores no trading credentials and
+cannot place an order; simulated orders do not affect historical prices ([docs/LIMITATIONS.md](docs/LIMITATIONS.md)).
+Rebuild record: [docs/rebuild/](docs/rebuild/) (start with [FINAL_REVIEW.md](docs/rebuild/FINAL_REVIEW.md)).
 
 **Live system.** Console: **https://blackbox-hft.vercel.app** · API:
 **https://blackbox-hft-api.onrender.com/api/v1** (OpenAPI at `/api/v1/openapi.json`). Anonymous
@@ -29,28 +37,29 @@ start ~1 minute after idle). Architecture and limits: [docs/DEPLOYMENT.md](docs/
 
 ## What it does
 
-| Area | What you get |
+| Section | What you get |
 |---|---|
-| **Market Data Explorer / Order Book Lab** | Order-book heatmap reconstructed from L2 updates, best bid/ask, trades, a depth ladder, market microstructure metrics (spread, depth, imbalance, microprice, order-flow imbalance, realised volatility) and a data-quality report per dataset version. |
-| **Strategy Lab / Simulation Workbench** | Configure a strategy (touch maker, Avellaneda-Stoikov, GLFT, imbalance taker, scripted) and every execution assumption (exchange and queue model, constant / jittered / log-normal / heavy-tailed latency with separate cancel legs, think time, fees, risk limits, seed); submit it as a background job and follow it through queued, running and completed, or cancel it. |
-| **Execution Forensics** | Click any order and ask *why did this fill?* or *why did this not fill?* A two-clock timeline, the modeled queue trajectory, and a step-by-step explanation in which every statement is tagged Observed, Modeled, Derived or Unobservable. |
-| **Risk & Performance** | Equity, inventory, drawdown, fees and execution analytics (effective and realised spread, adverse selection, implementation shortfall, fill probability by queue position) with units and caveats; no annualised Sharpe on samples where it would be meaningless. |
-| **Experiment Comparison** | Comparison eligibility first (dataset, instrument, strategy, decision grid); then decision-aligned, timing-aware pair classes and the exact first divergence. `/api/v1/sweeps` accepts `SweepSpec` grid, seeded random and seed-ensemble designs, with optional in-/out-of-sample partitions. Reports include selection-bias caveats and, where available, backtest-overfitting estimates or per-seed dispersion and collapse reasons. |
-| **Research Reports / System** | Exportable reports with configuration fingerprint, dataset version hash, platform class and result hash; worker, queue and readiness status. |
+| **Explore** | `/`: the latency experiment as one guided page: the question, the answer, a P&L breakdown (net = realized + unrealized − fees, checked against the stored values before it is shown), equity, the first divergence, the replay and order lifecycles, and the model assumptions in plain words. Scenario, order and time live in the URL, so deep links and Back keep them. `/experiments`: the catalogue of curated demo experiments. |
+| **Research Studio** | **Strategy Lab** in Guided mode (strategy, order size, latency and fees, each explained) or Advanced mode: a strategy (touch maker, Avellaneda-Stoikov, GLFT, imbalance taker, scripted) and every execution assumption (exchange and queue model, constant / jittered / log-normal / heavy-tailed latency with separate cancel legs, think time, fees, risk limits, seed). **Jobs & Sweeps**: submit as a background job and follow it through queued, running and completed, or cancel it; `/api/v1/sweeps` accepts `SweepSpec` grid, seeded random and seed-ensemble designs, with optional in-/out-of-sample partitions. **Reports**: exportable, with configuration fingerprint, dataset version hash, platform class and result hash. |
+| **Market Lab** | **Datasets**: dataset identity and a data-quality report per version. **Order Book Replay**: heatmap reconstructed from L2 updates, best bid/ask, trades, a depth ladder and microstructure metrics (spread, depth, imbalance, microprice, order-flow imbalance, realised volatility), with a run's own orders and fills on the same clock. |
+| **Execution Analysis** | **Runs & Forensics**: click any order and ask *why did this fill?* or *why did this not fill?* A two-clock timeline, the modeled queue trajectory, and a step-by-step explanation in which every statement is tagged Observed, Modeled, Derived or Unobservable. **Comparisons**: eligibility first (dataset, instrument, strategy, decision grid), then decision-aligned, timing-aware pair classes and the exact first divergence; sweep reports include selection-bias caveats and, where available, backtest-overfitting estimates or per-seed dispersion. **Risk & P&L**: equity, inventory, drawdown, fees and execution analytics (effective and realised spread, adverse selection, implementation shortfall, fill probability by queue position) with units and caveats; no annualised Sharpe where it would be meaningless. |
+| **System** | Worker (idle / busy / not responding), queue and readiness status; admin tabs need a key. |
 
 ## Screens
 
 All screenshots show the generated **synthetic** dataset; vendor market data is never published.
-Every view is a workspace of one research workstation (rail on the left, inspector on the right,
-API state and the research disclaimer in the status bar).
+Apart from the latency experiment, they were taken before the rebuild and show the earlier navigation shell
+(two-letter rail codes, inspector open); the current rail is labelled by section and the inspector starts closed.
+More current screenshots: [docs/rebuild/img/](docs/rebuild/img/).
 
 | | |
 |---|---|
-| ![Order Book Lab: reconstructed book with the run's own resting orders and simulated fills](docs/screenshots/terminal.png) **Order Book Lab (with run)**: the book reconstructed from L2 updates, with the run's own orders and simulated fills on one playback clock. | ![Execution Forensics: two-clock timeline, modeled queue position and explanation](docs/screenshots/forensics.png) **Execution Forensics (order)**: why one order filled, on the strategy and exchange clocks, with its modeled queue position. |
-| ![Overview with the three canonical experiments and system state](docs/screenshots/mission.png) **Overview**: three controlled experiments, recent runs and API state. | ![Experiment Comparison, Set: 1 ms versus 50 ms order latency](docs/screenshots/latency.png) **Experiment Comparison (Set)**: the same strategy at 1 ms and 50 ms order latency, aligned decision by decision. |
-| ![Experiment Comparison, Pair](docs/screenshots/compare.png) **Experiment Comparison (Pair)** | ![Experiment Comparison, Sweep](docs/screenshots/grid.png) **Experiment Comparison (Sweep)**: every cell is one stored simulation. |
-| ![Order Book Lab, market only: heatmap and depth ladder](docs/screenshots/replay.png) **Order Book Lab (market only)** | ![Market Data Explorer: dataset identity and quality](docs/screenshots/datasets.png) **Market Data Explorer** |
-| ![Execution Forensics: run blotter, metrics and charts](docs/screenshots/run.png) **Execution Forensics (run)** | ![Strategy Lab](docs/screenshots/lab.png) **Strategy Lab** |
+| ![The public latency experiment at /: question, answer and P&L breakdown](docs/rebuild/img/final-1440-landing.webp) **Latency experiment (`/`)**: 1 ms versus 50 ms order latency, answer first. | ![Latency experiment: first divergence in the replay](docs/rebuild/img/final-1440-first-divergence.webp) **Latency experiment, first divergence**: the replay jumps to the first order whose timing differs. |
+| ![Order Book Replay: reconstructed book with the run's own resting orders and simulated fills](docs/screenshots/terminal.png) **Order Book Replay (with run)**: the book reconstructed from L2 updates, with the run's own orders and simulated fills on one playback clock. | ![Runs & Forensics: two-clock timeline, modeled queue position and explanation](docs/screenshots/forensics.png) **Runs & Forensics (order)**: why one order filled, on the strategy and exchange clocks, with its modeled queue position. |
+| ![Comparisons, Set: 1 ms versus 50 ms order latency](docs/screenshots/latency.png) **Comparisons (Set)**: the same strategy at 1 ms and 50 ms order latency, aligned decision by decision. | ![Comparisons, Pair](docs/screenshots/compare.png) **Comparisons (Pair)** |
+| ![Comparisons, Sweep](docs/screenshots/grid.png) **Comparisons (Sweep)**: every cell is one stored simulation. | ![Order Book Replay, market only: heatmap and depth ladder](docs/screenshots/replay.png) **Order Book Replay (market only)** |
+| ![Datasets: dataset identity and quality](docs/screenshots/datasets.png) **Datasets** | ![Runs & Forensics: run blotter, metrics and charts](docs/screenshots/run.png) **Runs & Forensics (run)** |
+| ![Strategy Lab](docs/screenshots/lab.png) **Strategy Lab** | |
 
 ## The flight recorder
 
@@ -197,6 +206,7 @@ explains the concepts from scratch and has a five-minute demo script.
 | [API.md](docs/API.md) | HTTP API |
 | [BUILDING.md](docs/BUILDING.md) | Build requirements and Windows notes |
 | [INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md) | Concepts explained from scratch, and a demo script |
+| [rebuild/](docs/rebuild/) | The product rebuild: [FINAL_REVIEW](docs/rebuild/FINAL_REVIEW.md), tracker, baseline, prototype review, validation, latency sensitivity, performance, security review, reuse matrix |
 
 ## Acknowledgements
 
