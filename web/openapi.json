@@ -3033,6 +3033,8 @@
         "tags": [
           "runs"
         ],
+        "summary": "Everything that happened in a window, for the timeline view, cursor-paged over its events.",
+        "description": "Events are paged in tape `seq` order (a stable unique key, so equal timestamps never split\nor repeat across pages); follow `next_cursor` until it is `null` to get every event counted\nby `events_total`. A page holds at most `max_events` events and fits the caller's response\ncap (anonymous: 1 MiB): it ends early with `truncated_by = \"bytes\"` instead of failing.\n`fills`, `equity` and `orders` are sent on the first page (no `cursor`) only and are empty\non `cursor` pages; when they alone exceed the cap the request is refused with 400\n`invalid_request` (`details.reason = \"window_too_large\"`): request a shorter window.",
         "operationId": "timeline",
         "parameters": [
           {
@@ -3054,6 +3056,7 @@
           {
             "name": "t0_ns",
             "in": "query",
+            "description": "Inclusive window start (default: run start).",
             "required": false,
             "schema": {
               "type": "string"
@@ -3062,6 +3065,7 @@
           {
             "name": "t1_ns",
             "in": "query",
+            "description": "Inclusive window end (default: `min(run end, t0 + 60 s)`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -3070,12 +3074,21 @@
           {
             "name": "max_events",
             "in": "query",
-            "description": "≤ 50000, default 5000.",
+            "description": "Events per page: default 5000, values above 50000 are capped. `0` returns no events\n(counts and context only) with `next_cursor` at the window's first event.",
             "required": false,
             "schema": {
               "type": "integer",
               "format": "int32",
               "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page; `t0_ns`, `t1_ns` and `platform` must be unchanged.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3085,6 +3098,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunTimeline"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -12152,7 +12174,7 @@
       },
       "RunTimeline": {
         "type": "object",
-        "description": "Everything that happened in a window, for the timeline view.",
+        "description": "One page of everything that happened in a window, for the timeline view.",
         "required": [
           "run_id",
           "dataset_id",
@@ -12174,30 +12196,42 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/EquitySample"
-            }
+            },
+            "description": "Samples in the window plus the last one before `t0_ns`. First page only."
           },
           "events": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/FlightEvent"
-            }
+            },
+            "description": "This page's tape events with `ts` in `[t0_ns, t1_ns]` (either clock), in `seq` order,\ncontinuing after the previous page."
           },
           "events_total": {
             "type": "integer",
             "format": "int64",
+            "description": "Events of the whole window, over all pages.",
             "minimum": 0
           },
           "fills": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/FillRecord"
-            }
+            },
+            "description": "Fills with exchange ts in the window. First page only (empty on `cursor` pages)."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` for the window's next events; `null` when this page ends the window."
           },
           "orders": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OrderRecord"
-            }
+            },
+            "description": "Orders alive at some point in the window, ascending `order_id`. First page only."
           },
           "run_end_ns": {
             "type": "string"
@@ -12217,7 +12251,8 @@
           "truncated_by": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/TruncatedBy"
+                "$ref": "#/components/schemas/TruncatedBy",
+                "description": "Why this page stopped before the window's last event: `limit` (`max_events`) or `bytes`\n(the response cap). `null` exactly when `next_cursor` is `null`."
               },
               {
                 "type": "null"

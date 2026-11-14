@@ -167,9 +167,10 @@ export const api = {
     }).then(normalize.equity),
   tape: (id: string, q: { from_seq?: number; order_id?: number; limit?: number; cursor?: string | null } = {}, o: Opts = {}) =>
     request<W.CursorPage<FlightEvent>>('GET', `/runs/${enc(id)}/tape`, { query: q, ...o }).then(normalize.tape),
-  timeline: (id: string, q: { t0?: number | null; t1?: number | null; max_events?: number } = {}, o: Opts = {}) =>
+  /** One page of a window's timeline; follow `next_cursor` (same `t0`/`t1`) for the rest of its events. */
+  timeline: (id: string, q: { t0?: number | null; t1?: number | null; max_events?: number; cursor?: string | null } = {}, o: Opts = {}) =>
     request<W.RunTimeline>('GET', `/runs/${enc(id)}/timeline`, {
-      query: { t0_ns: nsQ(q.t0), t1_ns: nsQ(q.t1), max_events: q.max_events },
+      query: { t0_ns: nsQ(q.t0), t1_ns: nsQ(q.t1), max_events: q.max_events, cursor: q.cursor },
       ...o,
     }).then(normalize.timeline),
   /** The deterministic research report of a run (`text/markdown`). */

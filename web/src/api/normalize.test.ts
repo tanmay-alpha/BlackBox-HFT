@@ -75,7 +75,7 @@ describe('normalize: ns strings', () => {
         { seq: 1, ts: '2', clock: 'exchange', source: 'engine', order_id: 1, body: { type: 'local_response', exch_ts: '3' } },
       ],
       events_total: 2,
-      events_truncated: false,
+      next_cursor: null,
       fills: [],
       equity: [],
       orders: [],
@@ -84,6 +84,7 @@ describe('normalize: ns strings', () => {
     expect(t.events[0].body).toMatchObject({ entry_latency_ns: 1_000_000, exch_arrival_ts: 1_000_001 });
     expect(t.events[1].body).toMatchObject({ exch_ts: 3 });
     expect(t.t1).toBe(5);
+    expect([t.events_truncated, t.next_cursor]).toEqual([false, null]);
   });
 
   it('keeps absolute epoch ns as validated strings and converts relative span fields', () => {

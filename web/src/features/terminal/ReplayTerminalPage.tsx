@@ -1,8 +1,8 @@
 // Order Book Lab, with run (UI_DESIGN_SPEC.md §11.3): one playback clock drives the dataset book
 // heatmap with the run's own simulated orders on top, the depth ladder, the account state, the
 // flight-recorder event log and the selected order's lifecycle. Data is fetched in windows of at
-// most 60 s around the cursor and refetched when the cursor leaves the window; the whole run is
-// never loaded.
+// most 10 s around the cursor (every timeline page of the window, see `timelinePaging.ts`) and
+// refetched when the cursor leaves the window; the whole run is never loaded.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
@@ -49,17 +49,30 @@ import { EventLog, lastEventAtOrBefore } from './EventLog';
 import { ordersRestingAt } from './overlay';
 import { TerminalHeatmap } from './TerminalHeatmap';
 import { TerminalLadder } from './TerminalLadder';
+import { fetchTimelineWindow } from './timelinePaging';
+import type { TimelineProgress } from './timelinePaging';
 import '../replay/replay.css';
 import './terminal.css';
 
 const NS_PER_S = 1_000_000_000;
-/** Longest span fetched per request. */
-const WINDOW_NS = 60 * NS_PER_S;
+/**
+ * Longest span fetched per request. 10 s keeps a window's fills, equity and orders (sent once,
+ * on its first timeline page) far below the anonymous 1 MiB response cap: on the 120 s demo
+ * run a 10 s window carries ~2.2k tape events and ~0.2 MB of context (~0.8 MB in total, so
+ * usually one page), while a 60 s window's context alone exceeds 1 MiB. It also bounds a
+ * seek's download to about a second on a slow link.
+ *
+ * Window bounds and every ts are RelNs: ns relative to the dataset's `origin_ns`, not epoch ns.
+ * Datasets span minutes to hours (the demo run: 0.1 s to 120.1 s), far below 2^53 ns (~104
+ * days), so they are exact JS numbers; the normalizer (`nsToSafeNumber`) rejects any that is not.
+ */
+const WINDOW_NS = 10 * NS_PER_S;
 /** Where the cursor sits inside a window fetched while moving forward. */
-const LEAD_NS = 5 * NS_PER_S;
+const LEAD_NS = 2 * NS_PER_S;
 const LEVELS = 25;
 const MAX_TRADES = 5000;
-const MAX_EVENTS = 5000;
+/** Events per timeline page (the server's default); a window takes as many pages as it needs. */
+const PAGE_EVENTS = 5000;
 const LADDER_ROWS = 10;
 const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 5, 20];
 
@@ -221,6 +234,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<unknown>(null);
+  const [progress, setProgress] = useState<TimelineProgress | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -238,13 +252,15 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
   const [tab, setTab] = useState<BottomTab>('events');
 
   // ----- window loading ------------------------------------------------------------------
-  // No time or order requested: start at the run start, learned from a count-only timeline call.
+  // No time or order requested: start at the run start, learned from a count-only timeline call
+  // over the empty-width window at the dataset start (its fills/equity/orders are tiny; the
+  // default 60 s window's may exceed the anonymous response cap).
   useEffect(() => {
     if (!wantDefault || win !== null) return;
     const ctl = new AbortController();
     setLoading(true);
     setLoadError(null);
-    api.timeline(runId, { max_events: 0 }, { signal: ctl.signal }).then(
+    api.timeline(runId, { t0: ds.start, t1: ds.start, max_events: 0 }, { signal: ctl.signal }).then(
       (tl) => {
         if (ctl.signal.aborted) return;
         const t = clampT(tl.run_start);
@@ -260,24 +276,38 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
     return () => ctl.abort();
   }, [runId, ds, wantDefault, win, clampT, reloadNonce]);
 
+  // Each window loads all of its timeline pages, one after another, next to its book replay.
+  // A new window (seek, playback, jump) or run aborts the previous load before any of its
+  // pages lands, so windows and runs never mix and a partial window is never shown.
   useEffect(() => {
     if (win === null) return;
     const ctl = new AbortController();
     setLoading(true);
     setLoadError(null);
+    setProgress(null);
     Promise.all([
-      api.timeline(runId, { t0: win.t0, t1: win.t1, max_events: MAX_EVENTS }, { signal: ctl.signal }),
+      fetchTimelineWindow(
+        win,
+        (cursor, signal) => api.timeline(runId, { t0: win.t0, t1: win.t1, max_events: PAGE_EVENTS, cursor }, { signal }),
+        ctl.signal,
+        (p) => {
+          if (!ctl.signal.aborted) setProgress(p);
+        },
+      ),
       api.replay(ds.id, { t0: win.t0, t1: win.t1, levels: LEVELS, max_trades: MAX_TRADES }, { signal: ctl.signal, version: run.dataset.version }),
     ]).then(
       ([tl, rp]) => {
         if (ctl.signal.aborted) return;
         setLoaded({ win, tl, rp });
         setLoading(false);
+        setProgress(null);
       },
       (e: unknown) => {
         if (ctl.signal.aborted) return;
+        ctl.abort(); // stop the sibling request
         setLoadError(e);
         setLoading(false);
+        setProgress(null);
       },
     );
     return () => ctl.abort();
@@ -572,6 +602,12 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
   const sample = tl && sampleIdx >= 0 ? tl.equity[sampleIdx] : null;
   const cursorInWindow = loaded !== null && cur >= loaded.win.t0 && cur <= loaded.win.t1;
   const marketQuery = loaded ? { t0: loaded.win.t0, len: loaded.win.t1 - loaded.win.t0, levels: LEVELS } : null;
+  // The event log only switches to a window once all of its pages arrived; until then the
+  // label counts them.
+  const loadingLabel =
+    progress === null
+      ? `Loading ${loaded ? 'window' : 'the first window'}`
+      : `Loading window events ${fmtInt(progress.loaded)} / ${fmtInt(progress.total)}`;
 
   const toolbar = (
     <>
@@ -614,7 +650,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       <span className="book-cursor" title="Exchange clock">
         cursor <ClockText ns={cursor === null ? null : Math.round(cursor)} /> <span className="dim">exch</span>
       </span>
-      {loading ? <Spinner label="Loading window" /> : null}
+      {loading ? <Spinner label={loadingLabel} /> : null}
       <ToolbarDivider />
       <form className="row" onSubmit={submitJump} aria-label="Jump to time">
         <label className="book-field" htmlFor="term-jump">
@@ -703,7 +739,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
         {loadError ? (
           <ErrorBox error={loadError} onRetry={() => setReloadNonce((n) => n + 1)} />
         ) : (
-          <Spinner label="Loading the first window" />
+          <Spinner label={loadingLabel} />
         )}
         {jumpError ? <ErrorBox error={jumpError} /> : null}
       </div>
@@ -891,17 +927,6 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
         ) : null}
         {loadError ? <ErrorBox error={loadError} onRetry={() => setReloadNonce((n) => n + 1)} /> : null}
         {jumpError ? <ErrorBox error={jumpError} /> : null}
-        {tl.events_truncated ? (
-          <Notice tag="TRUNCATED">
-            This window holds {fmtInt(tl.events_total)} tape events; only the earliest {fmtInt(tl.events.length)} were
-            returned. Later events in this window are missing from the log and from event stepping.
-          </Notice>
-        ) : null}
-        {tl.truncated_by === 'bytes' ? (
-          <Notice tag="TRUNCATED">
-            The server&apos;s response size limit ended this window&apos;s timeline early; {fmtInt(tl.events.length)} tape events were returned.
-          </Notice>
-        ) : null}
         {rp.trades_truncated ? (
           <Notice tag="TRUNCATED">
             More than {fmtInt(MAX_TRADES)} market trades in this window; only the {fmtInt(rp.trades.ts.length)} largest are
