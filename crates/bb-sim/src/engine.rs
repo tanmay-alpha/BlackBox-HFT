@@ -27,6 +27,7 @@ use hftbacktest::{
 
 use crate::{
     SimError, SimInput,
+    latency::{Leg, StochasticLatency},
     procs::{RecExch, RecLocal},
     tape::Tape,
     taps::{F64Probe, JitterLatency, LatencyKind, QueuePosProbe, TapFee, TapLatency, TapQueue},
@@ -133,6 +134,26 @@ where
             entry_ns,
             response_ns,
             jitter_ns,
+            cfg.seed,
+        )),
+        OrderLatencyConfig::LogNormal {
+            entry,
+            response,
+            cancel,
+        } => LatencyKind::Stochastic(StochasticLatency::new(
+            Leg::LogNormal(entry),
+            cancel.map(Leg::LogNormal),
+            Leg::LogNormal(response),
+            cfg.seed,
+        )),
+        OrderLatencyConfig::HeavyTail {
+            entry,
+            response,
+            cancel,
+        } => LatencyKind::Stochastic(StochasticLatency::new(
+            Leg::Cubic(entry),
+            cancel.map(Leg::Cubic),
+            Leg::Cubic(response),
             cfg.seed,
         )),
     };

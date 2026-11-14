@@ -488,6 +488,42 @@ fn latency_model_clause(model: &OrderLatencyConfig) -> String {
             dur(*response_ns),
             dur(*jitter_ns)
         ),
+        OrderLatencyConfig::LogNormal {
+            entry,
+            response,
+            cancel,
+        } => format!(
+            "seeded log-normal: entry median {} (sigma {}), cancel entry {}, response median {} \
+             (sigma {})",
+            dur(entry.median_ns),
+            entry.sigma,
+            cancel.map_or_else(
+                || "as entry".to_string(),
+                |c| format!("median {} (sigma {})", dur(c.median_ns), c.sigma)
+            ),
+            dur(response.median_ns),
+            response.sigma
+        ),
+        OrderLatencyConfig::HeavyTail {
+            entry,
+            response,
+            cancel,
+        } => format!(
+            "seeded heavy-tailed (ABIDES cubic): entry at least {} and at most {}, cancel entry {}, \
+             response at least {} and at most {}",
+            dur(entry.min_ns),
+            dur(entry.max_ns() as i64),
+            cancel.map_or_else(
+                || "as entry".to_string(),
+                |c| format!(
+                    "at least {} and at most {}",
+                    dur(c.min_ns),
+                    dur(c.max_ns() as i64)
+                )
+            ),
+            dur(response.min_ns),
+            dur(response.max_ns() as i64)
+        ),
     }
 }
 

@@ -84,6 +84,11 @@ pub(crate) struct Inner {
     /// Cancel requests sent and not yet answered locally, per order. A cancel is answered by
     /// exactly one response: `Canceled`, or a rejection when the order was already gone.
     cancels_in_flight: BTreeMap<u64, u32>,
+    /// Executions the engine's local account applied for responses that report none: 0.9.4's
+    /// `Local::process_recv_order_` applies every response whose status is `Filled`, including
+    /// the rejection of a cancel that lost the race against that fill, so its account counts
+    /// that fill twice. Used only to explain the engine cross-check.
+    engine_refills: u64,
 }
 
 /// Cheap handle shared by the engine hooks and the harness. Single-threaded by construction: the
@@ -109,6 +114,7 @@ impl Tape {
             unreleased: BTreeMap::new(),
             pending_reset: BTreeMap::new(),
             cancels_in_flight: BTreeMap::new(),
+            engine_refills: 0,
         })))
     }
 
@@ -417,6 +423,16 @@ impl Tape {
     /// A cancel for this order has been sent and its answer has not reached the local side.
     pub fn cancel_in_flight(&self, order_id: u64) -> bool {
         self.0.borrow().cancels_in_flight.contains_key(&order_id)
+    }
+
+    /// Records executions the engine's local account applied a second time (see
+    /// `Inner::engine_refills`).
+    pub fn engine_refills_add(&self, n: u64) {
+        self.0.borrow_mut().engine_refills += n;
+    }
+
+    pub fn engine_refills(&self) -> u64 {
+        self.0.borrow().engine_refills
     }
 
     /// Appends one `QueueTruncated` marker per order that had updates dropped, then returns the

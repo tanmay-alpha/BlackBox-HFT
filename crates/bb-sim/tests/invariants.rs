@@ -9,15 +9,16 @@ use std::collections::BTreeMap;
 use bb_core::{
     Clock, OrderStatus, ReqKind, Side,
     config::{
-        AvellanedaStoikovParams, ExchangeModel, ImbalanceTakerParams, OrderLatencyConfig,
-        QueueModelConfig, RunConfig, StrategyConfig, StrategyKind, TouchMakerParams,
+        AvellanedaStoikovParams, CubicLeg, ExchangeModel, GlftParams, ImbalanceTakerParams,
+        LogNormalLeg, OrderLatencyConfig, QueueModelConfig, RunConfig, SigmaSource, StrategyConfig,
+        StrategyKind, TouchMakerParams,
     },
     flight::{FlightBody, FlightEvent, QueueCause},
     hash::sha256_json,
     rng::Rng,
 };
 use bb_sim::{Event, SimInput, SimOutput, simulate};
-use common::{INST, MS, ORIGIN, US};
+use common::{INST, MS, ORIGIN, US, check_causality};
 use hftbacktest::types::{
     BUY_EVENT, DEPTH_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT,
 };
@@ -157,6 +158,15 @@ fn strategies() -> Vec<StrategyKind> {
             gamma: 0.2,
             kappa: 2.0,
             horizon_s: 1.0,
+            vol_halflife_ticks: 20,
+        }),
+        StrategyKind::Glft(GlftParams {
+            order_qty: 5.0 * LOT,
+            max_position: 40.0 * LOT,
+            gamma: 0.2,
+            kappa: 2.0,
+            intensity_a: 1.0,
+            sigma_source: SigmaSource::WeightedMid,
             vol_halflife_ticks: 20,
         }),
         StrategyKind::ImbalanceTaker(ImbalanceTakerParams {
@@ -419,9 +429,19 @@ fn check_invariants(out: &SimOutput, cfg: &RunConfig, what: &str) {
         );
     }
 
-    // With one Filled response per execution the engine's own account must match the ledger.
+    // With one Filled response per execution the engine's own account must match the ledger,
+    // except for the engine's documented double count of a fill whose cancel lost the race
+    // (defect 6), which the cross-check identifies by exact count.
     if cfg.execution.exchange_model == ExchangeModel::NoPartialFill {
-        assert!(out.engine_check.agrees, "{what}: {:?}", out.engine_check);
+        let c = &out.engine_check;
+        assert!(
+            c.agrees
+                || (c
+                    .note
+                    .starts_with("Expected: The engine's local account also applied")
+                    && c.engine_num_trades > c.ledger_fills as i64),
+            "{what}: {c:?}"
+        );
     }
 }
 
@@ -436,16 +456,58 @@ fn bundled_strategies_obey_the_tape_grammar_under_every_model() {
         QueueModelConfig::PowerProb2 { n: 2.0 },
         QueueModelConfig::PowerProb3 { n: 3.0 },
     ];
+    // (order latency, think time)
     let latencies = [
-        OrderLatencyConfig::Constant {
-            entry_ns: 800 * US,
-            response_ns: 800 * US,
-        },
-        OrderLatencyConfig::Jitter {
-            entry_ns: 2 * MS,
-            response_ns: 2 * MS,
-            jitter_ns: 9 * MS,
-        },
+        (
+            OrderLatencyConfig::Constant {
+                entry_ns: 800 * US,
+                response_ns: 800 * US,
+            },
+            0,
+        ),
+        (
+            OrderLatencyConfig::Jitter {
+                entry_ns: 2 * MS,
+                response_ns: 2 * MS,
+                jitter_ns: 9 * MS,
+            },
+            0,
+        ),
+        (
+            OrderLatencyConfig::LogNormal {
+                entry: LogNormalLeg {
+                    median_ns: 2 * MS,
+                    sigma: 0.8,
+                },
+                response: LogNormalLeg {
+                    median_ns: MS,
+                    sigma: 0.5,
+                },
+                cancel: Some(LogNormalLeg {
+                    median_ns: 500 * US,
+                    sigma: 0.3,
+                }),
+            },
+            0,
+        ),
+        (
+            OrderLatencyConfig::HeavyTail {
+                entry: CubicLeg {
+                    min_ns: MS,
+                    jitter: 0.5,
+                    clip: 0.1,
+                    unit: 10.0,
+                },
+                response: CubicLeg {
+                    min_ns: 500 * US,
+                    jitter: 0.5,
+                    clip: 0.2,
+                    unit: 10.0,
+                },
+                cancel: None,
+            },
+            2 * MS,
+        ),
     ];
     let mut any_maker_fill = false;
     let mut any_taker_fill = false;
@@ -453,19 +515,21 @@ fn bundled_strategies_obey_the_tape_grammar_under_every_model() {
     for kind in strategies() {
         for exchange_model in [ExchangeModel::NoPartialFill, ExchangeModel::PartialFill] {
             for queue_model in queue_models {
-                for order_latency in latencies {
+                for (order_latency, think) in latencies {
                     let mut cfg = base_config(kind.clone());
                     cfg.execution.exchange_model = exchange_model;
                     cfg.execution.queue_model = queue_model;
                     cfg.execution.order_latency = order_latency;
+                    cfg.execution.think_time_ns = think;
                     let what = format!(
-                        "{} / {exchange_model:?} / {} / {order_latency:?}",
+                        "{} / {exchange_model:?} / {} / {order_latency:?} / think {think}",
                         kind.label(),
                         queue_model.label()
                     );
                     let out = run(&rows, &cfg);
                     assert!(out.ticks > 1_000, "{what}: only {} ticks", out.ticks);
                     check_invariants(&out, &cfg, &what);
+                    check_causality(&out, &cfg);
                     any_maker_fill |= out.fills.iter().any(|f| f.maker);
                     any_taker_fill |= out.fills.iter().any(|f| !f.maker);
                     any_partial |= out.tape.iter().any(|e| {

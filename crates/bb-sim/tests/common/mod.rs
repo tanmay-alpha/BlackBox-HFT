@@ -116,6 +116,7 @@ pub fn config() -> RunConfig {
                 entry_ns: ENTRY,
                 response_ns: RESPONSE,
             },
+            think_time_ns: 0,
             feed_latency_offset_ns: 0,
             fees: FeeConfig {
                 maker: MAKER_FEE,
@@ -300,4 +301,79 @@ pub fn try_run(
         },
         Box::new(Script::new(acts)),
     )
+}
+
+/// Causality of the order path, per order and in tape order:
+/// * every request leaves exactly `think_time_ns` after the decision that made it;
+/// * nothing happens to an order at the exchange before its new-order request can have arrived
+///   (send time plus the drawn entry latency), and no cancel outcome (accepted or rejected) is
+///   recorded before the cancel can have arrived. The order bus may only delay arrivals further.
+pub fn check_causality(out: &SimOutput, cfg: &RunConfig) {
+    use bb_core::{Clock, OrderStatus, ReqKind};
+    use std::collections::BTreeMap;
+
+    let think = cfg.execution.think_time_ns;
+    let mut orders = BTreeMap::<u64, Vec<&FlightEvent>>::new();
+    for e in &out.tape {
+        if let Some(id) = e.order_id {
+            orders.entry(id).or_default().push(e);
+        }
+    }
+    for (id, events) in orders {
+        let mut decided: Option<i64> = None;
+        let mut new_arrival: Option<i64> = None;
+        // Several cancels can be in flight (one sent after a fill notice, say); the order bus
+        // delivers them, and the exchange answers them, in send order.
+        let mut cancel_arrivals = std::collections::VecDeque::<i64>::new();
+        for e in events {
+            match e.body {
+                FlightBody::OrderIntent { .. } | FlightBody::CancelIntent { .. } => {
+                    decided = Some(e.ts);
+                }
+                FlightBody::RequestSent {
+                    req,
+                    entry_latency_ns,
+                    ..
+                } => {
+                    let decision = decided.expect("a request without a decision");
+                    assert_eq!(
+                        e.ts,
+                        decision + think,
+                        "order {id}: sent {} ns after its decision, think time is {think}",
+                        e.ts - decision
+                    );
+                    assert!(entry_latency_ns >= 0);
+                    match req {
+                        ReqKind::New => new_arrival = Some(e.ts + entry_latency_ns),
+                        ReqKind::Cancel => cancel_arrivals.push_back(e.ts + entry_latency_ns),
+                        other => panic!("order {id}: unexpected request {other:?}"),
+                    }
+                }
+                FlightBody::ExchResponse {
+                    status,
+                    request_rejected,
+                    ..
+                } if request_rejected || status == OrderStatus::Canceled => {
+                    let arrival = cancel_arrivals
+                        .pop_front()
+                        .expect("a cancel outcome without a cancel in flight");
+                    assert!(
+                        e.ts >= arrival,
+                        "order {id}: cancel outcome at {} before the cancel arrived at {arrival}",
+                        e.ts
+                    );
+                }
+                _ if e.clock == Clock::Exchange => {
+                    let arrival = new_arrival.expect("exchange activity without a request");
+                    assert!(
+                        e.ts >= arrival,
+                        "order {id}: {} at {} before the order arrived at {arrival}",
+                        e.body.type_name(),
+                        e.ts
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
 }

@@ -1,7 +1,7 @@
 //! Standalone research report rendering; no simulated result is presented as a live execution.
 
 use bb_core::{
-    config::{ExchangeModel, OrderLatencyConfig},
+    config::ExchangeModel,
     dataset::{DatasetManifest, LocalTsProvenance},
     result::RunResult,
 };
@@ -29,21 +29,13 @@ pub(crate) fn markdown(run: &RunResult, dataset: &DatasetManifest) -> Result<Str
             "Partial-fill model: resting fills depend on traded quantity beyond the modeled queue ahead; taking fills use displayed levels without changing replayed depth."
         }
     };
-    let latency = match c.execution.order_latency {
-        OrderLatencyConfig::Constant {
-            entry_ns,
-            response_ns,
-        } => format!(
-            "Constant modeled order latency: entry {entry_ns} ns; response {response_ns} ns."
-        ),
-        OrderLatencyConfig::Jitter {
-            entry_ns,
-            response_ns,
-            jitter_ns,
-        } => format!(
-            "BlackBox seeded jitter model: base entry {entry_ns} ns and response {response_ns} ns, each plus a draw from 0 through {jitter_ns} ns. Messages never overtake."
-        ),
-    };
+    let mut latency = c.execution.order_latency.describe();
+    if c.execution.think_time_ns > 0 {
+        latency.push_str(&format!(
+            " Strategy think time {} ns: each request leaves {} ns after the decision that made it.",
+            c.execution.think_time_ns, c.execution.think_time_ns
+        ));
+    }
     let local = match dataset.timestamps.local_ts {
         LocalTsProvenance::Measured => {
             "Receipt timestamps were measured at the vendor's capture host, not the strategy user's location."

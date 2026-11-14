@@ -446,7 +446,7 @@ fn every_preset_validates_and_executes() {
     let dir = TempDir::new("presets");
     let ctx = make_dataset(&dir);
     let catalogue = presets::presets(ctx.manifest());
-    assert_eq!(catalogue.len(), 7);
+    assert_eq!(catalogue.len(), 10);
     let ids: BTreeSet<&str> = catalogue.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids.len(), catalogue.len(), "preset ids must be unique");
 

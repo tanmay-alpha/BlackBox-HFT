@@ -17,6 +17,7 @@
 
 mod control;
 mod engine;
+mod latency;
 mod ledger;
 mod procs;
 mod queue_probe;
@@ -161,9 +162,11 @@ pub fn simulate_with(
         open: Vec::new(),
         trades: Vec::new(),
         intents: Vec::new(),
+        outbox: Vec::new(),
     };
 
     let interval = cfg.strategy.interval_ns;
+    let think = cfg.execution.think_time_ns;
     let sample_every = cfg.record.sample_every_ticks as u64;
     let check_every = budget.progress_every_ticks.max(1);
     // Predicted for progress reports only; the loop's own end condition decides.
@@ -172,10 +175,14 @@ pub fn simulate_with(
     let mut tick_no: u64 = 0;
     // Local time of the most recent evaluated tick.
     let mut last_tick_abs: Option<i64> = None;
+    // Engine time to advance before the next tick: one interval, less the think time already
+    // elapsed after a decision, so the decision grid never moves.
+    let mut step = interval;
     loop {
-        if hbt.elapse(interval).map_err(engine_err)? == ElapseResult::EndOfData {
+        if hbt.elapse(step).map_err(engine_err)? == ElapseResult::EndOfData {
             break;
         }
+        step = interval;
         let now_abs = hbt.current_timestamp();
         if now_abs > data_end {
             break;
@@ -189,6 +196,16 @@ pub fn simulate_with(
         if tick_no == next_check {
             next_check += check_every;
             run.checkpoint(budget, control, tick_no, ticks_predicted.max(tick_no))?;
+        }
+        // Think time: the engine (market data, responses, fills) runs on while the host
+        // computes; the requests decided at `now_abs` leave at `now_abs + think`. If the data ends
+        // first they are never sent, like any decision after the end of the data.
+        if !run.outbox.is_empty() {
+            if hbt.elapse(think).map_err(engine_err)? == ElapseResult::EndOfData {
+                break;
+            }
+            run.flush(&mut hbt);
+            step = interval - think;
         }
     }
     // The final `elapse` processed whatever data and order events followed the last tick, which
@@ -235,6 +252,25 @@ struct Harness<'a> {
     open: Vec<OpenOrder>,
     trades: Vec<TradePrint>,
     intents: Vec<Intent>,
+    /// Requests decided on the current tick and waiting for the think time to elapse. Always
+    /// empty when `think_time_ns` is zero: requests are then sent as they are decided.
+    outbox: Vec<Outgoing>,
+}
+
+/// A request that passed the pre-trade checks, ready for the engine.
+#[derive(Copy, Clone, Debug)]
+enum Outgoing {
+    New {
+        id: u64,
+        side: Side,
+        price_tick: i64,
+        qty: f64,
+        tif: Tif,
+        ord_type: OrdType,
+    },
+    Cancel {
+        id: u64,
+    },
 }
 
 impl Harness<'_> {
@@ -458,38 +494,27 @@ impl Harness<'_> {
                         );
                         continue;
                     }
-                    let price = self.inst.price(*price_tick);
-                    let h_tif = match tif {
-                        Tif::Gtc => TimeInForce::GTC,
-                        Tif::Gtx => TimeInForce::GTX,
-                        Tif::Ioc => TimeInForce::IOC,
-                        Tif::Fok => TimeInForce::FOK,
+                    let request = Outgoing::New {
+                        id,
+                        side: *side,
+                        price_tick: *price_tick,
+                        qty: *qty,
+                        tif: *tif,
+                        ord_type: *ord_type,
                     };
-                    let h_type = match ord_type {
-                        OrdType::Limit => HOrdType::Limit,
-                        OrdType::Market => HOrdType::Market,
+                    // With think time the host commits to the request now, so it counts
+                    // against the limits of this tick's later intents, and sends it later.
+                    let committed = if self.cfg.execution.think_time_ns == 0 {
+                        self.send(hbt, &request, now_abs)
+                    } else {
+                        self.outbox.push(request);
+                        true
                     };
-                    // `submit_order(OrderRequest)` is deliberately not used: in 0.9.4 it ignores
-                    // the requested side.
-                    let sent = match side {
-                        Side::Buy => {
-                            hbt.submit_buy_order(ASSET, id, price, *qty, h_tif, h_type, false)
-                        }
-                        Side::Sell => {
-                            hbt.submit_sell_order(ASSET, id, price, *qty, h_tif, h_type, false)
-                        }
-                    };
-                    match sent {
-                        Ok(_) => {
-                            open_count += 1;
-                            match side {
-                                Side::Buy => working_buy += qty,
-                                Side::Sell => working_sell += qty,
-                            }
-                        }
-                        Err(e) => {
-                            self.tape
-                                .request_refused(now_abs, id, ReqKind::New, e.to_string())
+                    if committed {
+                        open_count += 1;
+                        match side {
+                            Side::Buy => working_buy += qty,
+                            Side::Sell => working_sell += qty,
                         }
                     }
                 }
@@ -507,15 +532,80 @@ impl Harness<'_> {
                             known_position,
                         },
                     );
-                    if let Err(e) = hbt.cancel(ASSET, *id, false) {
-                        self.tape
-                            .request_refused(now_abs, *id, ReqKind::Cancel, e.to_string());
+                    let request = Outgoing::Cancel { id: *id };
+                    if self.cfg.execution.think_time_ns == 0 {
+                        self.send(hbt, &request, now_abs);
+                    } else {
+                        self.outbox.push(request);
                     }
                 }
             }
         }
         self.intents = intents;
         Ok(())
+    }
+
+    /// Hands one request to the engine at the engine's current time, recording a synchronous
+    /// refusal on the tape. Returns whether the engine took it.
+    fn send(&self, hbt: &mut Backtest<Depth>, request: &Outgoing, now_abs: i64) -> bool {
+        match *request {
+            Outgoing::New {
+                id,
+                side,
+                price_tick,
+                qty,
+                tif,
+                ord_type,
+            } => {
+                let price = self.inst.price(price_tick);
+                let h_tif = match tif {
+                    Tif::Gtc => TimeInForce::GTC,
+                    Tif::Gtx => TimeInForce::GTX,
+                    Tif::Ioc => TimeInForce::IOC,
+                    Tif::Fok => TimeInForce::FOK,
+                };
+                let h_type = match ord_type {
+                    OrdType::Limit => HOrdType::Limit,
+                    OrdType::Market => HOrdType::Market,
+                };
+                // `submit_order(OrderRequest)` is deliberately not used: in 0.9.4 it ignores the
+                // requested side.
+                let sent = match side {
+                    Side::Buy => hbt.submit_buy_order(ASSET, id, price, qty, h_tif, h_type, false),
+                    Side::Sell => {
+                        hbt.submit_sell_order(ASSET, id, price, qty, h_tif, h_type, false)
+                    }
+                };
+                match sent {
+                    Ok(_) => true,
+                    Err(e) => {
+                        self.tape
+                            .request_refused(now_abs, id, ReqKind::New, e.to_string());
+                        false
+                    }
+                }
+            }
+            Outgoing::Cancel { id } => match hbt.cancel(ASSET, id, false) {
+                Ok(_) => true,
+                Err(e) => {
+                    self.tape
+                        .request_refused(now_abs, id, ReqKind::Cancel, e.to_string());
+                    false
+                }
+            },
+        }
+    }
+
+    /// Sends every request waiting in the outbox, in decision order, at the engine's current
+    /// time (the decision time plus the think time).
+    fn flush(&mut self, hbt: &mut Backtest<Depth>) {
+        let now_abs = hbt.current_timestamp();
+        let outbox = std::mem::take(&mut self.outbox);
+        for request in &outbox {
+            self.send(hbt, request, now_abs);
+        }
+        self.outbox = outbox;
+        self.outbox.clear();
     }
 
     /// Returns the rule an order breaks, if any. Checks run in a fixed order so the reported
@@ -672,15 +762,34 @@ impl Harness<'_> {
             && close(known.cash, sv.balance)
             && close(known.fees, sv.fee)
             && known.fills as i64 == sv.num_trades;
+        let refills = self.tape.engine_refills();
+        let refill_text = format!(
+            "The engine's local account also applied {refills} fill(s) a second time: \
+             hftbacktest 0.9.4 applies every response whose status is Filled, including the \
+             rejection of a cancel sent after the host already knew the order had filled (the \
+             rejection echoes that status; docs/EXECUTION_MODEL.md, defect 6). BlackBox's ledger \
+             counts each execution once and is the figure reported everywhere."
+        );
         let note = match (agrees, self.cfg.execution.exchange_model) {
             (true, _) => String::new(),
             (false, ExchangeModel::PartialFill) => {
-                "Expected with the partial-fill exchange model: the engine's local account in \
-                 hftbacktest 0.9.4 applies only responses whose status is Filled, using the last \
-                 execution quantity, so partial fills and multi-level taker executions are \
-                 under-counted there. BlackBox's ledger records every execution from the exchange \
-                 side and is the figure reported everywhere."
-                    .into()
+                let mut note = String::from(
+                    "Expected with the partial-fill exchange model: the engine's local account \
+                     in hftbacktest 0.9.4 applies only responses whose status is Filled, using \
+                     the last execution quantity, so partial fills and multi-level taker \
+                     executions are under-counted there. BlackBox's ledger records every \
+                     execution from the exchange side and is the figure reported everywhere.",
+                );
+                if refills > 0 {
+                    note.push(' ');
+                    note.push_str(&refill_text);
+                }
+                note
+            }
+            (false, ExchangeModel::NoPartialFill)
+                if refills > 0 && known.fills as i64 + refills as i64 == sv.num_trades =>
+            {
+                format!("Expected: {refill_text}")
             }
             (false, ExchangeModel::NoPartialFill) => {
                 "Unexpected: with the no-partial-fill exchange model every execution is one \

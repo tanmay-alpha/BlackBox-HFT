@@ -5,13 +5,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bb_core::{
     OrdType, OrderStatus, ReqKind, Side, Tif,
-    config::{ExchangeModel, OrderLatencyConfig, QueueModelConfig, RunConfig},
+    config::{
+        CubicLeg, ExchangeModel, LogNormalLeg, OrderLatencyConfig, QueueModelConfig, RunConfig,
+    },
     flight::{FlightBody, FlightEvent, QueueCause, RiskRule},
     hash::sha256_json,
     strategy::order_id,
 };
 use bb_sim::{Event, SimInput, SimOutput, simulate};
-use common::{Act, INST, INTERVAL, MS, Mkt, ORIGIN, Script, US};
+use common::{Act, INST, INTERVAL, MS, Mkt, ORIGIN, Script, US, check_causality};
 use hftbacktest::{
     backtest::{
         Backtest, ExchangeKind, L2AssetBuilder,
@@ -124,11 +126,14 @@ struct Assumptions {
     partial: bool,
     queue: u8,
     power: u8,
-    jitter: bool,
+    /// 0 constant, 1 jitter, 2 log-normal, 3 heavy-tailed (ABIDES cubic).
+    latency: u8,
     entry_us: u16,
     response_us: u16,
     jitter_us: u16,
     feed_us: i16,
+    /// Strategy think time; below the 10 ms interval.
+    think_us: u16,
     maker_bps: i8,
     taker_bps: i8,
     position_lots: u8,
@@ -139,12 +144,13 @@ struct Assumptions {
 
 fn assumptions() -> impl Strategy<Value = Assumptions> {
     (
-        (any::<bool>(), 0u8..6, 1u8..5, any::<bool>()),
+        (any::<bool>(), 0u8..6, 1u8..5, 0u8..4),
         (
             prop_oneof![Just(0u16), 1u16..25_001],
             prop_oneof![Just(0u16), 1u16..25_001],
             prop_oneof![Just(0u16), 1u16..5_001],
             prop_oneof![Just(0i16), 1i16..501],
+            prop_oneof![Just(0u16), 1u16..10_000],
         ),
         // Seeds above 2^53 - 1 are refused by validation (JSON clients would round them).
         (
@@ -158,18 +164,19 @@ fn assumptions() -> impl Strategy<Value = Assumptions> {
     )
         .prop_map(
             |(
-                (partial, queue, power, jitter),
-                (entry_us, response_us, jitter_us, feed_us),
+                (partial, queue, power, latency),
+                (entry_us, response_us, jitter_us, feed_us, think_us),
                 (maker_bps, taker_bps, position_lots, order_lots, open_orders, seed),
             )| Assumptions {
                 partial,
                 queue,
                 power,
-                jitter,
+                latency,
                 entry_us,
                 response_us,
                 jitter_us,
                 feed_us,
+                think_us,
                 maker_bps,
                 taker_bps,
                 position_lots,
@@ -197,18 +204,46 @@ fn config(a: &Assumptions) -> RunConfig {
     };
     let entry_ns = i64::from(a.entry_us) * US;
     let response_ns = i64::from(a.response_us) * US;
-    cfg.execution.order_latency = if a.jitter {
-        OrderLatencyConfig::Jitter {
+    // The jitter parameter also shapes the stochastic models; an odd value gives cancels their
+    // own leg.
+    let distinct_cancel = a.jitter_us % 2 == 1;
+    cfg.execution.order_latency = match a.latency {
+        0 => OrderLatencyConfig::Constant {
+            entry_ns,
+            response_ns,
+        },
+        1 => OrderLatencyConfig::Jitter {
             entry_ns,
             response_ns,
             jitter_ns: i64::from(a.jitter_us) * US,
+        },
+        2 => {
+            let leg = |median_ns: i64, sigma: f64| LogNormalLeg {
+                median_ns: median_ns.max(1),
+                sigma,
+            };
+            let sigma = f64::from(a.jitter_us) / 2_000.0;
+            OrderLatencyConfig::LogNormal {
+                entry: leg(entry_ns, sigma),
+                response: leg(response_ns, sigma),
+                cancel: distinct_cancel.then(|| leg(response_ns, 0.25)),
+            }
         }
-    } else {
-        OrderLatencyConfig::Constant {
-            entry_ns,
-            response_ns,
+        _ => {
+            let leg = |min_ns: i64| CubicLeg {
+                min_ns,
+                jitter: 0.5,
+                clip: 0.1 + f64::from(a.jitter_us % 9) * 0.1,
+                unit: 10.0,
+            };
+            OrderLatencyConfig::HeavyTail {
+                entry: leg(entry_ns),
+                response: leg(response_ns),
+                cancel: distinct_cancel.then(|| leg(response_ns)),
+            }
         }
     };
+    cfg.execution.think_time_ns = i64::from(a.think_us) * US;
     cfg.execution.feed_latency_offset_ns = i64::from(a.feed_us) * US;
     cfg.execution.fees.maker = f64::from(a.maker_bps) / 10_000.0;
     cfg.execution.fees.taker = f64::from(a.taker_bps) / 10_000.0;
@@ -713,18 +748,41 @@ fn check_raw_replay(m: &Mkt, cfg: &RunConfig, out: &SimOutput) {
         }
     }
     assert_eq!(next, sent.len(), "all requests replayed");
+    // Engine defect 6 (docs/EXECUTION_MODEL.md): the raw engine's account applies a fill again
+    // when a cancel sent after the fill notice is rejected with status Filled. Each such
+    // rejection on the adapter's tape adds that order's last recorded fill once more.
+    let (mut pos, mut cash, mut fees, mut trades) = (0.0, 0.0, 0.0, 0i64);
+    for e in &out.tape {
+        if let FlightBody::ExchResponse {
+            request_rejected: true,
+            status: OrderStatus::Filled,
+            ..
+        } = e.body
+        {
+            let f = out
+                .fills
+                .iter()
+                .rev()
+                .find(|f| Some(f.order_id) == e.order_id)
+                .expect("a filled order has a fill");
+            pos += f.side.sign() * f.qty;
+            cash -= f.side.sign() * f.value;
+            fees += f.fee;
+            trades += 1;
+        }
+    }
     let state = raw.state_values(0);
     let last = out.equity.last().unwrap();
     close(
         state.position,
-        last.position,
+        last.position + pos,
         "raw position vs exchange ledger",
     );
-    close(state.balance, last.cash, "raw balance vs ledger");
-    close(state.fee, last.fees, "raw fees vs ledger");
+    close(state.balance, last.cash + cash, "raw balance vs ledger");
+    close(state.fee, last.fees + fees, "raw fees vs ledger");
     assert_eq!(
         state.num_trades,
-        out.fills.len() as i64,
+        out.fills.len() as i64 + trades,
         "raw trades vs recorded fills"
     );
 }
@@ -760,6 +818,7 @@ fn generated_corpus_exercises_execution_paths() {
         check_lifecycles(&out);
         check_ledger(&out);
         check_risk(&out, &cfg);
+        check_causality(&out, &cfg);
 
         let mut hit = |name, present| {
             if present {
@@ -897,7 +956,10 @@ proptest! {
 
     #[test]
     fn quantities_and_order_states_are_legal(ops in book_ops(), reqs in requests(), a in assumptions()) {
-        check_lifecycles(&run(&market(&ops), &config(&a), &reqs));
+        let cfg = config(&a);
+        let out = run(&market(&ops), &cfg, &reqs);
+        check_lifecycles(&out);
+        check_causality(&out, &cfg);
     }
 
     #[test]
@@ -923,7 +985,8 @@ proptest! {
     #[test]
     fn instrumentation_matches_the_unwrapped_engine(ops in book_ops(), mut reqs in requests(), mut a in assumptions()) {
         a.partial = false;
-        a.jitter = false;
+        a.latency = 0;
+        a.think_us = 0;
         // Compare settled exchange fills with the raw engine's local account. Other properties
         // retain end-of-data requests; here reserve enough time for every response to arrive.
         for request in &mut reqs { request.tick = request.tick.min(140); }
@@ -955,6 +1018,7 @@ proptest! {
             check_lifecycles(&out);
             check_ledger(&out);
             check_risk(&out, &cfg);
+            check_causality(&out, &cfg);
         }
     }
 

@@ -286,6 +286,7 @@ pub(crate) fn config() -> RunConfig {
                 entry_ns: MS,
                 response_ns: MS,
             },
+            think_time_ns: 0,
             feed_latency_offset_ns: 0,
             fees: FeeConfig {
                 maker: 0.0001,

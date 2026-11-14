@@ -290,3 +290,29 @@ fn adapter_blocks_market_orders_before_the_engine() {
     );
     assert!(out.fills.is_empty());
 }
+
+/// Defect 6: a cancel sent for an order the local side already knows is filled is accepted by
+/// `Local::cancel` (it checks only for a request in flight), rejected by the exchange with the
+/// order's status `Filled`, and `Local::process_recv_order_` applies every response with status
+/// `Filled` to the account, so the one execution is counted twice. The adapter's ledger counts
+/// it once and its engine cross-check names the double count
+/// (`latency_lab.rs::think_time_applies_to_cancels`, where think time produces exactly this).
+#[test]
+fn upstream_rejected_cancel_of_a_filled_order_counts_the_fill_twice() {
+    let mut m = Mkt::standard();
+    m.trade(23 * MS, Side::Sell, 99.5, 10.0).keepalive(80 * MS);
+    let mut hbt = raw_engine(&m, ExchangeKind::NoPartialFillExchange);
+    hbt.elapse(INTERVAL).unwrap();
+    hbt.submit_buy_order(0, 1, 100.0, 0.1, TimeInForce::GTC, OrdType::Limit, false)
+        .unwrap();
+    // Arrives at 11 ms, traded through at 23 ms, fill notice at 24 ms.
+    hbt.elapse(15 * MS).unwrap();
+    assert_eq!(hbt.orders(0)[&1].status, Status::Filled);
+    assert_eq!(hbt.state_values(0).num_trades, 1);
+    hbt.cancel(0, 1, false)
+        .expect("the engine accepts a cancel for a filled order");
+    drain(&mut hbt).unwrap();
+    let sv = hbt.state_values(0);
+    assert_eq!(sv.num_trades, 2, "one execution, counted twice");
+    assert!((sv.position - 0.2).abs() < 1e-9, "position {}", sv.position);
+}

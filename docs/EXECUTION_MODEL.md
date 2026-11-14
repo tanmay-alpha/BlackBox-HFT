@@ -106,8 +106,9 @@ sweep leaves it at 3. Still present on upstream `master`.
 
 **Handling.** BlackBox never reports the engine's account. Its own ledger is fed by the
 exchange-side execution hook, which sees every fill. The engine's figures are shown next to the
-ledger's in each run's "engine cross-check": they must agree under `NoPartialFillExchange` and are
-expected to disagree under `PartialFillExchange`, with the reason stated.
+ledger's in each run's "engine cross-check": they must agree under `NoPartialFillExchange` (except
+for the double counts of defect 6, which the check identifies) and are expected to disagree under
+`PartialFillExchange`, with the reason stated.
 
 The strategy's *known* position (what it may act on) is the ledger restricted to fills whose
 response has reached the local side.
@@ -147,6 +148,27 @@ touch) is the supported equivalent; the bundled imbalance taker uses exactly tha
 Pinned by `upstream_market_buy_on_empty_ask_fills_at_the_sentinel_tick`,
 `upstream_partial_fill_market_order_scans_only_100_ticks` and
 `adapter_blocks_market_orders_before_the_engine` in `crates/bb-sim/tests/engine_defects.rs`.
+
+### 6. A rejected cancel of a filled order is counted as a second fill
+
+`Local::cancel` refuses a cancel only while another request for the order is in flight; it accepts
+one for an order the local side already knows is `Filled`. The exchange rejects it and returns the
+order with its status, `Filled`, and `Local::process_recv_order_` applies every response whose
+status is `Filled` to the account before looking at the rejection. One execution is counted twice:
+in the pinned test, position 0.2 and two trades for one 0.1 fill. Found when strategy think time
+was added: a cancel decided before a fill notice arrives is sent after it.
+
+**Handling.** BlackBox's ledgers come from the exchange-side execution hook and the
+`local_response` observer, which records a rejection as reporting no execution, so every reported
+figure counts the fill once. The receive wrapper counts the executions the engine's account applies
+beyond the fill reports it delivered (`RecLocal::process_recv_order`), and the engine cross-check
+then reads "Expected: The engine's local account also applied N fill(s) a second time…" when that
+count reconciles the difference exactly. The cancel itself is sent as decided: the decision was
+made on what the host knew at the tick.
+
+Pinned by `upstream_rejected_cancel_of_a_filled_order_counts_the_fill_twice` in
+`crates/bb-sim/tests/engine_defects.rs`; the adapter side by
+`think_time_applies_to_cancels` in `crates/bb-sim/tests/latency_lab.rs`.
 
 ## Recorder pitfalls found in review
 

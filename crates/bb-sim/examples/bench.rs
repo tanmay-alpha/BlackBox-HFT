@@ -306,6 +306,7 @@ fn config(
                 entry_ns: LATENCY_NS,
                 response_ns: LATENCY_NS,
             },
+            think_time_ns: 0,
             feed_latency_offset_ns: 0,
             fees: FeeConfig {
                 maker: MAKER_FEE,

@@ -74,23 +74,43 @@ hashes to its own `result_sha256` (`crates/bb-app/Cargo.toml`).
 
 ## Platform policy
 
-The platform class is `<os>-<arch>`, followed by `-<target_env>` unless that is the OS default
-(glibc on Linux) or empty: `linux-x86_64`, `linux-x86_64-musl`, `windows-x86_64-gnu` (MinGW),
-`windows-x86_64-msvc`, `macos-aarch64` (`crates/bb-core/src/platform.rs`). It names the C runtime
-because `powf`/`ln` come from it (see Caveats).
+The platform class is `<target>+libm-<fingerprint>` (`crates/bb-core/src/platform.rs`). `<target>`
+is `<os>-<arch>`, followed by `-<target_env>` unless that is the OS default (glibc on Linux) or
+empty: `linux-x86_64`, `windows-x86_64-gnu` (MinGW), `windows-x86_64-msvc`, `macos-aarch64`. The
+fingerprint is the first 8 hex digits of the SHA-256 of the bit patterns that this process's math
+library returns for a fixed probe (`libm_probe`): 64 inputs each of `powf` (the engine's
+power-probability queue models; `0.5^(1/halflife)` in Avellaneda-Stoikov and GLFT), `ln(1 + x)`
+(the engine's log-probability queue models), `ln_1p` (Avellaneda-Stoikov, GLFT), `exp` (GLFT) and
+`sqrt`, plus `powi(10, d)`, with inputs from BlackBox's integer-only PRNG and in the domains where
+each is called. Those are every platform-provided `f64` function on the result path; BlackBox's
+latency samplers use their own `exp`/`ln` ([LATENCY_MODEL.md](LATENCY_MODEL.md)).
 
-- **Canonical:** `linux-x86_64` (glibc), the hosted worker and the CI `rust` job. Published and
-  hosted results are canonical results.
-- **Recorded:** every run manifest records the class of the binary that simulated it. Runs stored
-  before classes existed record `<os>-<arch>` (e.g. `windows-x86_64`); they are treated as a
+**Why the math library and not the OS.** CI run 43564035306 ran the golden test on GitHub's
+`windows-latest` (x86_64-pc-windows-gnu, rustup's bundled MinGW): `maker_slow` gave
+`9a809e78afee37bc…` and `avellaneda_stoikov` `6cafe3ca74bfa4dc…`, identical to Linux (glibc). The
+different Windows hashes pinned earlier (`662ad3b6…`, `0731525d…`) come only from the development
+machine's WinLibs MinGW-w64 14.0.0 (msvcrt) runtime, whose `pow`/`ln` differ in the last bit. Same
+OS, different results; different OS, same results.
+
+- **Canonical:** the math library of `linux-x86_64` (glibc) in CI, the hosted worker's:
+  `CANONICAL_LIBM`. It is pinned from a CI log (`platform::tests::linux_glibc_has_the_canonical_
+  fingerprint` fails on Linux with the computed value until it is); until then no class is
+  canonical. A class is canonical when its fingerprint is, whatever the OS. The GitHub Windows
+  runner very likely shares it **[INFERENCE from the identical golden hashes]**; one CI run shows
+  both fingerprints.
+- **Known non-canonical:** WinLibs MinGW-w64 14.0.0 msvcrt, fingerprint `e9b26b47`
+  (`WINLIBS_MSVCRT_LIBM`), measured on the development machine on 2026-11-14.
+- **Recorded:** every run manifest records the full class. Runs stored before fingerprints existed
+  record `linux-x86_64` / `windows-x86_64-gnu`, and before classes `<os>-<arch>`; they are a
   different class and are not reused.
-- **Never substituted:** the run store is keyed by `run_id` only, and a stored result whose class
-  differs from the running binary's is refused with `platform_mismatch` rather than returned as this
-  platform's result (`pipeline::find_or_execute_with`). Delete the stored run to recompute it on this
-  platform. Reading a stored run by id still returns it with its recorded class.
-- **Pins:** `golden.rs` pins `linux-x86_64` and `windows-x86_64-gnu` separately for entries that call
-  the math library; the CI `golden-windows` job runs it with the GNU toolchain and the runner's
-  MinGW-w64. Classes with no pins (macOS, MSVC, musl) check only the portable entries.
+- **Never substituted:** the run store is keyed by `run_id` only, and a stored result whose full
+  class differs from the running binary's is refused with `platform_mismatch` rather than returned
+  as this platform's result (`pipeline::find_or_execute_with`). Delete the stored run to recompute
+  it on this platform. Reading a stored run by id still returns it with its recorded class.
+- **Pins:** `golden.rs` keys pins by fingerprint: `canonical` (glibc) and `winlibs`. Entries marked
+  portable (risk-adverse queue model, touch maker, any latency model) carry one pin and are checked
+  under every fingerprint. An unknown fingerprint, or an unpinned entry, fails with every computed
+  hash printed in one block labelled with the class and fingerprint.
 
 ## Execution budgets
 

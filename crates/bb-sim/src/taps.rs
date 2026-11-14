@@ -5,18 +5,17 @@
 
 use std::marker::PhantomData;
 
-use bb_core::{
-    OrderStatus, ReqKind, Side,
-    flight::QueueCause,
-    rng::{Rng, derive_seed},
-};
+use bb_core::{OrderStatus, ReqKind, Side, flight::QueueCause, rng::derive_seed};
 use hftbacktest::{
     backtest::models::{ConstantLatency, FeeModel, LatencyModel, QueueModel, QueuePos},
     depth::{INVALID_MAX, INVALID_MIN, MarketDepth},
     types::{Order, Side as HSide, Status},
 };
 
-use crate::tape::Tape;
+use crate::{
+    latency::{StochasticLatency, keyed_rng},
+    tape::Tape,
+};
 
 pub(crate) fn side_of(side: HSide) -> Option<Side> {
     match side {
@@ -226,10 +225,7 @@ impl JitterLatency {
         if self.jitter_ns == 0 {
             return 0;
         }
-        let key = stream_seed
-            ^ a.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            ^ b.wrapping_mul(0xC2B2_AE3D_27D4_EB4F).rotate_left(31);
-        Rng::new(key).below(self.jitter_ns as u64 + 1) as i64
+        keyed_rng(stream_seed, a, b).below(self.jitter_ns as u64 + 1) as i64
     }
 }
 
@@ -243,11 +239,13 @@ impl LatencyModel for JitterLatency {
     }
 }
 
-/// The configured latency model: the engine's own `ConstantLatency`, or BlackBox's jitter model.
+/// The configured latency model: the engine's own `ConstantLatency`, or one of BlackBox's seeded
+/// models (uniform jitter; log-normal and heavy-tailed legs).
 #[derive(Clone)]
 pub(crate) enum LatencyKind {
     Constant(ConstantLatency),
     Jitter(JitterLatency),
+    Stochastic(StochasticLatency),
 }
 
 /// Wraps the latency model and records each request leaving the local side and each response
@@ -270,6 +268,7 @@ impl LatencyModel for TapLatency {
         let latency = match &mut self.inner {
             LatencyKind::Constant(m) => m.entry(timestamp, order),
             LatencyKind::Jitter(m) => m.entry(timestamp, order),
+            LatencyKind::Stochastic(m) => m.entry(timestamp, order),
         };
         self.tape
             .request_sent(timestamp, order.order_id, req_of(order.req), latency);
@@ -281,6 +280,7 @@ impl LatencyModel for TapLatency {
         let latency = match &mut self.inner {
             LatencyKind::Constant(m) => m.response(timestamp, order),
             LatencyKind::Jitter(m) => m.response(timestamp, order),
+            LatencyKind::Stochastic(m) => m.response(timestamp, order),
         };
         self.tape.exch_response(
             timestamp,
