@@ -123,6 +123,7 @@ blackbox demo seed [--wait]         register the synthetic dataset, queue (or wi
 blackbox openapi --out spec.json    write the OpenAPI document
 blackbox synth                      generate the deterministic synthetic dataset
 blackbox ingest-tardis ...          convert Tardis.dev CSV files into a dataset (local use only)
+blackbox itch-reconstruct <file>    rebuild a NASDAQ ITCH 5.0 order book and print its manifest (local use only)
 blackbox run --preset <id>          run a simulation offline (no database)
 blackbox explain <run> <order>      explain one order
 blackbox compare <run_a> <run_b>    compare two runs
