@@ -154,7 +154,8 @@ test.describe('keyed research journey', () => {
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page.getByTestId('access-badge')).toContainText('DEMO');
     expect(await page.evaluate(() => sessionStorage.getItem('bb.apiKey'))).toBeNull();
-    await expect(page.getByText('run not found')).toBeVisible();
+    await expect(page.getByText(`Run ${runId} was not found`)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Enter API key' })).toBeVisible();
     await expect(page.getByRole('heading', { name: /Order blotter/i })).toHaveCount(0);
   });
 });

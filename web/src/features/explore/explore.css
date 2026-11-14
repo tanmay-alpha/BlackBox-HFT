@@ -14,6 +14,9 @@
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
+  /* The scroll position restored after a visit to forensics is an exact offset; content that
+     loads above it afterwards must not make the browser shift it (scroll anchoring). */
+  overflow-anchor: none;
   background: var(--bg-0);
   color: var(--fg-0);
   font-size: 14px;

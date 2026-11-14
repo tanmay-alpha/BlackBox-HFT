@@ -93,9 +93,18 @@ async function experiment(request: APIRequestContext): Promise<Stored> {
     const list = (await (await request.get('/api/v1/comparisons?limit=50')).json()) as { items: { id: string; run_a: string; run_b: string }[] };
     return list.items.find((c) => ids.includes(c.run_a) && ids.includes(c.run_b)) ?? null;
   };
-  if (!(await find())) storeCuratedComparisons();
-  const summary = await find();
-  expect(summary, 'the curated latency comparison is stored').not.toBeNull();
+  // `run_id` is known once the runs are queued; `demo seed` curates only after both complete.
+  let summary = null as { id: string } | null;
+  await expect
+    .poll(
+      async () => {
+        summary = await find();
+        if (!summary) storeCuratedComparisons();
+        return summary !== null;
+      },
+      { message: 'the curated latency comparison is stored', timeout: 170_000, intervals: [3_000] },
+    )
+    .toBe(true);
   const comparison = (await (await request.get(`/api/v1/comparisons/${summary!.id}`)).json()) as Comparison;
 
   const scenario = async (runId: string): Promise<Scenario & { entryNs: number }> => {
@@ -151,7 +160,7 @@ test('guided journey: answer from the API, first divergence, assumptions, forens
   // The answer and the result table carry the stored numbers.
   const answer = page.locator('.ex-answer');
   for (const k of ['fast', 'slow'] as const) {
-    await expect(answer).toContainText(`at ${s[k].name}`);
+    await expect(answer).toContainText(`at ${s[k].name}`, { ignoreCase: true });
     await expect(answer).toContainText(num(s[k].netPnl, 2));
   }
   await expect(answer).toContainText('A smaller loss is still a loss');
@@ -182,7 +191,7 @@ test('guided journey: answer from the API, first divergence, assumptions, forens
   expect(Number.parseFloat(bookAt)).toBeLessThanOrEqual(ns(first!.decision_ts) / 1e9);
 
   // Assumptions.
-  await page.getByRole('button', { name: /Assumptions & limits/ }).click();
+  await page.getByRole('button', { name: /^Assumptions & limits/ }).click();
   await expect(page).toHaveURL(/[?&]step=4(&|$)/);
   await expect(page.getByRole('heading', { name: 'What the model assumes (identical in both)' })).toBeVisible();
   await expect(page.getByText('Technical details and identifiers')).toBeVisible();
