@@ -199,6 +199,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bb-analytics"
+version = "0.1.0"
+dependencies = [
+ "bb-app",
+ "bb-core",
+ "bb-data",
+ "bb-forensics",
+ "bb-sim",
+ "bb-strategies",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "bb-app"
 version = "0.1.0"
 dependencies = [

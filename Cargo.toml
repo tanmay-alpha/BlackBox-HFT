@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 # Listed explicitly so a half-written crate never breaks the whole workspace.
-members = ["crates/bb-core", "crates/bb-data", "crates/bb-sim", "crates/bb-strategies", "crates/bb-forensics", "crates/bb-app"]
+members = ["crates/bb-core", "crates/bb-data", "crates/bb-sim", "crates/bb-strategies", "crates/bb-forensics", "crates/bb-app", "crates/bb-analytics"]
 
 [workspace.package]
 version = "0.1.0"
