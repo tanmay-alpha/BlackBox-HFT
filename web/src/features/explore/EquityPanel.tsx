@@ -1,18 +1,20 @@
 // Equity of both scenarios over the whole run. Server-downsampled buckets are drawn as what the
 // server returned: the bucket's first-to-last line plus its min..max range as a light band.
-// Clicking the plot moves the shared replay time. The curves load only once the panel is on
+// Clicking the plot (or arrow keys while it is focused) moves the shared replay time. The curves load only once the panel is on
 // screen, so a visit that never scrolls to it does not spend the demo's data allowance on it.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 
 import { isBucketed, type EquityPage } from '../../api/model';
 import { fmtDuration, fmtInt, fmtSigned } from '../../components/fmt';
 import { Spinner, useAsync } from '../../components/ui';
 import { decimalsForStep, fmtAxisNs, niceStep, ticksBetween } from '../forensics/axis';
 import { useElementSize } from '../forensics/useElementSize';
-import { loadEquity, type Focus, type ScenarioKey } from './data';
+import { fmtSec, loadEquity, type Focus, type ScenarioKey } from './data';
 import { PlainError } from './PlainError';
 import type { LatencyStory } from './story';
+
+const SEC_NS = 1_000_000_000;
 
 interface Series {
   /** Polyline points [ts, equity]. */
@@ -128,7 +130,21 @@ function EquityChart({ pages, names, focus, t, divergenceTs, onPick }: EquityPan
 
   const downsampled = (['fast', 'slow'] as const).filter((k) => pages[k].downsampled);
   const page = downsampled.length > 0 ? pages[downsampled[0]] : null;
-  const label = `Equity over the whole run for both scenarios. ${names.fast} ends at ${fmtSigned(series.fast.last, 2)}, ${names.slow} ends at ${fmtSigned(series.slow.last, 2)} (quote currency). Click a point in time to move the replay there.`;
+  const label = `Equity over the whole run for both scenarios. ${names.fast} ends at ${fmtSigned(series.fast.last, 2)}, ${names.slow} ends at ${fmtSigned(series.slow.last, 2)} (quote currency). Click a point in time, or use the arrow keys (1 second steps, Shift for 10 seconds, Home and End for the ends), to move the replay there.`;
+  const onKey = (e: KeyboardEvent<SVGSVGElement>) => {
+    if (!geom) return;
+    const step = e.shiftKey ? 10 * SEC_NS : SEC_NS;
+    const cur = Math.min(geom.t1, Math.max(geom.t0, t));
+    const next =
+      e.key === 'ArrowRight' || e.key === 'ArrowUp' ? cur + step
+      : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? cur - step
+      : e.key === 'Home' ? geom.t0
+      : e.key === 'End' ? geom.t1
+      : null;
+    if (next === null) return;
+    e.preventDefault();
+    onPick(Math.round(Math.min(geom.t1, Math.max(geom.t0, next))));
+  };
 
   return (
     <>
@@ -152,8 +168,14 @@ function EquityChart({ pages, names, focus, t, divergenceTs, onPick }: EquityPan
           <svg
             width={width}
             height={height}
-            role="img"
+            role="slider"
+            tabIndex={0}
             aria-label={label}
+            aria-valuemin={geom.t0}
+            aria-valuemax={geom.t1}
+            aria-valuenow={Math.min(geom.t1, Math.max(geom.t0, t))}
+            aria-valuetext={`Replay time ${fmtSec(t, 3)}`}
+            onKeyDown={onKey}
             className="ex-svg ex-clickable"
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();

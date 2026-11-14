@@ -5,7 +5,7 @@
 // scenario filter, order, replay time) lives in the URL query, so leaving for the forensics page
 // and coming back restores the same view; the page's scroll position is restored too.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 
 import { Spinner, useAsync } from '../../components/ui';
@@ -334,6 +334,35 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
     return m;
   }, [first, firstOutcome]);
 
+  // Wide layouts show the lifecycle below the book (grid area `life`), so it goes after the
+  // orders in the DOM there; narrow layouts keep it right after the chart. DOM order = visual order.
+  const wide = useWide();
+  const lifeSec = (
+        <section className="ex-life-sec ex-panel" aria-labelledby="ex-life-title">
+          <h2 id="ex-life-title" ref={lifeHeading} tabIndex={-1}>
+            {view.order === null ? 'Order lifecycle' : `Order ${view.order} in both scenarios`}
+          </h2>
+          {view.order === null ? (
+            <div className="ex-empty">
+              <p>No order selected yet. Start with the first order whose handling differs between the scenarios, or pick any order in the replay.</p>
+              {first ? (
+                <button type="button" className="btn-primary ex-cta" onClick={() => selectOrder(first.order_id, first.decision_ts, 'jump')}>
+                  Show the first divergence (order {first.order_id})
+                </button>
+              ) : (
+                <p>The stored comparison has no divergence.</p>
+              )}
+            </div>
+          ) : order.error ? (
+            <PlainError error={order.error} onRetry={order.reload} what={`Order ${view.order}`} />
+          ) : !order.data ? (
+            <Spinner label={`Loading order ${view.order} in both scenarios`} />
+          ) : (
+            <LifecyclePanel story={story} orderId={view.order} details={order.data} pair={selectedPair} inst={inst} names={names} focus={view.focus} onPick={pick} />
+          )}
+        </section>
+  );
+
   return (
     <>
       <Header
@@ -422,31 +451,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
           onSelectOrder={selectFromReplay}
           onPick={pick}
           chartRef={replayRef}
-          between={
-        <section className="ex-life-sec ex-panel" aria-labelledby="ex-life-title">
-          <h2 id="ex-life-title" ref={lifeHeading} tabIndex={-1}>
-            {view.order === null ? 'Order lifecycle' : `Order ${view.order} in both scenarios`}
-          </h2>
-          {view.order === null ? (
-            <div className="ex-empty">
-              <p>No order selected yet. Start with the first order whose handling differs between the scenarios, or pick any order in the replay.</p>
-              {first ? (
-                <button type="button" className="btn-primary ex-cta" onClick={() => selectOrder(first.order_id, first.decision_ts, 'jump')}>
-                  Show the first divergence (order {first.order_id})
-                </button>
-              ) : (
-                <p>The stored comparison has no divergence.</p>
-              )}
-            </div>
-          ) : order.error ? (
-            <PlainError error={order.error} onRetry={order.reload} what={`Order ${view.order}`} />
-          ) : !order.data ? (
-            <Spinner label={`Loading order ${view.order} in both scenarios`} />
-          ) : (
-            <LifecyclePanel story={story} orderId={view.order} details={order.data} pair={selectedPair} inst={inst} names={names} focus={view.focus} onPick={pick} />
-          )}
-        </section>
-          }
+          between={wide ? null : lifeSec}
         />
 
         <section className="ex-orders-sec ex-panel" aria-labelledby="ex-orders-title">
@@ -475,6 +480,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
             <p className="ex-muted">Waiting for the replay window.</p>
           )}
         </section>
+        {wide ? lifeSec : null}
       </div>
 
       <section className="ex-guide ex-panel" aria-labelledby="ex-guide-title">
@@ -548,6 +554,18 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
         performance, and a smaller loss is not a profit. <Link to={paths.overview()}>All experiments</Link>
       </footer>
     </>
+  );
+}
+
+const WIDE_QUERY = '(min-width: 1100px)';
+function useWide(): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      const mq = window.matchMedia(WIDE_QUERY);
+      mq.addEventListener('change', cb);
+      return () => mq.removeEventListener('change', cb);
+    },
+    () => window.matchMedia(WIDE_QUERY).matches,
   );
 }
 
