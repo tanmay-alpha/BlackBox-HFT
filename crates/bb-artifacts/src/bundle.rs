@@ -715,7 +715,9 @@ impl<'a> BundleReader<'a> {
         }
         Ok(())
     }
-    fn check_metadata(
+    /// The verified trailer from the raw header and trailer members (e.g. two ranged reads of
+    /// the stored bundle), checked against the trust root; no page is read.
+    pub fn check_metadata(
         &self,
         header: &[u8],
         trailer: &[u8],
@@ -812,6 +814,28 @@ impl<'a> BundleReader<'a> {
             .ok_or_else(|| ArtifactError::InvalidInput("page index out of range".into()))?;
         let raw = read_member(&mut file, page, self.limits.max_page_bytes)?;
         self.decode_page(&raw, page)
+    }
+    /// The verified trailer, then the verified uncompressed NDJSON of each of `page_nos` in turn,
+    /// with one metadata check for all of them (the trailer can be large: checking it per page
+    /// dominates reading a whole run).
+    pub fn trailer_and_pages(
+        &self,
+        path: &Path,
+        page_nos: &[usize],
+        mut each: impl FnMut(usize, Vec<u8>) -> Result<(), ArtifactError>,
+    ) -> Result<BundleTrailer, ArtifactError> {
+        let mut file = File::open(path).map_err(io_error)?;
+        let trailer = self.metadata_file(&mut file)?;
+        for &page_no in page_nos {
+            let page = self
+                .trust
+                .page_index
+                .get(page_no)
+                .ok_or_else(|| ArtifactError::InvalidInput("page index out of range".into()))?;
+            let raw = read_member(&mut file, page, self.limits.max_page_bytes)?;
+            each(page_no, self.decode_page(&raw, page)?)?;
+        }
+        Ok(trailer)
     }
     fn decode_page(&self, raw: &[u8], page: &PageIndex) -> Result<Vec<u8>, ArtifactError> {
         let bytes = decode_member(raw, page, self.limits.max_page_bytes)?;

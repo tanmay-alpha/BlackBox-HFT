@@ -275,8 +275,9 @@ keep the free instance busy. Polling payloads are small and `no-store`.
 Returns `201` (new) or `200` (existing for `(workspace, a, b, comparator_version)`, returned without recomputing)
 with a `Comparison`. Both runs must be visible; otherwise 404.
 
-Work: eligibility is decided from the verified bundle trailers (manifest + metrics) first. An ineligible pair gets
-its `metrics_only` result without decoding any order or tape; only an eligible pair loads both runs and aligns them,
+Work: eligibility is decided from the verified bundle trailers (manifest + metrics) first, read from the cached bundle or by
+two ranged reads of the stored header and trailer. An ineligible pair gets its `metrics_only` result without fetching or
+decoding any page (orders, fills, equity, tape); only an eligible pair loads both runs and aligns them,
 behind the heavy-read limit. This request has its own timeout, `BB_COMPARISON_TIMEOUT_S` (default 60 s, 1–600)
 instead of the 10 s of other mutations; on timeout it answers 503 `unavailable` (`busy`), the abandoned alignment
 stops at its next checkpoint (every 4,096 orders) and keeps its heavy-read permit until it has stopped.

@@ -31,7 +31,10 @@ use super::{
     },
     runs::{markdown_response, resolve_run, verified_summary},
 };
-use crate::{artifacts::open_run, wire::at_ns};
+use crate::{
+    artifacts::{open_run, verified_trailer},
+    wire::at_ns,
+};
 
 /// Version of the comparator whose output is stored (bump when bb-forensics changes it).
 pub const COMPARATOR_VERSION: i32 = 2;
@@ -121,10 +124,11 @@ impl Drop for AbandonOnDrop {
 /// whether it already existed (then nothing is recomputed). Used by `POST /comparisons` and by
 /// `blackbox demo seed`.
 ///
-/// Eligibility is decided from the verified bundle trailers (manifest and metrics) first: an
-/// ineligible pair gets its metrics-only result without decoding any order or tape. Only an
-/// eligible pair loads both runs and aligns them, in blocking work that holds a heavy-read
-/// permit until it ends and stops at its next checkpoint once the request is abandoned.
+/// Eligibility is decided from the verified bundle trailers (manifest and metrics, read from the
+/// cached bundle or by two ranged reads of the stored header and trailer) first: an ineligible
+/// pair gets its metrics-only result without fetching or decoding any page. Only an eligible
+/// pair loads both runs and aligns them, in blocking work that holds a heavy-read permit until
+/// it ends and stops at its next checkpoint once the request is abandoned.
 pub async fn compare_and_store(
     state: &Shared,
     workspace: Uuid,
@@ -153,30 +157,10 @@ pub async fn compare_and_store(
     {
         return Ok((row, true));
     }
-    let permit = match tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        state.heavy.clone().acquire_owned(),
-    )
-    .await
-    {
-        Ok(Ok(p)) => p,
-        _ => return Err(ApiError::unavailable("busy", 2)),
-    };
     let limits = state.bundle_limits();
-    let open = |view: &RunView| {
-        open_run(
-            &state.db,
-            &state.storage,
-            &state.cache,
-            &state.metrics,
-            limits,
-            view.clone(),
-        )
-    };
-    let open_a = open(a).await?;
-    let open_b = open(b).await?;
-    let trailer_a = open_a.trailer().await?;
-    let trailer_b = open_b.trailer().await?;
+    let (db, storage, cache, metrics) = (&state.db, &state.storage, &state.cache, &state.metrics);
+    let trailer_a = verified_trailer(db, storage, cache, metrics, limits, a).await?;
+    let trailer_b = verified_trailer(db, storage, cache, metrics, limits, b).await?;
     let instrument = |v: &RunView| {
         let v = v.clone();
         let db = state.db.clone();
@@ -205,13 +189,29 @@ pub async fn compare_and_store(
         },
     );
     let comparison = match metadata_only {
-        Some(comparison) => {
-            drop(permit);
-            comparison
-        }
+        Some(comparison) => comparison,
         None => {
-            let run_a = open_a.full().await?;
-            let run_b = open_b.full().await?;
+            let permit = match tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                state.heavy.clone().acquire_owned(),
+            )
+            .await
+            {
+                Ok(Ok(p)) => p,
+                _ => return Err(ApiError::unavailable("busy", 2)),
+            };
+            let open = |view: &RunView| {
+                open_run(
+                    &state.db,
+                    &state.storage,
+                    &state.cache,
+                    &state.metrics,
+                    limits,
+                    view.clone(),
+                )
+            };
+            let run_a = open(a).await?.full().await?;
+            let run_b = open(b).await?.full().await?;
             let abandoned = Arc::new(AtomicBool::new(false));
             let _guard = AbandonOnDrop(abandoned.clone());
             tokio::task::spawn_blocking(move || {
