@@ -1,24 +1,23 @@
-// Sensitivity-grid form model: drafts, explicit unit conversion, validation mirroring
-// `GridSpec::validate` in bb-core, and the heatmap's metric and colour definitions.
+// Sweep form model: drafts, explicit unit conversion, validation mirroring `GridSpec::validate`
+// in bb-core, and the result matrix's metric and colour definitions.
 
 import type { GridAxis, Metrics, QueueModelConfig } from "../../api/types";
 import { MARKOUT_HORIZONS_NS, MAX_GRID_CELLS } from "../../api/types";
-import { bpsToFraction } from "../../components/describe";
-import { fmtDuration, fmtNum, fmtSigned } from "../../components/fmt";
+import { bpsToFraction, fractionToBps } from "../../components/describe";
+import { fmtDuration, fmtDurationExact, fmtInt, fmtMoney, fmtNum, fmtPct, fmtPnl, fmtSigned } from "../../components/fmt";
+import type { GlossaryKey } from "../../components/glossary";
+import { NsError, nsFromDecimal, nsToSafeNumber } from "../../components/ns";
 import { queueModelLabel } from "../forensics/labels";
 
 export type AxisParam = GridAxis["type"];
 export type QueueVariant = QueueModelConfig["type"];
 export type PowerVariant = "power_prob" | "power_prob2" | "power_prob3";
 
-const NS_PER_MS = 1_000_000;
-const BPS_PER_UNIT = 10_000;
-
 export interface AxisParamInfo {
   param: AxisParam;
   label: string;
   /** Unit the user types in; converted explicitly before submission. */
-  input: "ms" | "bps" | "queue";
+  input: "ms" | "bp" | "queue";
   help: string;
 }
 
@@ -50,13 +49,13 @@ export const AXIS_PARAMS: readonly AxisParamInfo[] = [
   {
     param: "maker_fee",
     label: "Maker fee",
-    input: "bps",
+    input: "bp",
     help: "Fee on passive fills as a fraction of traded value. Negative is a rebate.",
   },
   {
     param: "taker_fee",
     label: "Taker fee",
-    input: "bps",
+    input: "bp",
     help: "Fee on aggressive fills as a fraction of traded value.",
   },
 ];
@@ -115,10 +114,13 @@ export interface ParsedAxis {
 
 const NUMBER_RE = /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i;
 
+function tokens(text: string): string[] {
+  return text.split(/[\s,;]+/).filter((t) => t !== "");
+}
+
 function parseNumbers(text: string, where: string, problems: string[]): Array<[string, number]> {
   const out: Array<[string, number]> = [];
-  for (const token of text.split(/[\s,;]+/)) {
-    if (token === "") continue;
+  for (const token of tokens(text)) {
     const value = NUMBER_RE.test(token) ? Number(token) : NaN;
     if (Number.isFinite(value)) out.push([token, value]);
     else problems.push(`${where}: "${token}" is not a number`);
@@ -152,27 +154,30 @@ export function parseAxis(draft: AxisDraft, name: "X" | "Y"): ParsedAxis {
     return { axis: { type: "queue_model", values }, conversions, problems };
   }
 
-  const numbers = parseNumbers(draft.text, where, problems);
-
   if (draft.param === "maker_fee" || draft.param === "taker_fee") {
     const values: number[] = [];
-    for (const [token, bps] of numbers) {
-      // Basis points to a fraction of traded value: 1 bps = 0.0001 (same conversion as the Lab).
-      const fraction = bpsToFraction(bps);
+    for (const [token, bp] of parseNumbers(draft.text, where, problems)) {
+      // Basis points to a fraction of traded value: 1 bp = 0.0001 (same conversion as the Lab).
+      const fraction = bpsToFraction(bp);
       values.push(fraction);
-      conversions.push(`${token} bps = ${fraction} of traded value`);
+      conversions.push(`${token} bp = ${fraction} of traded value`);
     }
     return { axis: { type: draft.param, values }, conversions, problems };
   }
 
   const values: number[] = [];
-  for (const [token, ms] of numbers) {
-    // Milliseconds to nanoseconds: 1 ms = 1,000,000 ns. The contract carries whole nanoseconds.
-    const exact = ms * NS_PER_MS;
-    const ns = Math.round(exact);
-    if (Math.abs(exact - ns) > 1e-3 || !Number.isSafeInteger(ns)) {
-      problems.push(`${where}: ${token} ms is not a whole number of nanoseconds`);
-    } else if (ns < 0) {
+  for (const token of tokens(draft.text)) {
+    // Milliseconds to nanoseconds with integer arithmetic on the typed decimal (1 ms =
+    // 1,000,000 ns). The contract carries whole nanoseconds; finer digits are refused.
+    let ns: number;
+    try {
+      ns = nsToSafeNumber(nsFromDecimal(token, "ms"));
+    } catch (e) {
+      if (!(e instanceof NsError)) throw e;
+      problems.push(`${where}: ${e.message}`);
+      continue;
+    }
+    if (ns < 0) {
       problems.push(
         draft.param === "feed_latency_offset_ns"
           ? `${where}: feed_latency_offset_ns must be non-negative`
@@ -180,7 +185,7 @@ export function parseAxis(draft: AxisDraft, name: "X" | "Y"): ParsedAxis {
       );
     } else {
       values.push(ns);
-      conversions.push(`${token} ms = ${fmtNum(ns, 0)} ns`);
+      conversions.push(`${token} ms = ${fmtInt(ns)} ns`);
     }
   }
   return { axis: { type: draft.param, values }, conversions, problems };
@@ -206,32 +211,34 @@ export function validateGrid(x: ParsedAxis, y: ParsedAxis): string[] {
   return problems;
 }
 
-/** Readable label of each value of a submitted axis (durations and basis points, not raw ns). */
+/** Readable label of each value of a submitted axis: exact durations and basis points, not raw ns. */
 export function axisValueLabels(axis: GridAxis): string[] {
   switch (axis.type) {
     case "order_latency_ns":
     case "entry_latency_ns":
     case "feed_latency_offset_ns":
-      return axis.values.map((ns) => fmtDuration(ns));
+      return axis.values.map((ns) => fmtDurationExact(ns));
     case "queue_model":
       return axis.values.map((q) => queueModelLabel(q));
     case "maker_fee":
     case "taker_fee":
-      // toFixed removes binary noise such as 0.0002 * 10000 = 2.0000000000000004.
-      return axis.values.map((f) => `${Number((f * BPS_PER_UNIT).toFixed(6))} bps`);
+      return axis.values.map((f) => `${fractionToBps(f)} bp`);
     default:
       return [];
   }
 }
 
 // ---------------------------------------------------------------------------------------------
-// Heatmap metrics and colour scale
+// Result matrix metrics and colour scale
 // ---------------------------------------------------------------------------------------------
 
 export interface MetricDef {
   key: string;
   label: string;
+  /** Unit of the printed values, for headers. */
   unit: string;
+  /** Glossary entry explaining the metric. */
+  term?: GlossaryKey;
   /** Signed metrics use a diverging scale centred on zero; the others a sequential one. */
   signed: boolean;
   get: (m: Metrics) => number | null;
@@ -242,26 +249,27 @@ export const METRICS: readonly MetricDef[] = [
   {
     key: "net_pnl",
     label: "Net P&L",
-    unit: "quote currency",
+    unit: "quote",
     signed: true,
     get: (m) => m.net_pnl,
-    format: (v) => fmtSigned(v, 4),
+    format: (v) => fmtPnl(v, 4),
   },
   {
     key: "realized_pnl",
     label: "Realized P&L",
-    unit: "quote currency",
+    unit: "quote",
     signed: true,
     get: (m) => m.realized_pnl,
-    format: (v) => fmtSigned(v, 4),
+    format: (v) => fmtPnl(v, 4),
   },
   {
     key: "fees",
     label: "Fees (negative is a rebate)",
-    unit: "quote currency",
+    unit: "quote",
+    term: "fees",
     signed: true,
     get: (m) => m.fees,
-    format: (v) => fmtSigned(v, 4),
+    format: (v) => fmtPnl(v, 4),
   },
   {
     key: "fill_count",
@@ -269,20 +277,21 @@ export const METRICS: readonly MetricDef[] = [
     unit: "count",
     signed: false,
     get: (m) => m.fill_count,
-    format: (v) => fmtNum(v, 0),
+    format: (v) => fmtInt(v),
   },
   {
     key: "fill_ratio_qty",
     label: "Fill ratio by quantity",
-    unit: "percent of submitted quantity",
+    unit: "% of submitted quantity",
+    term: "fill_ratio",
     signed: false,
     get: (m) => m.fill_ratio_qty,
-    format: (v) => `${(v * 100).toFixed(1)}%`,
+    format: (v) => fmtPct(v),
   },
   {
     key: "volume",
     label: "Volume (filled quantity)",
-    unit: "base quantity",
+    unit: "base",
     signed: false,
     get: (m) => m.volume,
     format: (v) => fmtNum(v, 4),
@@ -290,23 +299,25 @@ export const METRICS: readonly MetricDef[] = [
   {
     key: "max_drawdown",
     label: "Max drawdown",
-    unit: "quote currency",
+    unit: "quote",
+    term: "drawdown",
     signed: false,
     get: (m) => m.max_drawdown,
-    format: (v) => fmtNum(v, 4),
+    format: (v) => fmtMoney(v, 4),
   },
   {
     key: "spread_capture",
     label: "Spread capture",
-    unit: "quote currency",
+    unit: "quote",
+    term: "spread_capture",
     signed: true,
     get: (m) => m.spread_capture,
-    format: (v) => fmtSigned(v, 4),
+    format: (v) => fmtPnl(v, 4),
   },
   {
     key: "final_position",
     label: "Final position",
-    unit: "base quantity",
+    unit: "base",
     signed: true,
     get: (m) => m.final_position,
     format: (v) => fmtSigned(v, 4),
@@ -317,13 +328,14 @@ export const METRICS: readonly MetricDef[] = [
     unit: "count",
     signed: false,
     get: (m) => m.orders_submitted,
-    format: (v) => fmtNum(v, 0),
+    format: (v) => fmtInt(v),
   },
   ...MARKOUT_HORIZONS_NS.map(
     (horizon): MetricDef => ({
       key: `markout_${horizon}`,
       label: `Mean markout at +${fmtDuration(horizon)}`,
       unit: "ticks; negative means adverse selection",
+      term: "markout",
       signed: true,
       get: (m) => {
         const stat = m.markouts.find((s) => s.horizon_ns === horizon);
@@ -349,17 +361,23 @@ export function buildScale(def: MetricDef, values: readonly number[]): Scale | n
 /** Strongest tint: kept below full saturation so cell text stays readable on a dark surface. */
 const MAX_MIX = 62;
 
+// Data ramp hues (a data encoding, not chrome; UI_DESIGN_SPEC.md §13). They encode sign or
+// magnitude only, are deliberately not the side colours and do not mean good or bad.
+const RAMP_POSITIVE = "#3f8fd0";
+const RAMP_NEGATIVE = "#d08a3f";
+const RAMP_SEQUENTIAL = "#3f8fd0";
+
 /** Background for a value: a CSS colour mixing the scale hue into the neutral cell surface. */
 export function scaleColor(scale: Scale, value: number): string {
   if (scale.kind === "diverging") {
     const t = scale.maxAbs > 0 ? Math.min(1, Math.abs(value) / scale.maxAbs) : 0;
-    if (t === 0 || value === 0) return "var(--surface-2)";
-    const hue = value > 0 ? "var(--grd-pos)" : "var(--grd-neg)";
-    return `color-mix(in srgb, ${hue} ${Math.round(6 + t * (MAX_MIX - 6))}%, var(--surface-2))`;
+    if (t === 0 || value === 0) return "var(--bg-2)";
+    const hue = value > 0 ? RAMP_POSITIVE : RAMP_NEGATIVE;
+    return `color-mix(in srgb, ${hue} ${Math.round(6 + t * (MAX_MIX - 6))}%, var(--bg-2))`;
   }
   const span = scale.hi - scale.lo;
   const t = span > 0 ? Math.min(1, Math.max(0, (value - scale.lo) / span)) : 0.5;
-  return `color-mix(in srgb, var(--grd-seq) ${Math.round(6 + t * (MAX_MIX - 6))}%, var(--surface-2))`;
+  return `color-mix(in srgb, ${RAMP_SEQUENTIAL} ${Math.round(6 + t * (MAX_MIX - 6))}%, var(--bg-2))`;
 }
 
 /** Evenly spaced values across the scale for the numeric legend. */

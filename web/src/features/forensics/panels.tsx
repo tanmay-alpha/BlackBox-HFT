@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Explanation,
   FillRecord,
@@ -9,8 +9,9 @@ import type {
   OrderRecord,
 } from "../../api/types";
 import { MARKOUT_HORIZONS_NS } from "../../api/types";
-import { fmtDuration, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
-import { Badge, Empty } from "../../components/ui";
+import { DataTable, type Column } from "../../components/DataTable";
+import { fmtDuration, fmtPnl, fmtPrice, fmtQty, fmtSigned, fmtTicks } from "../../components/fmt";
+import { Badge, BasisBadge, Empty } from "../../components/ui";
 import { ClockText } from "./evidence";
 import { eventFields, eventTitle } from "./eventFormat";
 import { EM_DASH, fmtSince } from "./labels";
@@ -222,7 +223,7 @@ export function LatencyTable({
       <thead>
         <tr>
           <th scope="col">Interval</th>
-          <th scope="col" className="fx-num">
+          <th scope="col" className="num">
             Duration
           </th>
           <th scope="col">Clock</th>
@@ -234,7 +235,7 @@ export function LatencyTable({
         {rows.map((row) => (
           <tr key={row.label}>
             <th scope="row">{row.label}</th>
-            <td className="mono fx-num">{fmtDuration(row.value)}</td>
+            <td className="num">{fmtDuration(row.value)}</td>
             <td className="dim">{row.clock}</td>
             <td>
               <Badge kind={row.kind}>{row.nature}</Badge>
@@ -400,93 +401,70 @@ export function FillsTable({
   selectedSeq: number | null;
   onSelect: (seq: number) => void;
 }) {
+  const columns = useMemo<Column<FillRecord>[]>(
+    () => [
+      { id: "seq", header: "Seq", rowHeader: true, numeric: true, cell: (f) => `#${f.seq}`, raw: (f) => String(f.seq), sortValue: (f) => f.seq },
+      {
+        id: "ts",
+        header: "Exchange time",
+        cell: (f) => (
+          <>
+            <ClockText ns={f.ts} /> <span className="dim mono">{fmtSince(f.ts, originNs)}</span>
+          </>
+        ),
+        sortValue: (f) => f.ts,
+      },
+      { id: "price", header: "Price", numeric: true, cell: (f) => fmtPrice(f.price_tick, instrument), sortValue: (f) => f.price_tick },
+      { id: "qty", header: "Qty", numeric: true, cell: (f) => fmtQty(f.qty, instrument), sortValue: (f) => f.qty },
+      { id: "liq", header: "Liquidity", cell: (f) => (f.maker ? "maker" : "taker"), sortValue: (f) => (f.maker ? "maker" : "taker") },
+      { id: "fee", header: "Fee", unit: "quote", term: "fees", numeric: true, cell: (f) => fmtPnl(f.fee, 4), sortValue: (f) => f.fee },
+      { id: "pos", header: "Position after", numeric: true, cell: (f) => fmtQty(f.position_after, instrument), sortValue: (f) => f.position_after },
+      {
+        id: "rpnl",
+        header: "Realized P&L",
+        unit: "quote",
+        numeric: true,
+        cell: (f) => fmtPnl(f.realized_pnl, 4),
+        className: (f) => (f.realized_pnl > 0 ? "up" : f.realized_pnl < 0 ? "down" : undefined),
+        sortValue: (f) => f.realized_pnl,
+      },
+      { id: "mid", header: "Mid at fill", numeric: true, cell: (f) => fmtPrice(f.mid_tick, instrument), sortValue: (f) => f.mid_tick },
+      ...MARKOUT_HORIZONS_NS.map<Column<FillRecord>>((h, i) => ({
+        id: `markout-${h}`,
+        header: `Markout +${fmtDuration(h)}`,
+        unit: "ticks",
+        term: "markout",
+        numeric: true,
+        cell: (f) => fmtTicks(f.markout_ticks[i] ?? null),
+        className: (f) => {
+          const v = f.markout_ticks[i];
+          return v === undefined || v === null ? undefined : v > 0 ? "up" : v < 0 ? "down" : undefined;
+        },
+        sortValue: (f) => f.markout_ticks[i] ?? null,
+      })),
+    ],
+    [instrument, originNs],
+  );
   if (fills.length === 0) {
     return <Empty>The simulation produced no fill for this order.</Empty>;
   }
   return (
-    <div className="fx-scroll-x">
-      <table className="table fx-fills">
-        <caption className="fx-caption">
-          Simulated executions, not exchange executions. Mid at fill and markouts are{" "}
-          <Badge kind="derived">derived</Badge> from the dataset after the run; the strategy never
-          saw them. A markout is side-signed (mid at fill time plus the horizon, minus the fill
-          price) in ticks; a dash means the dataset ended before the horizon or the book was not
-          valid then.
-        </caption>
-        <thead>
-          <tr>
-            <th scope="col">Seq</th>
-            <th scope="col">Exchange time</th>
-            <th scope="col" className="fx-num">
-              Price
-            </th>
-            <th scope="col" className="fx-num">
-              Qty
-            </th>
-            <th scope="col">Liquidity</th>
-            <th scope="col" className="fx-num">
-              Fee
-            </th>
-            <th scope="col" className="fx-num">
-              Position after
-            </th>
-            <th scope="col" className="fx-num">
-              Realized P&amp;L
-            </th>
-            <th scope="col" className="fx-num fx-derived-col">
-              Mid at fill
-            </th>
-            {MARKOUT_HORIZONS_NS.map((h) => (
-              <th key={h} scope="col" className="fx-num fx-derived-col">
-                Markout +{fmtDuration(h)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {fills.map((f) => (
-            <tr
-              key={f.seq}
-              className={f.seq === selectedSeq ? "is-selected" : undefined}
-              onClick={() => onSelect(f.seq)}
-            >
-              <td>
-                <button
-                  type="button"
-                  className="fx-chip mono"
-                  aria-pressed={f.seq === selectedSeq}
-                  aria-label={`Select fill event ${f.seq}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelect(f.seq);
-                  }}
-                >
-                  #{f.seq}
-                </button>
-              </td>
-              <td>
-                <ClockText ns={f.ts} />{" "}
-                <span className="dim mono">{fmtSince(f.ts, originNs)}</span>
-              </td>
-              <td className="mono fx-num">{fmtPrice(f.price_tick, instrument)}</td>
-              <td className="mono fx-num">{fmtQty(f.qty, instrument)}</td>
-              <td>{f.maker ? "maker" : "taker"}</td>
-              <td className="mono fx-num">{fmtNum(f.fee, 6)}</td>
-              <td className="mono fx-num">{fmtQty(f.position_after, instrument)}</td>
-              <td className="mono fx-num">{fmtSigned(f.realized_pnl, 4)}</td>
-              <td className="mono fx-num fx-derived-col">{fmtPrice(f.mid_tick, instrument)}</td>
-              {MARKOUT_HORIZONS_NS.map((h, i) => {
-                const v = f.markout_ticks[i];
-                return (
-                  <td key={h} className="mono fx-num fx-derived-col">
-                    {fmtSigned(v === undefined ? null : v, 2)}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="fx-tab-body">
+      <p className="note">
+        Simulated executions, not exchange executions. Mid at fill and markouts are{" "}
+        <BasisBadge basis="derived" /> from the dataset after the run; the strategy never saw them.
+        A markout is side-signed (mid at fill time plus the horizon, minus the fill price) in
+        ticks; a dash means the dataset ended before the horizon or the book was not valid then.
+      </p>
+      <DataTable
+        label="Simulated fills of this order"
+        rows={fills}
+        rowKey={(f) => String(f.seq)}
+        columns={columns}
+        selectedKey={selectedSeq === null ? null : String(selectedSeq)}
+        onSelect={(f) => onSelect(f.seq)}
+        fill
+      />
     </div>
   );
 }
@@ -510,37 +488,75 @@ export function EventList({
   citedSeqs: ReadonlySet<number>;
   onSelect: (seq: number | null) => void;
 }) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const boxRef = useRef<HTMLDivElement | null>(null);
   const [showQueue, setShowQueue] = useState(true);
   const queueCount = events.reduce((n, ev) => n + (ev.body.type === "queue_update" ? 1 : 0), 0);
-  const shown = showQueue ? events : events.filter((ev) => ev.body.type !== "queue_update");
+  const shown = useMemo(
+    () => (showQueue ? events : events.filter((ev) => ev.body.type !== "queue_update")),
+    [events, showQueue],
+  );
 
-  // Scroll inside the list only: `scrollIntoView` would also scroll the page away from the
-  // timeline the user just clicked.
+  // Bring the event selected on the timeline into view inside the table.
   useEffect(() => {
-    const box = scrollRef.current;
-    if (!box || selectedSeq === null) return;
-    const row = box.querySelector<HTMLElement>(`tr[data-seq="${selectedSeq}"]`);
-    if (!row) return;
-    const boxRect = box.getBoundingClientRect();
-    const rowRect = row.getBoundingClientRect();
-    if (rowRect.top < boxRect.top + 32 || rowRect.bottom > boxRect.bottom) {
-      box.scrollTop += rowRect.top - boxRect.top - box.clientHeight / 2 + rowRect.height / 2;
-    }
+    if (selectedSeq === null) return;
+    boxRef.current?.querySelector<HTMLElement>('tr[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [selectedSeq, showQueue]);
+
+  const columns = useMemo<Column<FlightEvent>[]>(
+    () => [
+      { id: "seq", header: "Seq", rowHeader: true, numeric: true, cell: (ev) => `#${ev.seq}`, raw: (ev) => String(ev.seq), sortValue: (ev) => ev.seq },
+      {
+        id: "clock",
+        header: "Clock",
+        cell: (ev) => (
+          <span className="fx-clock-tag" data-clock={ev.clock}>
+            {ev.clock}
+          </span>
+        ),
+        sortValue: (ev) => ev.clock,
+      },
+      { id: "source", header: "Source", cell: (ev) => <Badge kind={ev.source}>{ev.source}</Badge>, sortValue: (ev) => ev.source },
+      { id: "ts", header: "Time", cell: (ev) => <ClockText ns={ev.ts} />, sortValue: (ev) => ev.ts },
+      { id: "since", header: "From decision", numeric: true, cell: (ev) => fmtSince(ev.ts, originNs), sortValue: (ev) => ev.ts },
+      {
+        id: "type",
+        header: "Type",
+        cell: (ev) => (
+          <span className="mono" title={eventTitle(ev)}>
+            {ev.body.type}
+          </span>
+        ),
+        sortValue: (ev) => ev.body.type,
+      },
+      {
+        id: "fields",
+        header: "Fields",
+        cell: (ev) => (
+          <span className="fx-kvs">
+            {eventFields(ev, instrument).map(([label, value]) => (
+              <span key={label} className="fx-kv">
+                <span className="dim">{label}</span> <span className="mono">{value}</span>
+              </span>
+            ))}
+          </span>
+        ),
+      },
+    ],
+    [instrument, originNs],
+  );
 
   if (events.length === 0) {
     return <Empty>The tape holds no event for this order.</Empty>;
   }
 
   return (
-    <div className="fx-events">
-      <div className="fx-events-bar">
-        <span className="dim">
+    <div className="fx-tab-body" ref={boxRef}>
+      <div className="row fx-events-bar">
+        <span className="note">
           {events.length} events in tape order. Time is relative to the dataset origin; the offset
-          is from the decision.
+          is from the decision. Rows cited by the active explanation step are marked.
         </span>
-        <label className="fx-check">
+        <label className="row">
           <input
             type="checkbox"
             checked={showQueue}
@@ -549,74 +565,16 @@ export function EventList({
           show queue updates ({queueCount})
         </label>
       </div>
-      <div className="fx-events-scroll" ref={scrollRef}>
-        <table className="table fx-events-table">
-          <thead>
-            <tr>
-              <th scope="col">Seq</th>
-              <th scope="col">Clock</th>
-              <th scope="col">Source</th>
-              <th scope="col">Time</th>
-              <th scope="col" className="fx-num">
-                From decision
-              </th>
-              <th scope="col">Type</th>
-              <th scope="col">Fields</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((ev) => {
-              const selected = ev.seq === selectedSeq;
-              const cited = citedSeqs.has(ev.seq);
-              return (
-                <tr
-                  key={ev.seq}
-                  data-seq={ev.seq}
-                  className={`${selected ? "is-selected" : ""}${cited ? " is-cited" : ""}`}
-                  onClick={() => onSelect(selected ? null : ev.seq)}
-                >
-                  <td>
-                    <button
-                      type="button"
-                      className="fx-chip mono"
-                      aria-pressed={selected}
-                      aria-label={`Select event ${ev.seq}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelect(selected ? null : ev.seq);
-                      }}
-                    >
-                      #{ev.seq}
-                    </button>
-                  </td>
-                  <td>
-                    <span className="fx-clock-tag" data-clock={ev.clock}>
-                      {ev.clock}
-                    </span>
-                  </td>
-                  <td>
-                    <Badge kind={ev.source}>{ev.source}</Badge>
-                  </td>
-                  <td>
-                    <ClockText ns={ev.ts} />
-                  </td>
-                  <td className="mono fx-num">{fmtSince(ev.ts, originNs)}</td>
-                  <td className="mono" title={eventTitle(ev)}>
-                    {ev.body.type}
-                  </td>
-                  <td className="fx-kvs">
-                    {eventFields(ev, instrument).map(([label, value]) => (
-                      <span key={label} className="fx-kv">
-                        <span className="dim">{label}</span> <span className="mono">{value}</span>
-                      </span>
-                    ))}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        label="Flight recorder events"
+        rows={shown}
+        rowKey={(ev) => String(ev.seq)}
+        columns={columns}
+        selectedKey={selectedSeq === null ? null : String(selectedSeq)}
+        onSelect={(ev) => onSelect(ev.seq === selectedSeq ? null : ev.seq)}
+        rowClassName={(ev) => (citedSeqs.has(ev.seq) ? "is-cited" : undefined)}
+        fill
+      />
     </div>
   );
 }

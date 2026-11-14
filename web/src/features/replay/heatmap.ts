@@ -713,7 +713,7 @@ export class HeatmapRenderer {
 
     if (!win || !this.hasPrices) {
       ctx.fillStyle = theme.muted;
-      ctx.font = this.font(12);
+      ctx.font = this.font(11);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(

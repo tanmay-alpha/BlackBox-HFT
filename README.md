@@ -33,14 +33,16 @@ and is read-only. To run your own simulations, see Quick start below. How the vi
 ## Screens
 
 All screenshots show the generated **synthetic** dataset; vendor market data is never published.
+Every view is a workspace of one research workstation (rail on the left, inspector on the right,
+API state and the research disclaimer in the status bar).
 
 | | |
 |---|---|
-| ![Replay Terminal: reconstructed book with the run's own resting orders and simulated fills](docs/screenshots/terminal.png) **Replay Terminal**: the book reconstructed from L2 updates, with the run's own orders (dashed) and simulated fills on one playback clock. | ![Order forensics: two-clock timeline, modeled queue position and explanation](docs/screenshots/forensics.png) **Execution Forensics**: why one order filled, on the strategy and exchange clocks, with its modeled queue position. |
-| ![Mission Control with the three canonical experiments](docs/screenshots/mission.png) **Mission Control**: three controlled experiments, each listing what varies and what is held identical. | ![Latency Lab comparing 1 ms and 50 ms order latency](docs/screenshots/latency.png) **Latency Lab**: the same strategy at 1 ms and 50 ms order latency, aligned decision by decision. |
-| ![Scenario comparison](docs/screenshots/compare.png) **Compare** | ![Sensitivity grid](docs/screenshots/grid.png) **Sensitivity Grid**: every cell is one stored simulation. |
-| ![Market replay heatmap and depth ladder](docs/screenshots/replay.png) **Market Replay** | ![Dataset quality report](docs/screenshots/datasets.png) **Data quality** |
-| ![Run overview with engine cross-check](docs/screenshots/run.png) **Run overview** | ![Strategy Lab](docs/screenshots/lab.png) **Strategy Lab** |
+| ![Order Book Lab: reconstructed book with the run's own resting orders and simulated fills](docs/screenshots/terminal.png) **Order Book Lab (with run)**: the book reconstructed from L2 updates, with the run's own orders and simulated fills on one playback clock. | ![Execution Forensics: two-clock timeline, modeled queue position and explanation](docs/screenshots/forensics.png) **Execution Forensics (order)**: why one order filled, on the strategy and exchange clocks, with its modeled queue position. |
+| ![Overview with the three canonical experiments and system state](docs/screenshots/mission.png) **Overview**: three controlled experiments, recent runs and API state. | ![Experiment Comparison, Set: 1 ms versus 50 ms order latency](docs/screenshots/latency.png) **Experiment Comparison (Set)**: the same strategy at 1 ms and 50 ms order latency, aligned decision by decision. |
+| ![Experiment Comparison, Pair](docs/screenshots/compare.png) **Experiment Comparison (Pair)** | ![Experiment Comparison, Sweep](docs/screenshots/grid.png) **Experiment Comparison (Sweep)**: every cell is one stored simulation. |
+| ![Order Book Lab, market only: heatmap and depth ladder](docs/screenshots/replay.png) **Order Book Lab (market only)** | ![Market Data Explorer: dataset identity and quality](docs/screenshots/datasets.png) **Market Data Explorer** |
+| ![Execution Forensics: run blotter, metrics and charts](docs/screenshots/run.png) **Execution Forensics (run)** | ![Strategy Lab](docs/screenshots/lab.png) **Strategy Lab** |
 
 ## The flight recorder
 

@@ -2,34 +2,17 @@
 // are taken from the bb-core type documentation so the UI never says more than the contract does.
 
 import type { Basis, OrderOutcome, QueueModelConfig, Source } from "../../api/types";
-import { fmtDuration } from "../../components/fmt";
+import { DASH, fmtDuration } from "../../components/fmt";
+import type { BadgeKind } from "../../components/ui";
 
-export type BadgeKind =
-  | "observed"
-  | "modeled"
-  | "derived"
-  | "unobservable"
-  | "engine"
-  | "strategy"
-  | "recorder"
-  | "buy"
-  | "sell"
-  | "ok"
-  | "warn"
-  | "error"
-  | "neutral";
+// One wording and one badge vocabulary for the whole console (components/ui.tsx); re-exported
+// here because the forensics and comparison views import them from this module.
+export { BASIS_MEANING } from "../../components/ui";
+export type { BadgeKind } from "../../components/ui";
 
-export const EM_DASH = "\u2014";
+export const EM_DASH = DASH;
 
 export const BASES: readonly Basis[] = ["observed", "modeled", "derived", "unobservable"];
-
-export const BASIS_MEANING: Record<Basis, string> = {
-  observed: "Present in the historical market data.",
-  modeled:
-    "Output of the configured simulation model (queue position, latency, fills). An estimate.",
-  derived: "Arithmetic over observed and modeled values.",
-  unobservable: "Not knowable from the available data.",
-};
 
 export const SOURCES: readonly Source[] = ["engine", "strategy", "recorder", "derived"];
 
@@ -71,6 +54,11 @@ export function words(snake: string): string {
 }
 
 export function outcomeKind(outcome: OrderOutcome): BadgeKind {
+  return outcomeTone(outcome);
+}
+
+/** Status-pill tone of a simulated order outcome (the text always names the outcome). */
+export function outcomeTone(outcome: OrderOutcome): "ok" | "warn" | "error" | "neutral" {
   switch (outcome) {
     case "filled":
       return "ok";

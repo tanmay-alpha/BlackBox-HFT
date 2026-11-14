@@ -1,3 +1,7 @@
+// Order Book Lab, market only (UI_DESIGN_SPEC.md §11.3): the historical book of one dataset as the
+// data shows it, before any strategy is simulated. Toolbar: window, playback, brightness and the
+// `Market only | With run` switch; body: heatmap | depth ladder.
+
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
@@ -5,12 +9,30 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../../api/client';
 import type { DatasetManifest, ReplayWindow } from '../../api/types';
 import { DASH, fmtDuration, fmtInt, fmtPrice, fmtQty } from '../../components/fmt';
-import { PageHeader, usePageTitle } from '../../components/page';
-import { Badge, ClockText, Empty, ErrorBox, Panel, Spinner, useAsync } from '../../components/ui';
+import { digitsForUnit } from '../../components/ns';
+import { SplitPane } from '../../components/SplitPane';
+import { ToolbarDivider } from '../../components/Toolbar';
+import {
+  Badge,
+  ClockText,
+  Empty,
+  ErrorBox,
+  Notice,
+  Panel,
+  Spinner,
+  TimeDigitsContext,
+  useAsync,
+} from '../../components/ui';
+import { useInspector } from '../../shell/inspector';
+import { paths } from '../../shell/paths';
+import { Workspace } from '../../shell/Workspace';
+import { BookModeMarket } from './BookMode';
 import { DepthLadder } from './DepthLadder';
-import { HeatmapView } from './HeatmapView';
 import { frameIndexAt, seriesIndexAt } from './heatmap';
-import type { IntensityScale } from './heatmap';
+import type { HeatmapStats, IntensityScale } from './heatmap';
+import { HeatmapLegend, HeatmapView } from './HeatmapView';
+import './replay.css';
+import { parseSeconds, secondsText } from './seconds';
 
 const NS_PER_S = 1_000_000_000;
 const DEFAULT_LENGTH_NS = 60 * NS_PER_S;
@@ -33,6 +55,9 @@ const LENGTHS: { ns: number; label: string }[] = [
 const LEVEL_CHOICES = [10, 25, 50, 100];
 const LADDER_ROWS = [5, 10, 20];
 const SPEEDS = [0.1, 0.5, 1, 5, 20, 100];
+
+const LENGTH_HELP = 'One depth frame per 1/300 of it (at least 1 ms).';
+const LEVELS_HELP = 'Levels beyond this are not fetched.';
 
 interface WindowQuery {
   t0: number;
@@ -63,11 +88,7 @@ function resolveQuery(ds: DatasetManifest, sp: URLSearchParams): WindowQuery {
   return { t0, t1: Math.min(ds.end, t0 + lengthNs), lengthNs, levels };
 }
 
-function secondsText(ns: number): string {
-  return String(Number((ns / NS_PER_S).toFixed(6)));
-}
-
-function ReplayControls({
+function WindowControls({
   ds,
   query,
   onApply,
@@ -89,109 +110,78 @@ function ReplayControls({
     setLevels(query.levels);
   }, [query.t0, query.lengthNs, query.levels]);
 
-  const startNs = Number(start) * NS_PER_S;
-  const startValid =
-    start.trim() !== '' && Number.isFinite(startNs) && startNs >= ds.start && startNs <= ds.end;
+  const startNs = parseSeconds(start);
+  const startValid = startNs !== null && startNs >= ds.start && startNs <= ds.end;
+  const spanText = `Dataset spans ${secondsText(ds.start)} to ${secondsText(ds.end)} s.`;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (!startValid) return;
-    onApply(Math.round(startNs), lengthNs, levels);
+    if (!startValid || startNs === null) return;
+    onApply(startNs, lengthNs, levels);
   };
 
   const whole = query.lengthNs === 0;
   const span = query.t1 - query.t0;
 
   return (
-    <form className="row replay-controls" onSubmit={submit} noValidate>
-      <div className="field">
-        <label className="field-label" htmlFor="replay-start">
-          Window start <span className="field-unit">s after origin</span>
+    <>
+      <form className="row" onSubmit={submit} noValidate aria-label="Replay window">
+        <label className="book-field" htmlFor="replay-start" title={spanText}>
+          Window start <span className="unit">s after origin</span>
         </label>
-        <div className="field-control">
-          <input
-            id="replay-start"
-            type="text"
-            inputMode="decimal"
-            value={start}
-            onChange={(e) => setStart(e.target.value)}
-            disabled={lengthNs === 0}
-            aria-invalid={!startValid}
-            aria-describedby="replay-start-help"
-          />
-        </div>
-        <span
-          className={startValid ? 'field-help' : 'field-error'}
-          id="replay-start-help"
-          role={startValid ? undefined : 'alert'}
-        >
-          Dataset spans {secondsText(ds.start)} to {secondsText(ds.end)} s.
+        <input
+          id="replay-start"
+          type="text"
+          inputMode="decimal"
+          value={start}
+          onChange={(e) => setStart(e.target.value)}
+          disabled={lengthNs === 0}
+          aria-invalid={!startValid}
+          aria-describedby="replay-start-help"
+          title={spanText}
+        />
+        <span id="replay-start-help" className={startValid ? 'visually-hidden' : 'field-error small'} role={startValid ? undefined : 'alert'}>
+          {spanText}
         </span>
-      </div>
-      <div className="field">
-        <label className="field-label" htmlFor="replay-length">
+        <label className="book-field" htmlFor="replay-length" title={LENGTH_HELP}>
           Window length
         </label>
-        <div className="field-control">
-          <select
-            id="replay-length"
-            value={lengthNs}
-            onChange={(e) => setLengthNs(Number(e.target.value))}
-          >
-            {LENGTHS.map((l) => (
-              <option key={l.ns} value={l.ns}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <span className="field-help">One depth frame per 1/300 of it (at least 1 ms).</span>
-      </div>
-      <div className="field">
-        <label className="field-label" htmlFor="replay-levels">
+        <select id="replay-length" value={lengthNs} title={LENGTH_HELP} onChange={(e) => setLengthNs(Number(e.target.value))}>
+          {LENGTHS.map((l) => (
+            <option key={l.ns} value={l.ns}>
+              {l.label}
+            </option>
+          ))}
+        </select>
+        <label className="book-field" htmlFor="replay-levels" title={LEVELS_HELP}>
           Depth levels per side
         </label>
-        <div className="field-control">
-          <select
-            id="replay-levels"
-            value={levels}
-            onChange={(e) => setLevels(Number(e.target.value))}
-          >
-            {(LEVEL_CHOICES.includes(levels) ? LEVEL_CHOICES : [...LEVEL_CHOICES, levels]).map(
-              (n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ),
-            )}
-          </select>
-        </div>
-        <span className="field-help">Levels beyond this are not fetched.</span>
-      </div>
-      <div className="row replay-controls-buttons">
-        <button type="submit" className="btn-primary" disabled={!startValid || busy}>
+        <select id="replay-levels" value={levels} title={LEVELS_HELP} onChange={(e) => setLevels(Number(e.target.value))}>
+          {(LEVEL_CHOICES.includes(levels) ? LEVEL_CHOICES : [...LEVEL_CHOICES, levels]).map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+        <button type="submit" disabled={!startValid || busy}>
           Load window
         </button>
-        <button
-          type="button"
-          disabled={busy || whole || query.t0 <= ds.start}
-          onClick={() => onApply(Math.max(ds.start, query.t0 - span), query.lengthNs, query.levels)}
-        >
-          Previous window
-        </button>
-        <button
-          type="button"
-          disabled={busy || whole || query.t1 >= ds.end}
-          onClick={() => onApply(query.t1, query.lengthNs, query.levels)}
-        >
-          Next window
-        </button>
-      </div>
-    </form>
+      </form>
+      <button
+        type="button"
+        disabled={busy || whole || query.t0 <= ds.start}
+        onClick={() => onApply(Math.max(ds.start, query.t0 - span), query.lengthNs, query.levels)}
+      >
+        Previous window
+      </button>
+      <button type="button" disabled={busy || whole || query.t1 >= ds.end} onClick={() => onApply(query.t1, query.lengthNs, query.levels)}>
+        Next window
+      </button>
+    </>
   );
 }
 
-function Playback({
+function PlaybackControls({
   win,
   cursor,
   playing,
@@ -222,7 +212,7 @@ function Playback({
   };
 
   return (
-    <div className="row playback">
+    <>
       <button
         type="button"
         className="btn-primary"
@@ -240,7 +230,9 @@ function Playback({
       <button type="button" onClick={() => stepFrame(1)} disabled={fi >= win.depth.length - 1}>
         Next frame
       </button>
-      <label htmlFor="replay-speed">Speed</label>
+      <label className="book-field" htmlFor="replay-speed">
+        Speed
+      </label>
       <select id="replay-speed" value={speed} onChange={(e) => onSpeed(Number(e.target.value))}>
         {SPEEDS.map((s) => (
           <option key={s} value={s}>
@@ -254,7 +246,7 @@ function Playback({
       </label>
       <input
         id="replay-scrub"
-        className="playback-scrub"
+        className="book-scrub"
         type="range"
         min={win.t0}
         max={win.t1}
@@ -265,188 +257,19 @@ function Playback({
           onCursor(Number(e.target.value));
         }}
       />
-      <span className="mono">
+      <span className="book-cursor">
         cursor <ClockText ns={Math.round(cursor)} />
       </span>
-    </div>
-  );
-}
-
-function ReplayWorkspace({ ds, win }: { ds: DatasetManifest; win: ReplayWindow }) {
-  const inst = ds.instrument;
-  const [cursor, setCursor] = useState(win.t0);
-  const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(5);
-  const [scale, setScale] = useState<IntensityScale>('sqrt');
-  const [ladderRows, setLadderRows] = useState(10);
-
-  // A new window starts paused at its beginning.
-  useEffect(() => {
-    setCursor(win.t0);
-    setPlaying(false);
-  }, [win]);
-
-  useEffect(() => {
-    if (!playing) return;
-    let raf = 0;
-    let last = performance.now();
-    const tick = (now: number) => {
-      // A backgrounded tab pauses animation frames; do not jump the cursor by the whole gap.
-      const elapsedMs = Math.min(100, now - last);
-      last = now;
-      setCursor((c) => Math.min(win.t1, c + elapsedMs * 1e6 * speed));
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [playing, speed, win]);
-
-  useEffect(() => {
-    if (playing && cursor >= win.t1) setPlaying(false);
-  }, [playing, cursor, win]);
-
-  const placeCursor = useCallback((t: number) => {
-    setPlaying(false);
-    setCursor(t);
-  }, []);
-
-  const frameIdx = frameIndexAt(win.depth, cursor);
-  const frame = frameIdx >= 0 ? win.depth[frameIdx] : null;
-  const bboIdx = seriesIndexAt(win.bbo.ts, cursor);
-  const bidTick = bboIdx >= 0 ? win.bbo.bid_tick[bboIdx] : null;
-  const askTick = bboIdx >= 0 ? win.bbo.ask_tick[bboIdx] : null;
-  const hasAnything = win.depth.length > 0 || win.bbo.ts.length > 0 || win.trades.ts.length > 0;
-
-  return (
-    <div className="col">
-      {win.bbo_downsampled ? (
-        <p className="notice" role="note">
-          <Badge kind="warn">downsampled</Badge> The best bid/ask lines are downsampled to one entry
-          per {fmtDuration(win.step_ns)}: each entry is the top of book at the end of its step, so
-          changes within a step are not drawn. Load a shorter window to see every change.
-        </p>
-      ) : null}
-      {win.trades_truncated ? (
-        <p className="notice" role="note">
-          <Badge kind="warn">trades truncated</Badge> This window held more than{' '}
-          {fmtInt(MAX_TRADES)} trades; only the {fmtInt(win.trades.ts.length)} largest by quantity
-          are drawn. Smaller trades in this window are missing from the view. Load a shorter window
-          to see all of them.
-        </p>
-      ) : null}
-
-      {!hasAnything ? (
-        <Empty>
-          This window contains no depth frames, top-of-book entries or trades. Choose a different
-          start or a longer window.
-        </Empty>
-      ) : (
-        <div className="replay-layout">
-          <Panel
-            title={
-              <>
-                Order book heatmap <Badge kind="observed">observed L2</Badge>
-              </>
-            }
-            actions={
-              <>
-                <label htmlFor="replay-scale">Brightness</label>
-                <select
-                  id="replay-scale"
-                  value={scale}
-                  onChange={(e) => setScale(e.target.value === 'log' ? 'log' : 'sqrt')}
-                >
-                  <option value="sqrt">square-root scale</option>
-                  <option value="log">log scale</option>
-                </select>
-              </>
-            }
-          >
-            <div className="col">
-              <p className="note">
-                Reconstructed from Level-2 Market-By-Price updates: each cell is the displayed
-                aggregate quantity at one price in one depth frame ({fmtInt(win.depth.length)}{' '}
-                frames, one per {fmtDuration(win.step_ns)}; a frame holds until the next). Individual
-                orders, hidden liquidity and queue positions are not visible in this data.
-              </p>
-              <Playback
-                win={win}
-                cursor={cursor}
-                playing={playing}
-                speed={speed}
-                onCursor={setCursor}
-                onPlaying={setPlaying}
-                onSpeed={setSpeed}
-              />
-              <HeatmapView
-                win={win}
-                instrument={inst}
-                scale={scale}
-                cursor={cursor}
-                follow={playing}
-                onCursor={placeCursor}
-              />
-            </div>
-          </Panel>
-
-          <Panel
-            title="Depth ladder at cursor"
-            actions={
-              <>
-                <label htmlFor="ladder-rows">Levels</label>
-                <select
-                  id="ladder-rows"
-                  value={ladderRows}
-                  onChange={(e) => setLadderRows(Number(e.target.value))}
-                >
-                  {LADDER_ROWS.map((n) => (
-                    <option key={n} value={n}>
-                      top {n}
-                    </option>
-                  ))}
-                </select>
-              </>
-            }
-          >
-            <div className="col">
-              <dl className="kv">
-                <dt>Cursor</dt>
-                <dd>
-                  <ClockText ns={Math.round(cursor)} />
-                </dd>
-                <dt>Best bid</dt>
-                <dd className="buy">
-                  {bboIdx >= 0 && bidTick !== null && bidTick !== undefined
-                    ? `${fmtPrice(bidTick, inst)} \u00d7 ${fmtQty(win.bbo.bid_qty[bboIdx], inst)}`
-                    : DASH}
-                </dd>
-                <dt>Best ask</dt>
-                <dd className="sell">
-                  {bboIdx >= 0 && askTick !== null && askTick !== undefined
-                    ? `${fmtPrice(askTick, inst)} \u00d7 ${fmtQty(win.bbo.ask_qty[bboIdx], inst)}`
-                    : DASH}
-                </dd>
-              </dl>
-              <p className="note">
-                Top of book is read from the quote series at the cursor
-                {win.bbo_downsampled ? ' (downsampled)' : ''}; the ladder below shows the most
-                recent depth frame, so the two can differ within one frame step.
-              </p>
-              <DepthLadder frame={frame} instrument={inst} rows={ladderRows} />
-            </div>
-          </Panel>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 
 export default function ReplayPage() {
   const { datasetId = '' } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
-  usePageTitle(`Replay ${datasetId}`);
 
   const dataset = useAsync(() => api.dataset(datasetId), [datasetId]);
+  const runs = useAsync(() => api.runs(), []);
   const ds = dataset.data;
 
   const query = useMemo(() => (ds ? resolveQuery(ds, searchParams) : null), [ds, searchParams]);
@@ -474,67 +297,271 @@ export default function ReplayPage() {
   );
 
   const win = replay.data;
+  const inst = ds?.instrument ?? null;
+  const [cursor, setCursor] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(5);
+  const [scale, setScale] = useState<IntensityScale>('sqrt');
+  const [ladderRows, setLadderRows] = useState(10);
+  const [stats, setStats] = useState<HeatmapStats | null>(null);
 
-  return (
-    <div className="col">
-      <PageHeader
-        title={
-          <>
-            Market replay <span className="mono dim">{datasetId}</span>
-          </>
-        }
-        lead="The historical book as the data shows it, before any strategy is simulated. Times are on the exchange clock, relative to the dataset origin."
-        actions={
-          <>
-            <Link className="btn" to="/datasets">
-              All datasets
-            </Link>
-            <Link className="btn btn-primary" to={`/lab?dataset=${encodeURIComponent(datasetId)}`}>
-              Open in Strategy Lab
-            </Link>
-          </>
-        }
-      />
+  // A new window starts paused at its beginning.
+  useEffect(() => {
+    if (!win) return;
+    setCursor(win.t0);
+    setPlaying(false);
+  }, [win]);
 
-      {dataset.error ? <ErrorBox error={dataset.error} /> : null}
-      {dataset.loading && !ds ? <Spinner label="Loading dataset manifest" /> : null}
+  useEffect(() => {
+    if (!playing || !win) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      // A backgrounded tab pauses animation frames; do not jump the cursor by the whole gap.
+      const elapsedMs = Math.min(100, now - last);
+      last = now;
+      setCursor((c) => Math.min(win.t1, c + elapsedMs * 1e6 * speed));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, speed, win]);
 
-      {ds && query ? (
+  useEffect(() => {
+    if (playing && win && cursor >= win.t1) setPlaying(false);
+  }, [playing, cursor, win]);
+
+  const placeCursor = useCallback((t: number) => {
+    setPlaying(false);
+    setCursor(t);
+  }, []);
+
+  useInspector(
+    'Market replay',
+    <div className="col prose">
+      <p>
+        The historical book as the data shows it, before any strategy is simulated. Times are on the exchange clock,
+        relative to the dataset origin.
+      </p>
+      {win ? (
+        <p>
+          Reconstructed from Level-2 Market-By-Price updates: each cell is the displayed aggregate quantity at one price
+          in one depth frame ({fmtInt(win.depth.length)} frames, one per {fmtDuration(win.step_ns)}; a frame holds until
+          the next). Individual orders, hidden liquidity and queue positions are not visible in this data.
+        </p>
+      ) : null}
+      <p className="dim">
+        Window length: {LENGTH_HELP} Depth levels per side: {LEVELS_HELP}
+      </p>
+      {win && inst && stats ? <HeatmapLegend stats={stats} scale={scale} inst={inst} levels={win.levels} /> : null}
+    </div>,
+    [win, inst, stats, scale],
+  );
+
+  const frameIdx = win ? frameIndexAt(win.depth, cursor) : -1;
+  const frame = win && frameIdx >= 0 ? win.depth[frameIdx] : null;
+  const bboIdx = win ? seriesIndexAt(win.bbo.ts, cursor) : -1;
+  const bidTick = win && bboIdx >= 0 ? win.bbo.bid_tick[bboIdx] : null;
+  const askTick = win && bboIdx >= 0 ? win.bbo.ask_tick[bboIdx] : null;
+  const hasAnything = win ? win.depth.length > 0 || win.bbo.ts.length > 0 || win.trades.ts.length > 0 : false;
+
+  const toolbar = (
+    <>
+      {ds && query ? <WindowControls ds={ds} query={query} onApply={apply} busy={replay.loading} /> : null}
+      {win ? (
         <>
-          <Panel
-            title={
-              <>
-                <span>{ds.title}</span>
-                {ds.kind === 'synthetic' ? (
-                  <Badge
-                    kind="warn"
-                    title="Generated by BlackBox from a seed. This is not market data."
-                  >
-                    synthetic {'\u2014'} generated, not market data
-                  </Badge>
-                ) : (
-                  <Badge kind="observed">recorded market data</Badge>
-                )}
-              </>
-            }
-          >
-            <ReplayControls ds={ds} query={query} onApply={apply} busy={replay.loading} />
-          </Panel>
-
-          {replay.error ? <ErrorBox error={replay.error} /> : null}
-          {replay.loading && !win ? <Spinner label="Reconstructing book for the window" /> : null}
-          {win ? (
-            <>
-              <p className="mono dim small">
-                window <ClockText ns={win.t0} /> {'\u2192'} <ClockText ns={win.t1} /> ·{' '}
-                {fmtInt(win.depth.length)} depth frames · {fmtInt(win.bbo.ts.length)} top-of-book
-                entries · {fmtInt(win.trades.ts.length)} trades · top {win.levels} levels per side
-              </p>
-              <ReplayWorkspace ds={ds} win={win} />
-            </>
-          ) : null}
+          <ToolbarDivider />
+          <PlaybackControls
+            win={win}
+            cursor={cursor}
+            playing={playing}
+            speed={speed}
+            onCursor={setCursor}
+            onPlaying={setPlaying}
+            onSpeed={setSpeed}
+          />
+          <ToolbarDivider />
+          <label className="book-field" htmlFor="replay-scale">
+            Brightness
+          </label>
+          <select id="replay-scale" value={scale} onChange={(e) => setScale(e.target.value === 'log' ? 'log' : 'sqrt')}>
+            <option value="sqrt">square-root scale</option>
+            <option value="log">log scale</option>
+          </select>
         </>
       ) : null}
-    </div>
+      <ToolbarDivider />
+      <BookModeMarket datasetId={datasetId} runs={runs} cursor={win ? cursor : null} />
+      <Link className="btn" to={paths.datasets()}>
+        All datasets
+      </Link>
+      <Link className="btn" to={paths.strategy({ dataset: datasetId })}>
+        Open in Strategy Lab
+      </Link>
+    </>
+  );
+
+  let body;
+  if (dataset.error) {
+    body = (
+      <div className="book-state">
+        <ErrorBox error={dataset.error} onRetry={dataset.reload} />
+      </div>
+    );
+  } else if (!ds || !inst) {
+    body = (
+      <div className="book-state">
+        <Spinner label="Loading dataset manifest" />
+      </div>
+    );
+  } else if (replay.error) {
+    body = (
+      <div className="book-state">
+        <ErrorBox error={replay.error} onRetry={replay.reload} />
+      </div>
+    );
+  } else if (!win) {
+    body = (
+      <div className="book-state">
+        <Spinner label="Reconstructing book for the window" />
+      </div>
+    );
+  } else {
+    body = (
+      <div className="book-body">
+        <p className="book-window">
+          {ds.kind === 'synthetic' ? (
+            <Badge kind="warn" title="Generated by BlackBox from a seed. This is not market data.">
+              synthetic {'\u2014'} generated, not market data
+            </Badge>
+          ) : (
+            <Badge kind="observed">recorded market data</Badge>
+          )}{' '}
+          {ds.title} · window <ClockText ns={win.t0} /> {'\u2192'} <ClockText ns={win.t1} /> · {fmtInt(win.depth.length)}{' '}
+          depth frames · {fmtInt(win.bbo.ts.length)} top-of-book entries · {fmtInt(win.trades.ts.length)} trades · top{' '}
+          {win.levels} levels per side
+        </p>
+        {win.bbo_downsampled ? (
+          <Notice tag="DOWNSAMPLED">
+            The best bid/ask lines are downsampled to one entry per {fmtDuration(win.step_ns)}: each entry is the top of
+            book at the end of its step, so changes within a step are not drawn. Load a shorter window to see every change.
+          </Notice>
+        ) : null}
+        {win.trades_truncated ? (
+          <Notice tag="TRUNCATED">
+            This window held more than {fmtInt(MAX_TRADES)} trades; only the {fmtInt(win.trades.ts.length)} largest by
+            quantity are drawn. Smaller trades in this window are missing from the view. Load a shorter window to see all of
+            them.
+          </Notice>
+        ) : null}
+        {!hasAnything ? (
+          <div className="book-state">
+            <Empty>
+              This window contains no depth frames, top-of-book entries or trades. Choose a different start or a longer
+              window.
+            </Empty>
+          </div>
+        ) : (
+          <div className="book-panes">
+            <SplitPane
+              id="book.market"
+              panes={[
+                {
+                  id: 'heatmap',
+                  label: 'Order book heatmap',
+                  defaultSize: '72%',
+                  minSize: '40%',
+                  content: (
+                    <Panel
+                      title="Order book heatmap"
+                      basis="observed"
+                      fill
+                      flush
+                      caption={
+                        <>
+                          Observed L2 · {fmtInt(win.depth.length)} frames, one per {fmtDuration(win.step_ns)}
+                          {win.bbo_downsampled ? ` · best bid/ask downsampled 1:${fmtDuration(win.step_ns)}` : ''} · legend
+                          and method in the inspector
+                        </>
+                      }
+                    >
+                      <HeatmapView
+                        win={win}
+                        instrument={inst}
+                        scale={scale}
+                        cursor={cursor}
+                        follow={playing}
+                        onCursor={placeCursor}
+                        onStats={setStats}
+                      />
+                    </Panel>
+                  ),
+                },
+                {
+                  id: 'ladder',
+                  label: 'Depth ladder',
+                  defaultSize: '28%',
+                  minSize: 260,
+                  content: (
+                    <Panel
+                      title="Depth ladder at cursor"
+                      basis="observed"
+                      fill
+                      actions={
+                        <>
+                          <label htmlFor="ladder-rows" className="book-field">
+                            Levels
+                          </label>
+                          <select id="ladder-rows" value={ladderRows} onChange={(e) => setLadderRows(Number(e.target.value))}>
+                            {LADDER_ROWS.map((n) => (
+                              <option key={n} value={n}>
+                                top {n}
+                              </option>
+                            ))}
+                          </select>
+                        </>
+                      }
+                    >
+                      <dl className="kv ladder-bbo">
+                        <dt>Cursor</dt>
+                        <dd>
+                          <ClockText ns={Math.round(cursor)} />
+                        </dd>
+                        <dt>Best bid</dt>
+                        <dd className="bid">
+                          {bboIdx >= 0 && bidTick !== null && bidTick !== undefined
+                            ? `${fmtPrice(bidTick, inst)} \u00d7 ${fmtQty(win.bbo.bid_qty[bboIdx], inst)}`
+                            : DASH}
+                        </dd>
+                        <dt>Best ask</dt>
+                        <dd className="ask">
+                          {bboIdx >= 0 && askTick !== null && askTick !== undefined
+                            ? `${fmtPrice(askTick, inst)} \u00d7 ${fmtQty(win.bbo.ask_qty[bboIdx], inst)}`
+                            : DASH}
+                        </dd>
+                      </dl>
+                      <p className="note">
+                        Top of book is read from the quote series at the cursor
+                        {win.bbo_downsampled ? ' (downsampled)' : ''}; the ladder below shows the most recent depth frame,
+                        so the two can differ within one frame step.
+                      </p>
+                      <DepthLadder frame={frame} instrument={inst} rows={ladderRows} />
+                    </Panel>
+                  ),
+                },
+              ]}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <TimeDigitsContext.Provider value={ds ? digitsForUnit(ds.timestamps.input_unit) : 9}>
+      <Workspace context={datasetId} layout toolbar={toolbar}>
+        {body}
+      </Workspace>
+    </TimeDigitsContext.Provider>
   );
 }

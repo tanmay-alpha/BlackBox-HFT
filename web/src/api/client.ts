@@ -32,13 +32,15 @@ import type {
   TapeQuery,
   TimelineQuery,
 } from './types';
+import { normalize } from './normalize';
 
 /**
  * A failed API call. `code` is the server's snake_case error code (`not_found`,
  * `invalid_request`, `invalid_config`, `simulation_failed`, `internal`), or one of the
  * client-side codes `network` (no response; `status` is 0), `bad_response` (the server
- * answered with something that is not the documented JSON) and `static_viewer` (the hosted
- * read-only viewer cannot do this; `status` is 0).
+ * answered with something that is not the documented JSON), `unsafe_integer` (a nanosecond
+ * field cannot be represented exactly; `status` is 0; see normalize.ts) and `static_viewer`
+ * (the hosted read-only viewer cannot do this; `status` is 0).
  */
 export class ApiError extends Error {
   code: string;
@@ -459,7 +461,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
 export async function precomputedGrids(): Promise<GridResult[]> {
   if (!STATIC) return [];
   const m = await marker();
-  return Promise.all(m.grids.map((g) => staticJson<GridResult>(`api/grids/${enc(g)}.json.gz`)));
+  return Promise.all(m.grids.map((g) => staticJson<GridResult>(`api/grids/${enc(g)}.json.gz`).then(normalize.grid)));
 }
 
 const staticApi: Api = {
@@ -624,7 +626,33 @@ const staticApi: Api = {
   },
 };
 
-export const api: Api = STATIC ? staticApi : liveApi;
+/**
+ * The API every view uses: the live or static source with every nanosecond field of every
+ * response checked and converted by `normalize` (components/ns.ts) before it is returned.
+ */
+function withExactNs(base: Api): Api {
+  return {
+    ...base,
+    datasets: () => base.datasets().then(normalize.datasets),
+    dataset: (id) => base.dataset(id).then((d) => normalize.dataset(d)),
+    replay: (id, query) => base.replay(id, query).then(normalize.replay),
+    presets: (datasetId) => base.presets(datasetId).then(normalize.presets),
+    createRun: (req) => base.createRun(req).then(normalize.run),
+    runs: () => base.runs().then(normalize.runs),
+    run: (id) => base.run(id).then(normalize.run),
+    orders: (runId, query) => base.orders(runId, query).then(normalize.orders),
+    orderDetail: (runId, orderId) => base.orderDetail(runId, orderId).then(normalize.orderDetail),
+    fills: (runId) => base.fills(runId).then(normalize.fills),
+    equity: (runId) => base.equity(runId).then(normalize.equity),
+    tape: (runId, query) => base.tape(runId, query).then(normalize.tape),
+    compare: (a, b) => base.compare(a, b).then(normalize.compare),
+    grid: (spec) => base.grid(spec).then(normalize.grid),
+    timeline: (runId, query) => base.timeline(runId, query).then(normalize.timeline),
+    demos: (datasetId) => base.demos(datasetId).then(normalize.demos),
+  };
+}
+
+export const api: Api = withExactNs(STATIC ? staticApi : liveApi);
 
 /** Download address of a run's research report (Markdown attachment). */
 export function reportUrl(runId: string): string {

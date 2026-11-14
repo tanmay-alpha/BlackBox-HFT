@@ -1,20 +1,19 @@
-// The hosted read-only viewer (`VITE_STATIC_DATA=1` builds) announces itself on every page and
-// explains every action it cannot perform.
+// The hosted read-only viewer (`VITE_STATIC_DATA=1` builds) announces itself in the status bar
+// mode segment and in Overview, and explains every action it cannot perform.
 
 import { isStaticViewer, STATIC_VIEWER_MESSAGE } from '../api/client';
-import { Badge } from './ui';
+import { Notice } from './ui';
 
-const BANNER =
+export const STATIC_VIEWER_BANNER =
   'Hosted viewer: precomputed simulations on synthetic data. Not market data. Run locally to simulate.';
 
-/** Persistent banner of the hosted viewer; renders nothing in the local console. */
-export function StaticViewerBanner() {
+/** Notice of the hosted viewer; renders nothing in the local console. */
+export function StaticViewerNotice() {
   if (!isStaticViewer()) return null;
   return (
-    <div className="shell-banner" role="note" aria-label="Hosted read-only viewer">
-      <Badge kind="warn">hosted viewer</Badge>
-      <span>{BANNER}</span>
-    </div>
+    <Notice tag="Precomputed bundle" tone="info">
+      {STATIC_VIEWER_BANNER}
+    </Notice>
   );
 }
 

@@ -4,7 +4,7 @@
 .cmp-page {
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  gap: var(--sp-3);
   min-width: 0;
 }
 
@@ -31,9 +31,9 @@
   gap: 6px;
   padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-  color: var(--fg);
+  border-radius: var(--radius-1);
+  background: var(--bg-2);
+  color: var(--fg-0);
   font: inherit;
   font-size: 12px;
   line-height: 1.5;
@@ -42,11 +42,11 @@
 }
 
 .cmp-btn:hover:not(:disabled) {
-  border-color: var(--muted);
+  border-color: var(--fg-2);
 }
 
 .cmp-btn:disabled {
-  color: var(--muted);
+  color: var(--fg-2);
   cursor: not-allowed;
   opacity: 0.6;
 }
@@ -79,13 +79,13 @@
 }
 
 .cmp-pick-label {
-  color: var(--muted);
+  color: var(--fg-1);
 }
 
 .cmp-pick select {
   min-width: 0;
   max-width: 100%;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
 }
 
@@ -103,7 +103,7 @@
 .cmp-outcomes {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--gap);
+  gap: var(--sp-3);
 }
 
 @media (max-width: 900px) {
@@ -118,16 +118,16 @@
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-top-width: 3px;
-  border-radius: var(--radius);
-  background: var(--surface);
+  border-radius: var(--radius-0);
+  background: var(--bg-1);
 }
 
 .cmp-outcome {
-  background: var(--surface-2);
+  background: var(--bg-2);
 }
 
 .cmp-scenario-a {
-  border-top-color: var(--fg);
+  border-top-color: var(--fg-0);
 }
 
 .cmp-scenario-b {
@@ -147,8 +147,8 @@
   min-width: 18px;
   padding: 0 4px;
   border: 1px solid currentColor;
-  border-radius: var(--radius);
-  font-family: var(--mono);
+  border-radius: var(--radius-1);
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.5;
   text-align: center;
@@ -175,7 +175,7 @@
 
 .cmp-scenario dt,
 .cmp-outcome dt {
-  color: var(--muted);
+  color: var(--fg-1);
 }
 
 .cmp-scenario dd,
@@ -189,8 +189,8 @@
   padding: 8px 10px;
   border: 1px solid var(--warn);
   border-left-width: 3px;
-  border-radius: var(--radius);
-  background: var(--surface);
+  border-radius: var(--radius-0);
+  background: var(--bg-1);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -202,7 +202,7 @@
   padding: 0 0 6px;
   font-size: 12px;
   text-align: left;
-  color: var(--muted);
+  color: var(--fg-2);
 }
 
 .cmp-num {
@@ -219,22 +219,22 @@
 }
 
 .cmp-pos {
-  color: var(--buy);
+  color: var(--up);
 }
 
 .cmp-neg {
-  color: var(--sell);
+  color: var(--down);
 }
 
 /* ---- Alignment ---- */
 
-.cmp-seg-identical { --seg: color-mix(in srgb, var(--muted) 50%, var(--surface)); }
+.cmp-seg-identical { --seg: var(--border-strong); }
 .cmp-seg-same_fills_different_history { --seg: var(--unobservable); }
 .cmp-seg-same_fills_different_fees { --seg: var(--derived); }
 .cmp-seg-same_outcome_different_timing { --seg: var(--observed); }
 .cmp-seg-same_decision_different_outcome { --seg: var(--modeled); }
 .cmp-seg-different_decision { --seg: var(--warn); }
-.cmp-seg-only_a { --seg: var(--fg); }
+.cmp-seg-only_a { --seg: var(--fg-1); }
 .cmp-seg-only_b { --seg: var(--accent); }
 
 .cmp-eligibility-head {
@@ -266,8 +266,8 @@
   height: 18px;
   margin-bottom: 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
+  border-radius: var(--radius-0);
+  background: var(--bg-0);
   overflow: hidden;
 }
 
@@ -346,11 +346,11 @@
   max-height: 560px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-0);
 }
 
 .cmp-pairs-table thead th {
-  background: var(--surface);
+  background: var(--bg-2);
 }
 
 .cmp-side-start {
@@ -399,7 +399,7 @@
   display: inline-block;
   width: 18px;
   height: 0;
-  border-top: 2px solid var(--fg);
+  border-top: 2px solid var(--fg-0);
 }
 
 .cmp-line-b {
@@ -421,8 +421,8 @@
   min-width: 0;
   overflow-x: auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
+  border-radius: var(--radius-0);
+  background: var(--bg-0);
 }
 
 .cmp-equity-svg {
@@ -444,15 +444,15 @@
 }
 
 .cmp-zero {
-  stroke: var(--muted);
+  stroke: var(--fg-2);
   stroke-width: 1;
   stroke-dasharray: 6 4;
   shape-rendering: crispEdges;
 }
 
 .cmp-tick {
-  fill: var(--muted);
-  font-family: var(--mono);
+  fill: var(--fg-2);
+  font-family: var(--font-mono);
   font-size: 10px;
 }
 
@@ -463,7 +463,7 @@
 }
 
 .cmp-trace-a {
-  stroke: var(--fg);
+  stroke: var(--fg-0);
 }
 
 .cmp-trace-b {
@@ -479,12 +479,12 @@
 
 .cmp-div-label {
   fill: var(--warn);
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 10px;
 }
 
 .cmp-cursor {
-  stroke: var(--muted);
+  stroke: var(--fg-2);
   stroke-width: 1;
   shape-rendering: crispEdges;
   pointer-events: none;

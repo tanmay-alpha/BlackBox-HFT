@@ -126,24 +126,26 @@ export function TwoClockTimeline({
         <span className="fx-timeline-zoom">
           <button
             type="button"
-            className="fx-btn"
+            className="btn-icon"
             onClick={() => zoomCentre(0.5)}
             aria-label="Zoom in"
+            title="Zoom in"
           >
             +
           </button>
           <button
             type="button"
-            className="fx-btn"
+            className="btn-icon"
             onClick={() => zoomCentre(2)}
             aria-label="Zoom out"
+            title="Zoom out"
           >
             {"\u2212"}
           </button>
           <button
             type="button"
-            className="fx-btn"
             onClick={() => rendererRef.current?.resetView()}
+            title="Fit the whole order"
           >
             Fit
           </button>
@@ -153,7 +155,7 @@ export function TwoClockTimeline({
         className="fx-timeline-stage"
         tabIndex={0}
         role="group"
-        aria-label="Two-clock timeline. Left and right arrow keys step through events, plus and minus zoom, zero fits the whole order, Escape clears the selection. The same events are listed in the flight recorder table below."
+        aria-label="Two-clock timeline. Left and right arrow keys step through events, plus and minus zoom, zero fits the whole order, Escape clears the selection. The same events are listed in the Flight recorder tab."
         onKeyDown={(e) => {
           if (e.key === "ArrowRight") step(1);
           else if (e.key === "ArrowLeft") step(-1);

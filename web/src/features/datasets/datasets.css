@@ -1,0 +1,28 @@
+/* Market Data Explorer (UI_DESIGN_SPEC.md §11.2). */
+
+.dataset-title {
+  font-family: var(--font-mono);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.dataset-identity {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: var(--sp-4) var(--sp-6);
+  align-items: start;
+}
+
+.dataset-detail-cell {
+  white-space: normal;
+}
+
+.dataset-examples {
+  margin: 0;
+  padding-left: var(--sp-4);
+}
+
+.dataset-examples li {
+  padding: var(--sp-1) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}

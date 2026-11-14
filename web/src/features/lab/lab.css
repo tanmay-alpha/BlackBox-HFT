@@ -1,0 +1,90 @@
+/* Strategy Lab (UI_DESIGN_SPEC.md §11.4): configuration form and scripted order editor. */
+
+.lab-toolbar-label {
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+}
+
+.lab-toolbar-label + select {
+  max-width: 280px;
+}
+
+.lab-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.lab-section {
+  border: 0;
+  padding: var(--sp-3) 0 0;
+}
+
+.lab-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0;
+  color: var(--fg-0);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.lab-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: var(--sp-3) var(--sp-5);
+}
+
+.optional-toggle {
+  flex: none;
+  gap: var(--sp-1);
+  white-space: nowrap;
+}
+
+.scripted {
+  min-width: 0;
+}
+
+.scripted-table td {
+  vertical-align: top;
+  padding-top: var(--sp-1);
+  padding-bottom: var(--sp-1);
+}
+
+.scripted-cell {
+  min-width: 120px;
+}
+
+.scripted-cell-number {
+  min-width: 132px;
+}
+
+.scripted-cell-optional_number {
+  min-width: 184px;
+}
+
+.scripted-cell-text {
+  min-width: 188px;
+}
+
+.scripted-cell-select {
+  min-width: 112px;
+}
+
+.scripted-cell input,
+.scripted-cell select {
+  width: 100%;
+}
+
+.scripted-cell .field-error {
+  display: block;
+  max-width: 24ch;
+  white-space: normal;
+}
+
+.scripted-help {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  gap: var(--sp-1) var(--sp-6);
+}

@@ -28,9 +28,9 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
   let firstConfig: RunConfig;
   let ids: string[];
 
-  await test.step('Mission Control runs the cost_of_latency pair and explains its controls and first divergence', async () => {
+  await test.step('Overview runs the cost_of_latency pair; Experiment Comparison explains its controls and first divergence', async () => {
     await open(page, '/');
-    await expect(page).toHaveTitle(/Mission Control/);
+    await expect(page).toHaveTitle(/^Overview/);
     const datasets = await request.get('/api/datasets');
     expect(datasets.ok()).toBeTruthy();
     expect((await datasets.json()).map((d: { id: string }) => d.id)).toEqual(['synthetic-demo']);
@@ -49,11 +49,11 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
       }
     };
     page.on('response', capture);
-    const card = page.getByRole('article').filter({ has: page.getByRole('heading', { name: demo.title, exact: true }) });
-    await card.getByRole('button', { name: 'Run demo', exact: true }).click();
-    await expect(page).toHaveURL(/\/latency\?.*demo=cost_of_latency/);
+    const row = page.getByRole('row').filter({ has: page.getByRole('rowheader', { name: demo.title, exact: true }) });
+    await row.getByRole('button', { name: 'Run demo', exact: true }).click();
+    await expect(page).toHaveURL(/\/compare\/set\?.*demo=cost_of_latency/);
     page.off('response', capture);
-    await expect(page.getByRole('heading', { name: 'Latency Lab', exact: true })).toBeVisible();
+    await expect(page).toHaveTitle(/^Experiment Comparison/);
     runs = await Promise.all(posts);
     expect(runs).toHaveLength(2);
     expect(configs).toEqual(demo.runs.map((run) => run.config));
@@ -61,9 +61,10 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
     firstConfig = configs[0];
     ids = runs.map((run) => run.manifest.run_id);
     expect(new URL(page.url()).searchParams.get('runs')).toBe(ids.join(','));
+    const runSet = page.getByRole('grid', { name: 'Run set' });
     for (const run of runs) {
       expect(run.manifest.dataset.id).toBe('synthetic-demo');
-      await expect(page.getByRole('article').filter({ hasText: run.manifest.run_id })).toContainText(run.label);
+      await expect(runSet.getByRole('row').filter({ hasText: run.manifest.run_id.slice(0, 12) })).toContainText(run.label);
     }
     const experiment = panel(page, `Experiment ${demo.title}`);
     await expect(experiment.getByText('Varied', { exact: true })).toBeVisible();
@@ -71,7 +72,7 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
     for (const varied of demo.varied) await expect(experiment).toContainText(varied);
     for (const controlled of demo.controlled) await expect(experiment).toContainText(controlled);
     const variables = panel(page, 'Varied versus controlled');
-    await expect(variables.getByRole('table')).toBeVisible();
+    await expect(variables.getByRole('table').first()).toBeVisible();
     await expect(variables).toContainText('aligned by decision');
     await expect(variables).not.toContainText('not like-for-like');
     const divergence = panel(page, 'Decision alignment and first divergence');
@@ -80,9 +81,10 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
     await expect(divergence.getByRole('link', { name: 'Baseline forensics', exact: true })).toBeVisible();
   });
 
-  await test.step('Replay Terminal plays, pauses, advances one event and selects an order from the event log', async () => {
+  await test.step('Order Book Lab plays, pauses, advances one event and selects an order from the event log', async () => {
     await page.getByRole('link', { name: 'Replay Terminal', exact: true }).first().click();
-    await expect(page.getByRole('heading', { name: /^Replay terminal /i, level: 1 })).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/book/runs/${ids[0]}`));
+    await expect(page).toHaveTitle(/^Order Book Lab \u00b7 /);
     const play = page.getByRole('button', { name: 'Play', exact: true });
     await expect(play).toBeEnabled();
     const cursor = page.getByRole('slider', { name: 'Cursor position in the dataset' });
@@ -94,13 +96,13 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
     const paused = Number(await cursor.inputValue());
     await page.getByRole('button', { name: /Next event/ }).click();
     await expect.poll(async () => Number(await cursor.inputValue())).toBeGreaterThan(paused);
-    const eventLog = panel(page, 'Event timeline');
+    const eventLog = page.getByRole('grid', { name: 'Event log' });
     const orderButton = eventLog.getByRole('button', { name: /^\d+$/ }).first();
     await expect(orderButton).toBeVisible();
     const orderId = await orderButton.innerText();
     await orderButton.click();
     await expect(page.getByRole('heading', { name: new RegExp(`Selected order #${orderId}`) })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Full forensics', exact: true })).toHaveAttribute('href', `/runs/${ids[0]}/orders/${orderId}`);
+    await expect(page.getByRole('link', { name: 'Full forensics', exact: true }).first()).toHaveAttribute('href', `/forensics/${ids[0]}/orders/${orderId}`);
   });
 
   await test.step('Order forensics shows evidence bases, caveats, a rendered two-clock timeline and queue chart', async () => {
@@ -156,7 +158,9 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
   });
 
   await test.step('Report and JSON downloads preserve run identity and configuration/result hashes', async () => {
+    // The legacy run URL redirects into Execution Forensics.
     await open(page, `/runs/${ids[0]}`);
+    await expect(page).toHaveURL(new RegExp(`/forensics/${ids[0]}$`));
     const reportDownload = page.waitForEvent('download');
     await page.getByRole('link', { name: 'Download report (.md)', exact: true }).click();
     const report = await downloadedText(await reportDownload, 'md');
@@ -198,7 +202,7 @@ test('synthetic research: demo, replay, forensics, comparison, exports, reproduc
     await page.getByRole('textbox', { name: /Evaluation interval/ }).press('Enter');
     await page.waitForLoadState('networkidle');
     expect(submitted).toEqual([]);
-    await expect(page).toHaveURL(/\/lab$/);
+    await expect(page).toHaveURL(/\/strategy$/);
   });
 });
 

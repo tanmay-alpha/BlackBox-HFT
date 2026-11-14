@@ -1,83 +1,149 @@
-/* Replay Terminal. */
+/* Order Book Lab, run mode: own-order overlay legend, ladder marks, event log and provenance. */
+
 .term-prov {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  font-size: 12px;
+  gap: var(--sp-1);
+  font-size: var(--text-sm);
 }
-.term-prov-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; overflow-wrap: anywhere; }
-.term-prov-label {
-  min-width: 86px;
-  color: var(--muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.term-controls {
-  position: sticky;
-  top: 0;
-  z-index: 10;
+
+.term-prov-group {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.term-transport, .term-jumps { gap: 8px; }
-.term-jumps form { gap: 6px; }
-.term-cursor { margin-left: 8px; }
-.term-scrub { width: 100%; }
-.term-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: var(--gap); align-items: start; }
-.term-heatmap-canvas { height: 460px; }
-.term-hover { gap: 14px; min-height: 18px; }
-.term-legend { gap: 6px 16px; color: var(--muted); }
+
+.term-prov-label {
+  min-width: 88px;
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.term-hover {
+  flex: none;
+  gap: var(--sp-3);
+  min-height: var(--lh-xs);
+}
+
+.term-legend {
+  flex: none;
+  gap: var(--sp-1) var(--sp-4);
+  color: var(--fg-2);
+}
+
 .term-swatch-order {
   display: inline-block;
   width: 16px;
   height: 0;
-  margin-right: 3px;
-  vertical-align: middle;
+  margin-right: var(--sp-1);
   border-top: 2px dashed currentColor;
+  vertical-align: middle;
 }
-.term-swatch-buy { color: var(--buy); }
-.term-swatch-sell { color: var(--sell); }
+
+.term-swatch-bid {
+  color: var(--bid);
+}
+
+.term-swatch-ask {
+  color: var(--ask);
+}
+
 .term-swatch-fill {
   display: inline-block;
   width: 8px;
   height: 8px;
-  margin: 0 3px;
-  transform: rotate(45deg);
-  border: 1.5px solid var(--modeled);
-  background: var(--fg);
+  margin: 0 var(--sp-1);
+  border: 2px solid var(--modeled);
+  background: var(--fg-0);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
   vertical-align: middle;
 }
-.term-ladder td { padding-top: 2px; padding-bottom: 2px; }
-.term-own { display: inline-flex; flex-wrap: wrap; gap: 3px; }
-.term-own-mark {
-  padding: 0 5px;
-  border: 1px dashed var(--modeled);
-  border-radius: var(--radius);
-  background: transparent;
-  font: 11px var(--mono);
-  line-height: 16px;
-}
-.term-own-buy { color: var(--buy); }
-.term-own-sell { color: var(--sell); }
-.term-own-mark.is-selected { border-style: solid; border-color: var(--accent); background: var(--surface-2); }
-.term-events { max-height: 520px; overflow: auto; }
-.term-events tr.term-future > td { opacity: 0.55; }
-.term-events tr.term-ev-sel > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-.term-ev-summary { max-width: 70ch; overflow-wrap: anywhere; }
-.term-orders { max-height: 360px; overflow: auto; }
-.term-orders tr.term-live > th, .term-orders tr.term-live > td { background: var(--surface-2); }
-.term-order-times { gap: 4px 14px; }
 
-@media (max-width: 1100px) {
-  .term-main { grid-template-columns: minmax(0, 1fr); }
+.term-own {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.term-own-mark {
+  height: auto;
+  min-height: 0;
+  padding: 0 var(--sp-1);
+  border: 1px dashed var(--modeled);
+  border-radius: var(--radius-1);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-2xs);
+}
+
+.term-own-bid {
+  color: var(--bid);
+}
+
+.term-own-ask {
+  color: var(--ask);
+}
+
+.term-own-mark.is-selected {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--bg-3);
+}
+
+.term-future > * {
+  color: var(--fg-2);
+}
+
+.term-ev-sel > :first-child {
+  border-left: 2px solid var(--accent);
+}
+
+.term-ev {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-live > * {
+  background: var(--bg-2);
+}
+
+.term-order-times {
+  gap: var(--sp-1) var(--sp-3);
+}
+
+.term-filters {
+  flex: none;
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Tabs fill the bottom pane; the active table scrolls inside its tab panel. */
+.term-tabs {
+  flex: 1 1 auto;
+  height: 100%;
+  background: var(--bg-1);
+}
+
+.term-tabs > .tabpanel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.term-tabs > .tabpanel > .dt,
+.term-tabs > .tabpanel > .term-tab-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.term-tab-scroll {
+  overflow: auto;
+  padding: var(--sp-2);
 }
