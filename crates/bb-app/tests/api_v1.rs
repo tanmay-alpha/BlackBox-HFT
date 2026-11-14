@@ -358,18 +358,31 @@ async fn auth_matrix_idor_cors_limits_and_wire() {
         .unwrap();
     assert_eq!(r.status(), 403);
 
-    // SEC-5: request size limits.
-    let big = "x".repeat((1 << 20) + 1);
-    let r = server
-        .http
-        .post(server.url("/api/v1/experiments"))
-        .bearer_auth(&key_a)
-        .header("content-type", "application/json")
-        .body(big)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 413);
+    // SEC-5: request size limits. The server answers 413 from `Content-Length` and closes the
+    // connection without reading the body, so a client still streaming 1 MiB can see a broken
+    // pipe before the response (observed on Linux CI). Send only the headers and read the
+    // status line instead.
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+        let head = format!(
+            "POST /api/v1/experiments HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {key_a}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            server.addr,
+            (1 << 20) + 1
+        );
+        stream.write_all(head.as_bytes()).await.unwrap();
+        let mut buf = vec![0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf))
+            .await
+            .expect("server answers an oversized declared body without waiting for it")
+            .unwrap();
+        let status_line = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            status_line.starts_with("HTTP/1.1 413"),
+            "oversized body: {status_line}"
+        );
+    }
     let r = server
         .http
         .get(server.url("/api/v1/status"))
