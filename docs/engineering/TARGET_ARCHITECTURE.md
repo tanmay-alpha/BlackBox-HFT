@@ -114,8 +114,9 @@ Rules (checked by `cargo tree -e normal -i <crate>` in CI **[INFERENCE: check to
 4. `bb-db` and `bb-artifacts` do not depend on each other. The completion protocol (§6) that spans both is
    orchestrated in `bb-app::worker`.
 5. `bb-app` is the only crate that reads environment variables.
-6. `sqlx` query macros are checked offline (`.sqlx/` committed, `SQLX_OFFLINE=true` in builds,
-   `cargo sqlx prepare --check --workspace` in CI against a throwaway Postgres). This requires the workspace
+6. `sqlx` queries are runtime-checked (`sqlx::query_as` with typed rows, no query macros), so building
+   never needs a database or a committed `.sqlx/` cache; every query is exercised by `bb-db` tests against a
+   real Postgres (local cluster; a Postgres service container in CI). sqlx 0.9 requires the workspace
    `rust-version` ≥ 1.94 and the Dockerfile builder image ≥ 1.94 (OSS evaluation §3.5).
 
 **Removed at cutover** (clean cutover, no shims): `bb-app::store` (`RunStore`/`FsRunStore` and its 16-entry cache),
