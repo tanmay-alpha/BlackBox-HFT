@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 # Listed explicitly so a half-written crate never breaks the whole workspace.
-members = ["crates/bb-core", "crates/bb-data", "crates/bb-sim", "crates/bb-strategies", "crates/bb-forensics", "crates/bb-app", "crates/bb-db", "crates/bb-artifacts"]
+members = ["crates/bb-core", "crates/bb-data", "crates/bb-sim", "crates/bb-strategies", "crates/bb-forensics", "crates/bb-app", "crates/bb-db", "crates/bb-artifacts", "crates/bb-analytics"]
 
 [workspace.package]
 version = "0.1.0"
@@ -45,6 +45,18 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 rand = "0.9"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+bb-analytics = { path = "crates/bb-analytics" }
+# OpenAPI 3.1 generated from code (API_CONTRACT §11). `ToSchema` derives in bb-core and
+# bb-analytics sit behind their optional `openapi` feature (attribute-only, no serde change).
+utoipa = { version = "6", features = ["uuid", "chrono"] }
+utoipa-axum = "0.3"
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["fs", "request-id", "compression-gzip"] }
+governor = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+hmac = "0.12"
 
 [profile.release]
 opt-level = 3

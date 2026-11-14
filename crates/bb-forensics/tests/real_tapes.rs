@@ -142,6 +142,7 @@ fn synthetic_recorder_tapes_support_orders_explanations_metrics_and_self_compari
                         entry_ns: 1_000_000,
                         response_ns: 1_000_000,
                     },
+                    think_time_ns: 0,
                     feed_latency_offset_ns: 0,
                     fees: FeeConfig {
                         maker: 0.0002,
@@ -360,6 +361,7 @@ fn simulated_maker(
                 entry_ns: 1_000_000,
                 response_ns: 1_000_000,
             },
+            think_time_ns: 0,
             feed_latency_offset_ns: 0,
             fees: FeeConfig {
                 maker: 0.0002,

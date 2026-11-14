@@ -743,7 +743,7 @@ async fn scenario(db: Database) {
 
 async fn insert_science(db: &Database, c: &ExperimentConfig, r: &NewRun, a: &NewArtifact) {
     // Real SQL inserts model an independently committed winner, not a mocked repository.
-    sqlx::query("INSERT INTO bb.runs (id,experiment_config_id,platform,blackbox_version,build_profile,worker_id,result_sha256,summary_sha256,ticks,order_count,fill_count,tape_len,equity_len,wall_time_ms,metrics,engine_check) VALUES ($1,$2,$3,'test','release','other',$4,$5,10,2,1,3,2,1,$6,$7)").bind(r.id).bind(c.id).bind(PLATFORM).bind(&r.result_sha256).bind(&r.summary_sha256).bind(&r.metrics).bind(&r.engine_check).execute(db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO bb.runs (id,experiment_config_id,platform,blackbox_version,build_profile,worker_id,result_sha256,summary_sha256,ticks,order_count,fill_count,tape_len,equity_len,wall_time_ms,metrics,engine_check,is_canonical) VALUES ($1,$2,$3,'test','release','other',$4,$5,10,2,1,3,2,1,$6,$7,false)").bind(r.id).bind(c.id).bind(PLATFORM).bind(&r.result_sha256).bind(&r.summary_sha256).bind(&r.metrics).bind(&r.engine_check).execute(db.pool()).await.unwrap();
     sqlx::query("INSERT INTO bb.run_artifacts (run_id,kind,format_version,storage_backend,storage_key,sha256,size_bytes,uncompressed_bytes,page_index,page_index_sha256) VALUES ($1,'bundle',1,'fs',$2,$3,100,200,$4,$5)").bind(r.id).bind(&a.storage_key).bind(&a.sha256).bind(&a.page_index).bind(&a.page_index_sha256).execute(db.pool()).await.unwrap();
 }
 

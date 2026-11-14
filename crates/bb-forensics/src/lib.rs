@@ -11,6 +11,7 @@ mod compare;
 mod explain;
 mod metrics;
 mod orders;
+mod sweep;
 mod text;
 
 #[cfg(test)]
@@ -25,6 +26,12 @@ pub use compare::{CompareInput, compare_runs, config_diffs};
 pub use explain::explain_order;
 pub use metrics::{compute_metrics, enrich_fills};
 pub use orders::build_orders;
+pub use sweep::{
+    Availability, Caveat, ConfigurationCounts, Dispersion, DispersionReport, Pbo, RankCorrelation,
+    SWEEP_ANALYSIS_VERSION, SelectedCell, SelectionBias, SweepCellOutcome, SweepReport,
+    analyze_sweep, cscv_pbo, expected_max_of_normals, inverse_normal_cdf, objective_blocks,
+    spearman,
+};
 
 /// SHA-256 over the flight tape, fills and equity samples: the `result_sha256` of a run manifest.
 pub fn result_sha256(

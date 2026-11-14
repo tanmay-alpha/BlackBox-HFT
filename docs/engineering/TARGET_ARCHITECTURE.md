@@ -381,12 +381,14 @@ disjoint.
 
 ## 9. Platform policy
 
-- Platform class = `<os>-<arch>` of the worker binary (`linux-x86_64`, `windows-x86_64`, …), fixed at compile time.
-- Results are keyed by (fingerprint, platform). **Canonical = `linux-x86_64`** (`runs.is_canonical` is a generated
-  column). The hosted deployment only runs Linux workers, so every hosted result is canonical.
+- Platform class = `<os>-<arch>[-<env>]+libm-<fingerprint>` of the worker binary (`linux-x86_64+libm-53154a4e`,
+  `windows-x86_64-gnu+libm-e9b26b47`, …); the fingerprint is measured at startup (bb-core `platform`).
+- Results are keyed by (fingerprint, platform). **Canonical = libm fingerprint `53154a4e`** (glibc on `linux-x86_64`;
+  `runs.is_canonical` is set at insert from bb-core `platform::is_canonical`). The hosted deployment only runs Linux
+  workers, so every hosted result is canonical. Storage keys use the platform with `+` mapped to `.`.
 - The API sets each job's platform to the deployment's result platform (`BB_RESULT_PLATFORM`, default = own build
   platform). A worker claims only jobs of its own platform (I9). A Windows development machine against a local DB
-  therefore produces `windows-x86_64` rows and can never publish a canonical one (AT-7).
+  therefore produces `windows-x86_64-gnu+libm-…` rows and publishes a canonical one only if its libm matches (AT-7).
 - `GET /runs/{id}` returns the canonical run. `?platform=` selects another class explicitly, and every run payload
   carries `platform` and `canonical`. The demo workspace is seeded by `blackbox demo seed` against the hosted API, so
   its runs are canonical.

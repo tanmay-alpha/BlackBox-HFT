@@ -1,6 +1,6 @@
 [package]
 name = "bb-app"
-description = "BlackBox HFT application: run pipeline, run store, HTTP API and the `blackbox` command line."
+description = "BlackBox HFT application: HTTP API /api/v1, in-process job worker, run pipeline and the `blackbox` command line."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,11 +15,14 @@ name = "blackbox"
 path = "src/main.rs"
 
 [dependencies]
-bb-core.workspace = true
+bb-core = { workspace = true, features = ["openapi"] }
 bb-data.workspace = true
 bb-strategies.workspace = true
 bb-sim.workspace = true
 bb-forensics.workspace = true
+bb-db.workspace = true
+bb-artifacts.workspace = true
+bb-analytics = { workspace = true, features = ["openapi"] }
 serde.workspace = true
 # `float_roundtrip`: stored runs are read back from JSON and must reproduce every f64 exactly,
 # otherwise a reloaded run would no longer match its own `result_sha256`. serde_json's default
@@ -30,10 +33,25 @@ thiserror.workspace = true
 # Gzip and the content-hash root of the static viewer bundle (`blackbox export-static`).
 flate2.workspace = true
 sha2.workspace = true
-axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync"] }
-tower-http = { version = "0.6", features = ["fs", "cors"] }
+hex.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+base64.workspace = true
+chrono.workspace = true
+bytes.workspace = true
+tempfile.workspace = true
+tokio-util.workspace = true
+axum.workspace = true
+tokio = { workspace = true }
+tower.workspace = true
+tower-http.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+governor.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
+reqwest = { workspace = true }
+rustls.workspace = true

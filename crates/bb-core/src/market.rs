@@ -7,7 +7,9 @@ use crate::{RelNs, Side};
 /// Top of book at every change, columnar. `bid_tick[i]`/`ask_tick[i]` hold from `ts[i]` until
 /// `ts[i + 1]`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BboSeries {
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
     pub ts: Vec<RelNs>,
     /// `None` while that side of the reconstructed book is empty.
     pub bid_tick: Vec<Option<i64>>,
@@ -43,7 +45,9 @@ impl BboSeries {
 
 /// Market trades, columnar.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TradeSeries {
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
     pub ts: Vec<RelNs>,
     pub price_tick: Vec<i64>,
     pub qty: Vec<f64>,
@@ -54,7 +58,9 @@ pub struct TradeSeries {
 /// The reconstructed book at one instant: up to `levels` price levels per side, best first, as
 /// `(price_tick, qty)`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DepthFrame {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub ts: RelNs,
     pub bids: Vec<(i64, f64)>,
     pub asks: Vec<(i64, f64)>,
@@ -62,10 +68,14 @@ pub struct DepthFrame {
 
 /// Everything the replay view needs for a time window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReplayWindow {
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub t0: RelNs,
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub t1: RelNs,
     /// Spacing of `depth` frames.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub step_ns: i64,
     pub levels: u32,
     /// Top of book, downsampled to at most one entry per `step_ns` when the window is long. When

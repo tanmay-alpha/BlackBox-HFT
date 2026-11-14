@@ -1,7 +1,9 @@
 //! `blackbox`: command-line front end of BlackBox HFT.
 //!
-//! Every command works on local files under `--data-dir`. The binary never makes an outbound
-//! network request; `serve` and `demo` only listen.
+//! Offline commands (`synth`, `run`, `explain`, `compare`, `grid`, …) work on local files under
+//! `--data-dir` and need no database. `serve`, `worker`, `migrate`, `keys`, `register-dataset`
+//! and `demo seed` use Postgres (`DATABASE_URL`, see docs/engineering/DEPLOYMENT.md §5).
+//! `demo` without a subcommand is the legacy all-in-one local server.
 
 use std::{
     net::SocketAddr,
@@ -13,8 +15,9 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use bb_app::{
     DISCLAIMER,
+    config::{AppConfig, Profile},
     datasets::{self, DatasetCache, DatasetCtx},
-    demos, export_static, pipeline, presets,
+    demos, export_static, pipeline, presets, runtime,
     server::{self, AppState},
     store::{FsRunStore, RunStore},
 };
@@ -26,6 +29,7 @@ use bb_core::{
     time::{NS_PER_S, TimeUnit},
 };
 use bb_data::{synthetic::SyntheticConfig, tardis::TardisIngestConfig};
+use bb_db::Scope;
 use clap::{ArgGroup, Args, Parser, Subcommand};
 
 /// Printed by every command that reports simulation output.
@@ -100,10 +104,29 @@ enum Command {
         #[arg(long)]
         threads: Option<usize>,
     },
-    /// Serve the HTTP API (and the web UI, if built).
+    /// Serve the HTTP API `/api/v1` with the in-process job worker (needs DATABASE_URL).
     Serve(ServeArgs),
-    /// Create the default synthetic dataset if no dataset exists, then serve.
-    Demo(ServeArgs),
+    /// Run the job worker only (standalone; polls with backoff while idle).
+    Worker,
+    /// Apply the database migrations over DATABASE_URL_UNPOOLED.
+    Migrate,
+    /// Mint, revoke and list API keys.
+    #[command(subcommand)]
+    Keys(KeysCommand),
+    /// Write the OpenAPI document of /api/v1 (no database or network needed).
+    Openapi {
+        /// Output file. Default: standard output.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Register a dataset under `<data-dir>/datasets` as a dataset version in the database.
+    RegisterDataset {
+        /// Dataset id.
+        id: String,
+    },
+    /// `demo`: the legacy all-in-one local server (file store, `/api`), creating the default
+    /// synthetic dataset if none exists. `demo seed`: seed the public demo workspace.
+    Demo(DemoArgs),
     /// Precompute the canonical runs of a synthetic dataset and write them as static files for
     /// the hosted read-only viewer. Recorded market data is refused.
     ExportStatic(ExportStaticArgs),
@@ -160,20 +183,69 @@ struct RunArgs {
 
 #[derive(Args)]
 struct ServeArgs {
-    /// Address to listen on. Loopback by default: the API has no authentication.
-    #[arg(long, default_value = "127.0.0.1:8787")]
-    addr: SocketAddr,
+    /// Address to listen on. Precedence: --addr > BB_ADDR > 0.0.0.0:$PORT > 127.0.0.1:8787.
+    #[arg(long)]
+    addr: Option<SocketAddr>,
     /// Directory of the built web UI. Served when it contains an `index.html`.
     #[arg(long, default_value = "web/dist")]
     web_dir: PathBuf,
-    /// Extra `host:port` the server answers to (repeatable). Its own loopback names on the
-    /// listening port are always allowed; any other Host header is refused (DNS rebinding).
+    /// Extra `host:port` the legacy server answers to (repeatable). Its own loopback names on
+    /// the listening port are always allowed; any other Host header is refused (DNS
+    /// rebinding). `serve` uses BB_ALLOWED_HOSTS instead.
     #[arg(long = "allow-host")]
     allow_host: Vec<String>,
-    /// Extra origin allowed to call the API (repeatable), e.g. `http://localhost:5173` for the
-    /// Vite development server. Requests from any other origin are refused.
+    /// Extra origin allowed to call the legacy API (repeatable), e.g. `http://localhost:5173`
+    /// for the Vite development server. `serve` uses BB_CORS_ALLOWED_ORIGINS instead.
     #[arg(long = "allow-origin")]
     allow_origin: Vec<String>,
+}
+
+#[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct DemoArgs {
+    #[command(subcommand)]
+    command: Option<DemoCommand>,
+    #[command(flatten)]
+    serve: ServeArgs,
+}
+
+#[derive(Subcommand)]
+enum DemoCommand {
+    /// Register the synthetic demo dataset and queue the canonical demo experiments in the
+    /// public demo workspace (idempotent; needs DATABASE_URL).
+    Seed {
+        /// Full platform class the results are recorded for, e.g. `linux-x86_64+libm-53154a4e`
+        /// (default BB_RESULT_PLATFORM or this build's class). Only a worker of exactly that
+        /// class computes the queued jobs; hosted results are produced by the Linux worker, so
+        /// seeding hosted data from another machine passes the Linux worker's class.
+        #[arg(long)]
+        platform: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// Mint an API key and print it once (only its sha256 is stored).
+    Mint {
+        /// Workspace slug; a research workspace with this slug is created if missing.
+        #[arg(long)]
+        workspace: String,
+        /// Comma-separated scopes: read, run, admin.
+        #[arg(long, value_delimiter = ',', default_value = "read,run")]
+        scopes: Vec<String>,
+        #[arg(long)]
+        label: String,
+        /// Lifetime such as `30d` or `12h`. Admin keys: default 30d, at most 90d.
+        #[arg(long)]
+        expires_in: Option<String>,
+    },
+    /// Revoke a key by id (effective on the next request).
+    Revoke { id: String },
+    /// List keys (never their secrets).
+    List {
+        #[arg(long)]
+        workspace: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -212,6 +284,7 @@ fn run(cli: Cli) -> Result<()> {
         datasets: cli.data_dir.join("datasets"),
         runs: cli.data_dir.join("runs"),
     };
+    let data_dir = cli.data_dir.as_path();
     match cli.command {
         Command::Synth {
             id,
@@ -227,8 +300,20 @@ fn run(cli: Cli) -> Result<()> {
         Command::Explain { run_id, order_id } => cmd_explain(&paths, &run_id, order_id),
         Command::Compare { run_a, run_b } => cmd_compare(&paths, &run_a, &run_b),
         Command::Grid { spec, threads } => cmd_grid(&paths, &spec, threads),
-        Command::Serve(args) => cmd_serve(&paths, args),
-        Command::Demo(args) => cmd_demo(&paths, args),
+        Command::Serve(args) => cmd_serve(&paths, data_dir, args),
+        Command::Worker => cmd_worker(data_dir),
+        Command::Migrate => cmd_migrate(data_dir),
+        Command::Keys(command) => cmd_keys(data_dir, command),
+        Command::Openapi { out } => cmd_openapi(out),
+        Command::RegisterDataset { id } => cmd_register_dataset(&paths, data_dir, &id),
+        Command::Demo(DemoArgs {
+            command: Some(DemoCommand::Seed { platform }),
+            ..
+        }) => cmd_demo_seed(data_dir, platform),
+        Command::Demo(DemoArgs {
+            command: None,
+            serve,
+        }) => cmd_demo(&paths, serve),
         Command::ExportStatic(args) => cmd_export_static(&paths, args),
     }
 }
@@ -1159,9 +1244,29 @@ fn cmd_grid(paths: &Paths, spec_path: &Path, threads: Option<usize>) -> Result<(
     Ok(())
 }
 
-// ----- server -----
+// ----- server, worker, database commands -----
 
-fn cmd_serve(paths: &Paths, args: ServeArgs) -> Result<()> {
+fn tokio_runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting the async runtime")
+}
+
+fn app_config(cli_data_dir: &Path) -> Result<AppConfig> {
+    let cfg = AppConfig::from_env(cli_data_dir.to_path_buf())?;
+    runtime::init_tracing(cfg.profile);
+    tracing::info!(config = %cfg.summary(), "configuration");
+    Ok(cfg)
+}
+
+/// The legacy file-store router (deprecated `/api`) for the local profile and `demo`.
+fn legacy_router(
+    paths: &Paths,
+    args: &ServeArgs,
+    addr: SocketAddr,
+    guard: bool,
+) -> Result<axum::Router> {
     let store: Arc<dyn RunStore> = Arc::new(FsRunStore::open(&paths.runs)?);
     let state = Arc::new(AppState {
         data_root: paths.datasets.clone(),
@@ -1170,7 +1275,7 @@ fn cmd_serve(paths: &Paths, args: ServeArgs) -> Result<()> {
         grid_threads: default_threads(),
     });
     let web_dir = if args.web_dir.join("index.html").is_file() {
-        Some(args.web_dir)
+        Some(args.web_dir.clone())
     } else {
         println!(
             "Web UI not found at {} (no index.html); serving the API only.",
@@ -1178,42 +1283,250 @@ fn cmd_serve(paths: &Paths, args: ServeArgs) -> Result<()> {
         );
         None
     };
-    let serves_ui = web_dir.is_some();
+    let router = server::router(state, web_dir);
+    if !guard {
+        return Ok(router);
+    }
     let policy =
-        bb_app::access::AccessPolicy::for_listener(args.addr, &args.allow_host, &args.allow_origin);
+        bb_app::access::AccessPolicy::for_listener(addr, &args.allow_host, &args.allow_origin);
     println!(
         "Accepting requests addressed to: {}",
         policy.hosts().join(", ")
     );
-    let app = bb_app::access::guard(server::router(state, web_dir), policy);
-    let addr = args.addr;
+    Ok(bb_app::access::guard(router, policy))
+}
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("starting the async runtime")?;
-    runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("binding {addr}"))?;
-        let local = listener.local_addr().context("reading the bound address")?;
-        if serves_ui {
-            println!("BlackBox HFT is running at http://{local}/");
-        }
-        println!("API: http://{local}/api/health");
-        if !local.ip().is_loopback() {
-            println!(
-                "Warning: listening on a non-loopback address. The API has no authentication; \
-                 anyone who can reach it can run simulations and read or delete stored runs."
-            );
-        }
+fn cmd_serve(paths: &Paths, data_dir: &Path, args: ServeArgs) -> Result<()> {
+    let mut cfg = app_config(data_dir)?;
+    if let Some(addr) = args.addr {
+        cfg.addr = addr;
+    }
+    let addr = cfg.addr;
+    // The deprecated `/api` router and the web UI stay available locally until the UI uses
+    // `/api/v1`; the hosted profile never serves them (TARGET_ARCHITECTURE §11).
+    let legacy = match cfg.profile {
+        Profile::Local => Some(legacy_router(paths, &args, addr, false)?),
+        Profile::Hosted => None,
+    };
+    let slots = cfg.worker_slots;
+    tokio_runtime()?.block_on(async move {
+        let rt = runtime::Runtime::build(cfg, "in_process", slots).await?;
         println!("{DISCLAIMER}");
-        println!("Press Ctrl-C to stop.");
-        server::serve(listener, app).await.context("serving HTTP")?;
-        Ok::<(), anyhow::Error>(())
+        runtime::serve(
+            rt,
+            runtime::ServeOptions { addr, legacy },
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
     })
 }
 
+fn cmd_worker(data_dir: &Path) -> Result<()> {
+    let cfg = app_config(data_dir)?;
+    let slots = cfg.worker_slots.max(1);
+    tokio_runtime()?.block_on(async move {
+        let rt = runtime::Runtime::build(cfg, "standalone", slots).await?;
+        runtime::worker_only(rt).await
+    })
+}
+
+fn cmd_migrate(data_dir: &Path) -> Result<()> {
+    let cfg = app_config(data_dir)?;
+    tokio_runtime()?.block_on(async move {
+        runtime::migrate(&cfg).await?;
+        println!("Migrations are up to date.");
+        Ok(())
+    })
+}
+
+fn parse_lifetime(text: &str) -> Result<chrono::Duration> {
+    let (number, unit) = text.split_at(text.len().saturating_sub(1));
+    let n: i64 = number
+        .parse()
+        .map_err(|_| anyhow!("--expires-in must look like 30d or 12h"))?;
+    match unit {
+        "d" => Ok(chrono::Duration::days(n)),
+        "h" => Ok(chrono::Duration::hours(n)),
+        _ => bail!("--expires-in must end in d or h"),
+    }
+}
+
+fn cmd_keys(data_dir: &Path, command: KeysCommand) -> Result<()> {
+    let cfg = app_config(data_dir)?;
+    tokio_runtime()?.block_on(async move {
+        let metrics = Arc::new(bb_app::metrics::Metrics::default());
+        let db = runtime::connect(&cfg, metrics).await?;
+        match command {
+            KeysCommand::Mint {
+                workspace,
+                scopes,
+                label,
+                expires_in,
+            } => {
+                let scopes: Vec<Scope> = scopes
+                    .iter()
+                    .map(|s| match s.trim() {
+                        "read" => Ok(Scope::Read),
+                        "run" => Ok(Scope::Run),
+                        "admin" => Ok(Scope::Admin),
+                        other => Err(anyhow!("unknown scope `{other}` (read, run, admin)")),
+                    })
+                    .collect::<Result<_>>()?;
+                let admin = scopes.contains(&Scope::Admin);
+                let lifetime = match (expires_in.as_deref(), admin) {
+                    (Some(text), _) => Some(parse_lifetime(text)?),
+                    (None, true) => Some(chrono::Duration::days(30)),
+                    (None, false) => None,
+                };
+                if admin && lifetime.is_some_and(|l| l > chrono::Duration::days(90)) {
+                    bail!("admin keys may live at most 90 days");
+                }
+                let ws = match db.workspace(&workspace).await {
+                    Ok(ws) => ws,
+                    Err(bb_db::Error::NotFound) => {
+                        println!("Creating research workspace '{workspace}'.");
+                        db.create_workspace(&workspace, &workspace)
+                            .await
+                            .map_err(|e| anyhow!("creating workspace: {e}"))?
+                    }
+                    Err(e) => bail!("workspace lookup: {e}"),
+                };
+                let minted = db
+                    .mint_key_tagged(
+                        ws.id,
+                        &label,
+                        &scopes,
+                        lifetime.map(|l| chrono::Utc::now() + l),
+                        cfg.api_key_pepper.expose().as_bytes(),
+                    )
+                    .await
+                    .map_err(|e| anyhow!("minting the key: {e}"))?;
+                println!("Key id     : {}", minted.key.id);
+                println!("Workspace  : {}", ws.slug);
+                println!("Scopes     : {}", minted.key.scopes.join(","));
+                println!(
+                    "Expires    : {}",
+                    minted
+                        .key
+                        .expires_at
+                        .map_or_else(|| "never".to_string(), |t| t.to_rfc3339())
+                );
+                println!("API key (shown once, store it now; only its sha256 is kept):");
+                println!("{}", minted.plaintext);
+            }
+            KeysCommand::Revoke { id } => {
+                let id: uuid::Uuid = id.parse().map_err(|_| anyhow!("key id must be a UUID"))?;
+                let key = db
+                    .revoke_key_any(id)
+                    .await
+                    .map_err(|e| anyhow!("revoking the key: {e}"))?;
+                println!("Revoked key {} ({})", key.id, key.display_prefix);
+            }
+            KeysCommand::List { workspace } => {
+                let keys = match &workspace {
+                    Some(slug) => {
+                        let ws = db
+                            .workspace(slug)
+                            .await
+                            .map_err(|e| anyhow!("workspace: {e}"))?;
+                        db.api_keys(ws.id).await.map_err(|e| anyhow!("{e}"))?
+                    }
+                    None => db.all_api_keys().await.map_err(|e| anyhow!("{e}"))?,
+                };
+                println!(
+                    "{:<36}  {:<8}  {:<15}  {:<10}  LABEL",
+                    "ID", "PREFIX", "SCOPES", "STATE"
+                );
+                for k in keys {
+                    let state = if k.revoked_at.is_some() {
+                        "revoked"
+                    } else if k.expires_at.is_some_and(|t| t <= chrono::Utc::now()) {
+                        "expired"
+                    } else {
+                        "active"
+                    };
+                    println!(
+                        "{:<36}  {:<8}  {:<15}  {:<10}  {}",
+                        k.id,
+                        k.display_prefix,
+                        k.scopes.join(","),
+                        state,
+                        k.label
+                    );
+                }
+            }
+        }
+        db.pool().close().await;
+        Ok(())
+    })
+}
+
+fn cmd_openapi(out: Option<PathBuf>) -> Result<()> {
+    let doc = bb_app::v1::OPENAPI_JSON.clone();
+    match out {
+        Some(path) => {
+            std::fs::write(&path, format!("{doc}\n"))
+                .with_context(|| format!("writing {}", path.display()))?;
+            println!("Wrote {}", path.display());
+        }
+        None => println!("{doc}"),
+    }
+    Ok(())
+}
+
+fn cmd_register_dataset(paths: &Paths, data_dir: &Path, id: &str) -> Result<()> {
+    let cfg = app_config(data_dir)?;
+    let manifest = datasets::find_manifest(&paths.datasets, id)?;
+    let hosted = cfg.profile == Profile::Hosted;
+    tokio_runtime()?.block_on(async move {
+        let db = runtime::connect(&cfg, Arc::new(bb_app::metrics::Metrics::default())).await?;
+        let storage = if matches!(manifest.kind, bb_core::dataset::DatasetKind::Synthetic)
+            && manifest.generator.is_some()
+        {
+            "regenerate"
+        } else {
+            "fs"
+        };
+        let version = bb_app::registry::register(&db, &manifest, storage, hosted)
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+        println!(
+            "Registered dataset '{}' version {} (events sha256 {}, storage {storage}).",
+            version.dataset_id,
+            version.version_no,
+            hex::encode(&version.events_sha256)
+        );
+        Ok(())
+    })
+}
+
+fn cmd_demo_seed(data_dir: &Path, platform: Option<String>) -> Result<()> {
+    let cfg = app_config(data_dir)?;
+    let platform = platform.unwrap_or_else(|| cfg.result_platform.clone());
+    if !bb_app::config::is_platform(&platform) {
+        bail!(
+            "`{platform}` is not a platform class like {}",
+            bb_core::platform::platform_class()
+        );
+    }
+    tokio_runtime()?.block_on(async move {
+        let rt = runtime::Runtime::build(cfg, "seed", 0).await?;
+        let report = bb_app::seed::seed(&rt, &platform).await?;
+        println!(
+            "Demo dataset '{}' version {} (events sha256 {}).",
+            report.dataset_id, report.version, report.events_sha256
+        );
+        println!("Demo experiments in workspace 'demo' (platform {platform}):");
+        for (label, run_id, state) in &report.experiments {
+            println!("  {run_id}  {:<10}  {label}", state.as_deref().unwrap_or("-"));
+        }
+        println!("A worker of platform {platform} computes the queued ones (`blackbox serve` or `blackbox worker`).");
+        rt.db.pool().close().await;
+        Ok(())
+    })
+}
+
+/// `blackbox demo`: the legacy all-in-one local server (deprecated `/api`, file store).
 fn cmd_demo(paths: &Paths, args: ServeArgs) -> Result<()> {
     if datasets::list_manifests(&paths.datasets)?.is_empty() {
         let manifest = write_synthetic(paths, &SyntheticConfig::default())?;
@@ -1225,7 +1538,27 @@ fn cmd_demo(paths: &Paths, args: ServeArgs) -> Result<()> {
             seconds(manifest.end - manifest.start)
         );
     }
-    cmd_serve(paths, args)
+    let addr = bb_app::config::listen_addr(args.addr)?;
+    let app = legacy_router(paths, &args, addr, true)?;
+    tokio_runtime()?.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("binding {addr}"))?;
+        let local = listener.local_addr().context("reading the bound address")?;
+        println!("BlackBox HFT is running at http://{local}/");
+        println!("API: http://{local}/api/health");
+        if !local.ip().is_loopback() {
+            println!(
+                "Warning: listening on a non-loopback address. The legacy API has no \
+                 authentication; anyone who can reach it can run simulations and read or delete \
+                 stored runs."
+            );
+        }
+        println!("{DISCLAIMER}");
+        println!("Press Ctrl-C to stop.");
+        server::serve(listener, app).await.context("serving HTTP")?;
+        Ok::<(), anyhow::Error>(())
+    })
 }
 
 // ----- static viewer -----

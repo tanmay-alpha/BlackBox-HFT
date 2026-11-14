@@ -18,6 +18,7 @@ pub const MAX_GRID_CELLS: usize = 100;
 
 /// One configuration field that differs between two runs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ConfigDiff {
     /// Dotted path into the serialized [`RunConfig`], e.g. `execution.order_latency.entry_ns`.
     pub path: String,
@@ -27,6 +28,7 @@ pub struct ConfigDiff {
 
 /// One measured outcome side by side.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MetricRow {
     /// Stable key, e.g. `net_pnl`.
     pub key: String,
@@ -41,6 +43,7 @@ pub struct MetricRow {
 
 /// What an eligibility difference does to a comparison.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EligibilityEffect {
     /// The same order id does not name the same decision in both runs (different market,
@@ -54,6 +57,7 @@ pub enum EligibilityEffect {
 
 /// One identity field that differs between the runs (or could not be verified).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EligibilityReason {
     /// Dotted name, e.g. `strategy.interval_ns`, `dataset.sha256`, `instrument.tick_size`.
     pub field: String,
@@ -67,6 +71,7 @@ pub struct EligibilityReason {
 /// Whether two runs can be compared order by order and like for like. Checked before any
 /// per-order alignment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Eligibility {
     /// Per-order alignment was produced: no reason has [`EligibilityEffect::NoAlignment`].
     pub aligned: bool,
@@ -78,6 +83,7 @@ pub struct Eligibility {
 
 /// What one scenario did with a decision.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DecisionOutcome {
     pub side: Side,
     pub price_tick: i64,
@@ -85,6 +91,7 @@ pub struct DecisionOutcome {
     pub tif: Tif,
     pub ord_type: OrdType,
     /// Local clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub decision_ts: RelNs,
     pub outcome: OrderOutcome,
     pub final_status: OrderStatus,
@@ -96,16 +103,22 @@ pub struct DecisionOutcome {
     pub fill_count: u32,
     pub queue_ahead_at_entry: Option<f64>,
     /// Exchange clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub exch_arrival_ts: Option<RelNs>,
     /// Local clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub first_response_ts: Option<RelNs>,
     /// Exchange clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub first_fill_ts: Option<RelNs>,
     /// Exchange clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub last_fill_ts: Option<RelNs>,
     /// Local clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub cancel_sent_ts: Option<RelNs>,
     /// Exchange clock: when the order became terminal (its completion).
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub terminal_ts: Option<RelNs>,
 }
 
@@ -113,6 +126,7 @@ pub struct DecisionOutcome {
 /// order listed; the first group that differs decides the class. `identical` therefore means
 /// that nothing below differs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PairClass {
     /// Same decision (side, price, quantity, time in force, order type) and decision time, same
@@ -161,31 +175,41 @@ impl PairClass {
 /// Per-pair timing deltas, B minus A in nanoseconds. A field is `null` unless both orders have
 /// the timestamp.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PairTiming {
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub decision_ns: Option<i64>,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub exch_arrival_ns: Option<i64>,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub first_response_ns: Option<i64>,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub first_fill_ns: Option<i64>,
     /// Terminal (completion) time at the exchange.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub completion_ns: Option<i64>,
 }
 
 /// Distribution of one timing delta (B minus A, nanoseconds) over the pairs that have it.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeltaStats {
     /// Pairs where both orders have the timestamp.
     pub count: u64,
     /// Of those, pairs where the delta is not zero.
     pub nonzero: u64,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub min: Option<i64>,
     /// Mean of the two middle values when `count` is even.
     pub median: Option<f64>,
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub max: Option<i64>,
 }
 
 /// Timing deltas summarised over every pair present in both runs with the same decision (all
 /// classes except `different_decision`, `only_a` and `only_b`), identical pairs included.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TimingSummary {
     pub decision: DeltaStats,
     pub exch_arrival: DeltaStats,
@@ -195,10 +219,12 @@ pub struct TimingSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OrderPair {
     pub order_id: u64,
     pub tick_no: u64,
     /// Local-clock decision time in A (in B for `only_b`). Each side's own time is in `a`/`b`.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub decision_ts: RelNs,
     pub class: PairClass,
     /// Every compared field that differs, most significant group first (e.g. `price_tick`,
@@ -212,6 +238,7 @@ pub struct OrderPair {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Alignment {
     pub identical: u64,
     pub same_fills_different_history: u64,
@@ -236,12 +263,14 @@ pub struct Alignment {
 
 /// A statement about the comparison and how well it is supported.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct InterpretationNote {
     pub basis: Basis,
     pub statement: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Comparison {
     pub run_a: String,
     pub run_b: String,
@@ -259,17 +288,22 @@ pub struct Comparison {
 
 /// A parameter swept along one axis of a sensitivity grid.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GridAxis {
-    /// Sets both entry and response order latency to each value.
+    /// Sets both entry and response order latency to each value: the location parameter of the
+    /// model (`OrderLatencyConfig::with_base_ns`), keeping jitter and shape parameters.
     OrderLatencyNs {
+        #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
         values: Vec<i64>,
     },
-    /// Sets only the entry latency.
+    /// Sets only the entry latency (new orders and cancels), the same way.
     EntryLatencyNs {
+        #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
         values: Vec<i64>,
     },
     FeedLatencyOffsetNs {
+        #[cfg_attr(feature = "openapi", schema(value_type = Vec<String>))]
         values: Vec<i64>,
     },
     QueueModel {
@@ -339,40 +373,16 @@ impl GridAxis {
 
     /// Returns `config` with this axis' `i`-th value applied.
     pub fn apply(&self, config: &RunConfig, i: usize) -> RunConfig {
-        use crate::config::OrderLatencyConfig as L;
         let mut c = config.clone();
         match self {
             GridAxis::OrderLatencyNs { values } => {
                 let v = values[i];
-                c.execution.order_latency = match c.execution.order_latency {
-                    L::Constant { .. } => L::Constant {
-                        entry_ns: v,
-                        response_ns: v,
-                    },
-                    L::Jitter { jitter_ns, .. } => L::Jitter {
-                        entry_ns: v,
-                        response_ns: v,
-                        jitter_ns,
-                    },
-                };
+                c.execution.order_latency =
+                    c.execution.order_latency.with_base_ns(Some(v), Some(v));
             }
             GridAxis::EntryLatencyNs { values } => {
                 let v = values[i];
-                c.execution.order_latency = match c.execution.order_latency {
-                    L::Constant { response_ns, .. } => L::Constant {
-                        entry_ns: v,
-                        response_ns,
-                    },
-                    L::Jitter {
-                        response_ns,
-                        jitter_ns,
-                        ..
-                    } => L::Jitter {
-                        entry_ns: v,
-                        response_ns,
-                        jitter_ns,
-                    },
-                };
+                c.execution.order_latency = c.execution.order_latency.with_base_ns(Some(v), None);
             }
             GridAxis::FeedLatencyOffsetNs { values } => {
                 c.execution.feed_latency_offset_ns = values[i];
@@ -387,6 +397,7 @@ impl GridAxis {
 
 /// A bounded two-dimensional sweep around a base configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct GridSpec {
     pub base: RunConfig,
@@ -454,6 +465,7 @@ impl GridSpec {
 /// One cell of a grid. A cell with `metrics: None` did not complete and must be rendered as
 /// missing, never interpolated.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GridCell {
     pub xi: u32,
     pub yi: u32,
@@ -465,6 +477,7 @@ pub struct GridCell {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GridResult {
     pub spec: GridSpec,
     pub x_labels: Vec<String>,

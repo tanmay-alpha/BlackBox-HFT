@@ -5,12 +5,16 @@
 //! The pool has no minimum connections and no background application polling.
 //! Queue completion accepts only already verified/uploaded artifact metadata; object storage
 //! and scientific hash computation remain the caller's responsibility.
+mod api_reads;
 mod gc;
+mod keys;
 mod models;
 mod queue;
 mod repositories;
 mod research;
+pub use api_reads::*;
 pub use gc::*;
+pub use keys::*;
 pub use models::*;
 pub use queue::*;
 pub use repositories::*;

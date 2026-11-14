@@ -24,10 +24,12 @@ use serde::{Deserialize, Serialize};
 use crate::{Clock, OrdType, OrderStatus, RelNs, ReqKind, Side, Source, Tif, strategy::MarketView};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FlightEvent {
     /// Position on the tape, starting at 0, contiguous.
     pub seq: u64,
     /// When the event happened, in `clock`'s domain.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub ts: RelNs,
     pub clock: Clock,
     pub source: Source,
@@ -38,6 +40,7 @@ pub struct FlightEvent {
 
 /// The market event that moved a queue estimate.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueueCause {
     /// A market trade printed at the order's price. `qty` is the traded quantity.
@@ -52,6 +55,7 @@ pub enum QueueCause {
 
 /// Pre-trade risk rule identifiers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RiskRule {
     MaxPosition,
@@ -65,6 +69,7 @@ pub enum RiskRule {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FlightBody {
     // ----- Source::Strategy, Clock::Local -----
@@ -106,10 +111,12 @@ pub enum FlightBody {
     /// reaching the matching engine"; then `exch_arrival_ts` is `None`.
     RequestSent {
         req: ReqKind,
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         entry_latency_ns: i64,
         /// Scheduled arrival at the exchange (`ts + entry_latency_ns`). The engine's order bus
         /// never lets a request overtake an earlier one, so actual processing can be later; the
         /// exchange-clock events show when it really happened.
+        #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
         exch_arrival_ts: Option<RelNs>,
     },
     /// Clock::Local. The engine refused a request synchronously (for example a cancel while
@@ -153,8 +160,10 @@ pub enum FlightBody {
         /// longer exists there).
         request_rejected: bool,
         leaves_qty: f64,
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         response_latency_ns: i64,
         /// Scheduled local arrival. Same ordering caveat as `RequestSent::exch_arrival_ts`.
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         local_arrival_ts: RelNs,
     },
     /// Clock::Local. The local side received a response and updated its view of the order.
@@ -166,6 +175,7 @@ pub enum FlightBody {
         exec_price_tick: i64,
         leaves_qty: f64,
         /// When the exchange produced this response.
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         exch_ts: RelNs,
     },
 

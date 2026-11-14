@@ -10,6 +10,7 @@ use crate::{Basis, RelNs};
 
 /// The question being answered.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Question {
     WhyFilled,
@@ -20,6 +21,7 @@ pub enum Question {
 
 /// Machine-readable conclusion. Exactly one applies to an order.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     // ----- filled -----
@@ -55,6 +57,7 @@ pub enum Verdict {
 
 /// One link in the chain of reasoning.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ExplainStep {
     pub basis: Basis,
     /// One or two plain sentences with concrete numbers.
@@ -66,36 +69,47 @@ pub struct ExplainStep {
 /// Named time intervals of the order's life. Each is `None` when one of its endpoints never
 /// occurred.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LatencyBreakdown {
     /// Age of the market data the decision was based on: decision time minus the local receipt
     /// time of the last feed event (local clock).
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub feed_staleness_ns: Option<i64>,
     /// Feed latency of that event: its local receipt minus its exchange time, including the
     /// run's configured `feed_latency_offset_ns`. The dataset part is measured, synthetic or
     /// assumed according to the dataset's provenance; the offset is always an assumption.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub feed_latency_ns: Option<i64>,
     /// Modeled order-entry latency.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub entry_latency_ns: Option<i64>,
     /// Modeled response latency of the first response.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub response_latency_ns: Option<i64>,
     /// Exchange clock: arrival to first fill.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub time_to_first_fill_ns: Option<i64>,
     /// Exchange clock: arrival to terminal state.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub resting_time_ns: Option<i64>,
     /// Modeled entry latency of the cancel request.
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
     pub cancel_entry_latency_ns: Option<i64>,
 }
 
 /// One point of the order's modeled queue trajectory, for charting.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct QueuePoint {
     /// Exchange clock.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
     pub ts: RelNs,
     pub seq: u64,
     pub ahead: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Explanation {
     pub order_id: u64,
     pub question: Question,

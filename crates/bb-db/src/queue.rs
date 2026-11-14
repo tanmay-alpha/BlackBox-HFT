@@ -349,7 +349,7 @@ impl Database {
         let expected = format!(
             "runs/{}/{}/{}.bbz",
             hex::encode(fingerprint),
-            job.platform,
+            bb_core::platform::storage_segment(&job.platform),
             r.id
         );
         if a.storage_key != expected {
@@ -364,8 +364,8 @@ impl Database {
                 "upload intent is required before completion".into(),
             ));
         }
-        let inserted:Option<Run>=sqlx::query_as("INSERT INTO bb.runs (id,experiment_config_id,platform,blackbox_version,build_profile,worker_id,result_sha256,summary_sha256,ticks,order_count,fill_count,tape_len,equity_len,wall_time_ms,peak_rss_bytes,metrics,engine_check) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (experiment_config_id,platform) WHERE quarantined_at IS NULL DO NOTHING RETURNING *")
-            .bind(r.id).bind(job.experiment_config_id).bind(&job.platform).bind(&r.blackbox_version).bind(&r.build_profile).bind(&lease.worker_id).bind(&r.result_sha256).bind(&r.summary_sha256).bind(r.ticks).bind(r.order_count).bind(r.fill_count).bind(r.tape_len).bind(r.equity_len).bind(r.wall_time_ms).bind(r.peak_rss_bytes).bind(&r.metrics).bind(&r.engine_check).fetch_optional(&mut *tx).await?;
+        let inserted:Option<Run>=sqlx::query_as("INSERT INTO bb.runs (id,experiment_config_id,platform,blackbox_version,build_profile,worker_id,result_sha256,summary_sha256,ticks,order_count,fill_count,tape_len,equity_len,wall_time_ms,peak_rss_bytes,metrics,engine_check,is_canonical) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (experiment_config_id,platform) WHERE quarantined_at IS NULL DO NOTHING RETURNING *")
+            .bind(r.id).bind(job.experiment_config_id).bind(&job.platform).bind(&r.blackbox_version).bind(&r.build_profile).bind(&lease.worker_id).bind(&r.result_sha256).bind(&r.summary_sha256).bind(r.ticks).bind(r.order_count).bind(r.fill_count).bind(r.tape_len).bind(r.equity_len).bind(r.wall_time_ms).bind(r.peak_rss_bytes).bind(&r.metrics).bind(&r.engine_check).bind(bb_core::platform::is_canonical(&job.platform)).fetch_optional(&mut *tx).await?;
         let reused = inserted.is_none();
         let run:Run=match inserted {Some(row)=>row,None=>sqlx::query_as("SELECT * FROM bb.runs WHERE experiment_config_id=$1 AND platform=$2 AND quarantined_at IS NULL")
             .bind(job.experiment_config_id).bind(&job.platform).fetch_one(&mut *tx).await?};

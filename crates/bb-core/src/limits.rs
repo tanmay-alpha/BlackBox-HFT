@@ -16,6 +16,7 @@ use crate::{
 
 /// Predicted size of one run, computed from the configuration and the dataset manifest alone.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WorkEstimate {
     /// Engine rows the run replays (the engine holds its own copy of them).
     pub dataset_rows: u64,
@@ -35,6 +36,7 @@ pub struct WorkEstimate {
 
 /// Work and output bounds for one run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ExecutionLimits {
     /// Engine rows of the dataset. Checked at admission.
     pub max_dataset_rows: u64,
@@ -189,10 +191,11 @@ impl RunConfig {
         let strategy_events = match &self.strategy.kind {
             // Resting quotes: queue updates follow the depth rows at the quoted levels, and
             // re-quoting follows the ticks. Measured on the bundled presets: at most 1.23 events
-            // per row at a 1 ms interval, about 1.0 at 10 ms and 0.4 at 100 ms.
-            StrategyKind::TouchMaker(_) | StrategyKind::AvellanedaStoikov(_) => {
-                rows.saturating_mul(5) / 4 + ticks / 2
-            }
+            // per row at a 1 ms interval, about 1.0 at 10 ms and 0.4 at 100 ms. GLFT maintains
+            // the same two quotes through the same code (`bb-strategies` `quoting.rs`).
+            StrategyKind::TouchMaker(_)
+            | StrategyKind::AvellanedaStoikov(_)
+            | StrategyKind::Glft(_) => rows.saturating_mul(5) / 4 + ticks / 2,
             // Immediate-or-cancel orders never rest: at most one entry per cooldown and one exit
             // per holding period.
             StrategyKind::ImbalanceTaker(p) => {

@@ -1,0 +1,26 @@
+[package]
+name = "bb-analytics"
+description = "Streaming market microstructure, execution and sampled-risk research analytics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+bb-data.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[features]
+openapi = ["dep:utoipa", "bb-core/openapi"]
+
+[dev-dependencies]
+bb-app = { path = "../bb-app" }
+bb-sim.workspace = true
+bb-strategies.workspace = true
+bb-forensics.workspace = true
+serde_json.workspace = true
+proptest = "1"
+tempfile = "3"

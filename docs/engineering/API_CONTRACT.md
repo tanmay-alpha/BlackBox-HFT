@@ -498,3 +498,24 @@ mock-up); (2) `running → queued` is a legal transition (§10.4); (3) the `PREC
 retired along with the static viewer, and the public demo is served live by this API; (4) the UI's health poll moves
 from `/api/health` to `/api/v1/status`. A non-JSON body there still means `WAKING`, because Render serves its own
 loading page while the instance spins up (Render docs, Deploy for Free).
+
+## 13. Implementation notes and deviations (p2-api, 2026-11-14)
+
+The generated `GET /api/v1/openapi.json` is normative. Where the implementation differs from the sections
+above, and why:
+
+| Topic | Implemented | Reason |
+|---|---|---|
+| ns encoding (§1) | bb-core/bb-analytics still serialize ns as numbers; bb-app converts at the HTTP boundary (`crates/bb-app/src/wire.rs`, explicit key list) and accepts strings or numbers on input. `CONTRACT_VERSION` stays 1 | Changing bb-core serde would change `config_sha256`/`result_sha256` and the pinned golden hashes (Main's decision) |
+| Added resources | `GET /runs/{id}/analytics` (RunAnalytics), `GET /datasets/{id}/analytics` and `/versions/{v}/analytics` (DatasetAnalytics); `RunSummary.label`, `RunSummary.experiment_id`, `RunSummary.config` (detail); `Demo.runs[].run_id/experiment_id`; `Comparison.status` + bb-core comparison fields, `alignment.pairs` always empty (paged by `/pairs`); `GET /experiments?run_id=`; `GET /comparisons/{id}/report`, `GET /sweeps/{id}/report` | UI needs (UIv1) and the analytics scope addition |
+| `/readyz` | Answers from the state of the start-up DB check/migration; `?probe=1` (admin) runs a live probe | SECURITY_REVIEW SEC-10 (no DB traffic from public paths) |
+| Anonymous `GET /runs/{id}/export` | 401 | SEC-12 |
+| Read keys on any mutation | 403 in the auth layer, before the body is read | SEC-1 |
+| Status limits | `max_ticks`/`max_tape_events`/`max_output_bytes` are `null` when unlimited (local profile) | values above 2^53 − 1 are not representable |
+| Errors | 413/415/431 use `invalid_request`; `platform_mismatch` is 409 | SEC-5 |
+| Host/CORS | Same-origin requests (Origin authority = Host) are always allowed, besides `BB_CORS_ALLOWED_ORIGINS` | the local UI served by `serve` sends `Origin` on POST |
+| API keys | `bbk_` + base64url(24 random bytes ‖ 8-byte HMAC-SHA256 tag with `BB_API_KEY_PEPPER`); forged keys fail before any DB access | SECURITY_REVIEW §9.1, SEC-31 |
+| Rate limits | `governor` keyed limiters in the auth layer (per IP for anonymous, per key, plus a global anonymous cap; client IP = last `X-Forwarded-For` entry) instead of a `tower_governor` layer | one layer must apply different quotas to anonymous and keyed callers |
+| Quotas | hosted `quota_active_jobs` stays 50 (not 5) | a 25-cell sweep needs 25 live jobs |
+| Sweeps | v1 sweeps still take `GridSpec`; switch to `bb_core::sweep::SweepSpec` (p5-sweeps) is pending | merged after this branch's scope was fixed |
+| `demo seed` | Runs against the database directly (`DATABASE_URL`), not against the hosted API; `--platform linux-x86_64` seeds canonical jobs for the hosted worker | no admin-API seeding path is needed for a queue-based seed |

@@ -146,16 +146,33 @@ warm-up a one-sided book cancels all quotes.
 
 ### Simplifications (stated, not hidden)
 
-- **Stationary horizon.** `T − t` is held constant at `horizon_s`; there is no terminal time. This
-  is the common infinite-horizon variant, not the paper's finite-horizon solution.
+- **Constant horizon (caveat 1).** `T − t` is held constant at `horizon_s`; there is no terminal
+  time. This is *not* the paper's infinite-horizon solution (AS §2.3 has a different functional form
+  with a discount `ω`). Guéant, Lehalle & Fernandez-Tapia (2013, footnote 8) show the AS formulas
+  are the Taylor expansion of the optimal quotes near the terminal time; far from it the optimal
+  quotes converge to the GLFT asymptotics, whose skew scales as `√(σ²γ/(κA))`, not `γσ²(T − t)`.
+  Read the implementation as "AS near-terminal approximation at a fixed remaining time
+  `horizon_s`" ([research §4.2](research/MARKET_MICROSTRUCTURE.md#42-the-code-cratesbb-strategiessrcavellaneda_stoikovrs), discrepancy 1).
+  The `glft` strategy below implements the asymptotic formulas.
+- **Fill size (caveat 2).** The paper's dealer trades one unit per fill; the code uses the position
+  in base units with the presets' 10-lot fills and no trade-size term, so γ is effectively "per
+  unit of fill size". Guéant (2017) eq. 4.6 with `Δ = order_qty` would change the liquidity term to
+  `ln(1 + γΔ/κ)/(γΔ)` and the inventory half-spread term to `Δγσ²τ/2` (discrepancy 2). `glft` takes
+  `Δ` explicitly.
 - **κ is a parameter, not estimated** from the data, and `A` does not appear in the quotes.
-- **σ is estimated online** from the local mid, an observation process the paper does not specify.
+- **σ from a bouncing mid (caveat 3).** σ is estimated online from the local mid; AS assume the
+  volatility of the efficient price. On a wide book the mid jumps by half the spread whenever one
+  side moves, so the estimate includes spread fluctuation **[INFERENCE]**. `glft` can estimate σ
+  from the size-weighted mid or from trade prices instead.
 - **Inventory in base units.** `q` is the position in the instrument's base unit (BTC on BTCUSDT),
   so γ is "per price unit per base unit".
 - **One level each side, fixed size**, post-only, and a hard position gate that the paper's
   unconstrained solution does not have.
 - **Discrete grid.** Quotes are rounded outward to ticks and re-evaluated every 100 ms, not
-  continuously.
+  continuously; AS §3.3 warn that `dt` must be larger than the typical tick time.
+
+These caveats are also in the `avellaneda_stoikov` preset's description. The implementation is
+unchanged (its golden pins are unchanged).
 
 ### Preset scaling
 
@@ -180,6 +197,52 @@ rises (0.05 ticks extra at σ = 1 tick/√s, 1.25 ticks at 5). The test
 half-life of 50 ticks at 100 ms means volatility is estimated over roughly the last 5 seconds.
 Because the inventory shift scales with position in base units, it is small on BTCUSDT at the preset
 position limit of 0.1 BTC (0.01 × (σ/tick)² ticks).
+
+## Guéant-Lehalle-Fernandez-Tapia (`glft`)
+
+`crates/bb-strategies/src/glft.rs`, an original implementation of the closed-form asymptotic
+quotes of Guéant, Lehalle & Fernandez-Tapia (2013, arXiv:1105.3115, §4) in the trade-size form of
+Guéant (2017, arXiv:1605.01862, eqs. 4.6–4.7, Model A, `ξ = γ`):
+
+```text
+c1    = ln(1 + γΔ/k) / (γΔ)
+ω     = √( γσ² / (2AΔk) × (1 + γΔ/k)^(k/(γΔ) + 1) )
+δᵇ(q) = c1 + (2q + Δ)/2 × ω          bid_tick = floor((S − δᵇ) / tick)
+δᵃ(q) = c1 − (2q − Δ)/2 × ω          ask_tick = ceil((S + δᵃ) / tick)
+```
+
+`S` is the local mid, `q` the known position and `Δ = order_qty`, both in base units; γ is per
+(price unit × base unit), `k` per price unit, `A` fills per second at the reference price. With
+`Δ = 1` this is GLFT (2013) exactly; the spread `2c1 + Δω` is independent of `q` and the skew is
+linear in it (Guéant 2017, eqs. 4.8–4.9). The power is computed as
+`exp((k/(γΔ) + 1) × ln_1p(γΔ/k))`. Then the shared clamp, inventory gate (GLFT's bound `Q` is
+`max_position`) and keep-or-replace logic apply.
+
+Parameters (`GlftParams`): `order_qty`, `max_position`, `gamma`, `kappa`, `intensity_a`,
+`sigma_source` (`mid` | `weighted_mid` | `trade`), `vol_halflife_ticks`. σ uses the AS estimator
+(EWMA of squared clock-sampled changes, per second) on the chosen series: the mid; the
+size-weighted mid `(bid × ask_qty + ask × bid_qty)/(bid_qty + ask_qty)` (Stoikov 2018 eqs. 2–3,
+not his calibrated micro-price); or the last trade price, carried forward. Trade prices avoid
+quote flicker but bounce between bid and ask (Roll 1984); none of the three is the efficient price.
+
+**Continuous model vs this implementation.** The formulas assume a Brownian reference price,
+continuous costless quote revision, Poisson fills of exactly `Δ` at intensity `A e^(−kδ)`
+independent of the price, and `T → ∞`. Here quotes change only on the tick grid through cancels
+and new orders subject to latency and think time; fills come from the replay and the queue model,
+not from the assumed intensity (so `A`, `k` shape the quotes but do not describe the simulated
+fills); prices round outward to ticks; `S` and σ are what the host saw; a partial fill can leave
+`q` off the `Δ` grid.
+
+**Tests** (hand-computed): the GLFT fixture of research §4.2 (`γ = 0.1, k = 1.5, A = 140, σ² = 4,
+q = 1, Δ = 1` → `δᵇ = 0.722961, δᵃ = 0.619527`); the same with `Δ = 0.1` → `c1 = 0.664454`,
+`ω = 0.161167`, `δᵇ = 0.833679`, `δᵃ = 0.511346`, spread independent of `q`; quotes on a book whose
+mid alternates by 0.10 (σ² = 0.1/s): flat `(99.80, 101.20)`, long 2 `(99.61, 101.01)`, short 2
+`(99.99, 101.39)`; the three σ series on a one-sided ask move (2.025 / 0.081 / 6.561).
+
+**Preset `glft_baseline`.** `γ = 0.1/(tick × Δ)`, `k = 0.5/tick`, `A = 1/s`, `Δ = 10 lots`,
+`sigma_source = weighted_mid`, half-life 50 ticks: `c1 = 10 ln(1.2) = 1.82` ticks (the AS preset's
+liquidity term), `ω = 0.546 × (σ/tick)` ticks per `Δ` of inventory. `A` is an assumption, not
+calibrated to the data.
 
 ## Imbalance taker (`imbalance_taker`)
 
@@ -236,7 +299,11 @@ drawdown rule, seed 1.
 | `avellaneda_stoikov` | Avellaneda-Stoikov | strategy |
 | `imbalance_taker` | imbalance taker | strategy |
 | `forensics_probe` | scripted | strategy |
+| `latency_lognormal` | touch maker | order latency: log-normal, median 1 ms, sigma 0.5, every leg |
+| `latency_heavy_tail` | touch maker | order latency: ABIDES cubic, 1 ms minimum, 1.05–51 ms |
+| `glft_baseline` | GLFT | strategy |
 
-The three `maker_*` variants differ from the baseline in exactly one assumption each (test
-`presets::tests::maker_variants_differ_from_the_baseline_in_one_assumption_each`), which is what
-makes their comparisons interpretable.
+The `maker_*` and `latency_*` variants differ from the baseline in exactly one assumption each
+(test `presets::tests::maker_variants_differ_from_the_baseline_in_one_assumption_each`), which is
+what makes their comparisons interpretable. The latency variants keep the baseline's 1 ms as their
+location parameter, so they isolate dispersion and tail from the median.

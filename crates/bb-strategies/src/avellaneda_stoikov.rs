@@ -32,27 +32,12 @@ use bb_core::dataset::InstrumentMeta;
 use bb_core::strategy::{Intent, LocalView, Strategy};
 use bb_core::time::NS_PER_S;
 
-use crate::quoting::{QuoteRules, Quotes, cancel_all_one_sided, sync_quotes};
+use crate::quoting::{
+    QuoteRules, Quotes, cancel_all_one_sided, ceil_tick, floor_tick, sync_quotes,
+};
 use crate::text::Text;
 
 const NAME: &str = "avellaneda_stoikov";
-
-/// Relative tolerance, in ticks, within which a price is treated as lying exactly on the grid.
-/// Without it `8.2 / 0.01` evaluating to `819.9999999999999` would floor a whole tick low.
-const GRID_TOLERANCE: f64 = 1e-11;
-
-fn on_grid(ticks: f64) -> Option<f64> {
-    let nearest = ticks.round();
-    ((ticks - nearest).abs() <= GRID_TOLERANCE * ticks.abs().max(1.0)).then_some(nearest)
-}
-
-fn floor_tick(ticks: f64) -> i64 {
-    on_grid(ticks).unwrap_or_else(|| ticks.floor()) as i64
-}
-
-fn ceil_tick(ticks: f64) -> i64 {
-    on_grid(ticks).unwrap_or_else(|| ticks.ceil()) as i64
-}
 
 /// Slot 0 is the bid quote, slot 1 the ask quote; both are `Gtx` limit orders at
 /// `floor((r - delta) / tick_size)` and `ceil((r + delta) / tick_size)`, kept off the opposite
@@ -378,19 +363,5 @@ mod tests {
         assert_eq!(cancelled(&out), vec![order_id(3, 0)]);
         assert!(placed(&out).is_empty());
         assert!(reasons(&out)[0].contains("one-sided"));
-    }
-
-    #[test]
-    fn prices_on_the_grid_are_not_rounded_a_tick_away() {
-        // 8.2 / 0.01 is 819.9999999999999 and 0.07 / 0.01 is 7.000000000000001 in binary
-        // floating point.
-        assert_eq!(floor_tick(8.2 / 0.01), 820);
-        assert_eq!(ceil_tick(8.2 / 0.01), 820);
-        assert_eq!(floor_tick(0.07 / 0.01), 7);
-        assert_eq!(ceil_tick(0.07 / 0.01), 7);
-        assert_eq!(floor_tick(10_006.4), 10_006);
-        assert_eq!(ceil_tick(10_006.4), 10_007);
-        assert_eq!(floor_tick(-0.5), -1);
-        assert_eq!(ceil_tick(-0.5), 0);
     }
 }

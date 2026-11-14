@@ -110,18 +110,11 @@ pub fn router(state: Arc<AppState>, web_dir: Option<PathBuf>) -> Router {
     }
 }
 
-/// Serves `app` on `listener` until Ctrl-C.
+/// Serves `app` on `listener` until SIGTERM or Ctrl-C.
 pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::Result<()> {
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(crate::runtime::shutdown_signal())
         .await
-}
-
-async fn shutdown_signal() {
-    if tokio::signal::ctrl_c().await.is_err() {
-        // Without a working signal handler there is nothing to wait for; keep serving.
-        std::future::pending::<()>().await;
-    }
 }
 
 /// The health payload.

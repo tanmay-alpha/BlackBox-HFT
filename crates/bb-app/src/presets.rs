@@ -7,9 +7,10 @@
 use bb_core::{
     OrdType, Side, Tif,
     config::{
-        AvellanedaStoikovParams, ExchangeModel, ExecutionConfig, FeeConfig, ImbalanceTakerParams,
-        OrderLatencyConfig, QueueModelConfig, RecordConfig, RiskConfig, RunConfig, ScriptedOrder,
-        ScriptedParams, ScriptedPrice, StrategyConfig, StrategyKind, TouchMakerParams,
+        AvellanedaStoikovParams, CubicLeg, ExchangeModel, ExecutionConfig, FeeConfig, GlftParams,
+        ImbalanceTakerParams, LogNormalLeg, OrderLatencyConfig, QueueModelConfig, RecordConfig,
+        RiskConfig, RunConfig, ScriptedOrder, ScriptedParams, ScriptedPrice, SigmaSource,
+        StrategyConfig, StrategyKind, TouchMakerParams,
     },
     dataset::{DatasetManifest, InstrumentMeta, Quantiles},
     time::NS_PER_MS,
@@ -53,6 +54,36 @@ const AS_HORIZON_S: f64 = 1.0;
 /// 50 ticks of 100 ms: volatility is estimated over roughly the last 5 seconds.
 const AS_VOL_HALFLIFE_TICKS: u32 = 50;
 
+/// Log-normal latency preset: sigma of ln(latency) on every leg, around the baseline's 1 ms
+/// median. Deciles: median * e^(-/+ 0.5 * 1.2816) = 0.527 ms and 1.898 ms.
+const LOG_NORMAL_SIGMA: f64 = 0.5;
+
+/// Heavy-tailed latency preset: ABIDES' default cubic shape (`jitter` 0.5, `clip` 0.1, `unit`
+/// 10) on the baseline's 1 ms as the minimum. Each message takes 1 ms + 0.05 ms / x^3 with x
+/// uniform on (0.1, 1]: between 1.05 ms and 51 ms, median 1.30 ms, mean 3.75 ms, one in ten
+/// above 8.29 ms.
+const CUBIC_LEG: CubicLeg = CubicLeg {
+    min_ns: BASE_LATENCY_NS,
+    jitter: 0.5,
+    clip: 0.1,
+    unit: 10.0,
+};
+
+// GLFT parameters, instrument-relative: gamma is per (tick x order size), kappa per tick, so
+// with gamma = GLFT_GAMMA / (tick * Delta) and kappa = GLFT_KAPPA_PER_TICK / tick:
+//
+//   c1    = ln(1 + 0.1 / 0.5) / 0.1 ticks = 1.82 ticks (the Avellaneda-Stoikov preset's
+//           liquidity term)
+//   omega = (tick / Delta) * (sigma / tick) * sqrt(0.1 * 1.2^6 / A) = 0.546 (sigma / tick)
+//           ticks per order size of inventory at A = 1 per second
+//
+// so the flat half spread is 1.82 + 0.27 (sigma / tick) ticks and each order size of inventory
+// shifts both quotes by 0.55 (sigma / tick) ticks.
+const GLFT_GAMMA: f64 = 0.1;
+const GLFT_KAPPA_PER_TICK: f64 = 0.5;
+/// Fills per second of a quote at the mid: an assumption, not calibrated to the data.
+const GLFT_INTENSITY_A: f64 = 1.0;
+
 /// The preset catalogue for the dataset described by `manifest`.
 pub fn presets(manifest: &DatasetManifest) -> Vec<Preset> {
     build(
@@ -83,6 +114,7 @@ fn base_execution() -> ExecutionConfig {
             entry_ns: BASE_LATENCY_NS,
             response_ns: BASE_LATENCY_NS,
         },
+        think_time_ns: 0,
         feed_latency_offset_ns: 0,
         fees: FeeConfig {
             maker: 0.0002,
@@ -263,6 +295,38 @@ fn build(
         }),
     );
 
+    let mut latency_lognormal = maker();
+    let leg = LogNormalLeg {
+        median_ns: BASE_LATENCY_NS,
+        sigma: LOG_NORMAL_SIGMA,
+    };
+    latency_lognormal.execution.order_latency = OrderLatencyConfig::LogNormal {
+        entry: leg,
+        response: leg,
+        cancel: None,
+    };
+
+    let mut latency_heavy_tail = maker();
+    latency_heavy_tail.execution.order_latency = OrderLatencyConfig::HeavyTail {
+        entry: CUBIC_LEG,
+        response: CUBIC_LEG,
+        cancel: None,
+    };
+
+    let glft_baseline = base_config(
+        dataset_id,
+        sizing,
+        StrategyKind::Glft(GlftParams {
+            order_qty: sizing.order_qty,
+            max_position: sizing.max_position,
+            gamma: GLFT_GAMMA / (tick * sizing.order_qty),
+            kappa: GLFT_KAPPA_PER_TICK / tick,
+            intensity_a: GLFT_INTENSITY_A,
+            sigma_source: SigmaSource::WeightedMid,
+            vol_halflife_ticks: AS_VOL_HALFLIFE_TICKS,
+        }),
+    );
+
     let preset =
         |id: &str, title: &str, description: &str, demonstrates: &str, config: RunConfig| Preset {
             id: id.to_string(),
@@ -317,7 +381,14 @@ fn build(
             "Quotes around an inventory-adjusted reservation price with the Avellaneda-Stoikov \
              (2008) spread. Parameters are scaled to the tick size so the half spread is about \
              2 ticks in a quiet market and widens with measured volatility; it stays silent \
-             until its volatility estimate has warmed up.",
+             until its volatility estimate has warmed up. Caveats: the remaining horizon T - t \
+             is held at 1 s, which makes the paper's finite-horizon formulas a near-terminal \
+             approximation rather than a stationary policy (Guéant, Lehalle and \
+             Fernandez-Tapia 2013); the paper's fills are one unit each, and the formulas are \
+             applied to 10-lot fills without the trade-size scaling of Guéant (2017); volatility \
+             is estimated from the local mid, which also jumps whenever one side of a wide book \
+             moves. The glft_baseline preset uses stationary formulas, an explicit trade size \
+             and a size-weighted volatility input instead.",
             "A model-driven maker that quotes behind the touch and trades fill frequency for \
              wider captured spread.",
             avellaneda_stoikov,
@@ -343,6 +414,43 @@ fn build(
              fill on arrival, post-only expiry), so each explanation rule can be read on a \
              small tape.",
             forensics_probe,
+        ),
+        preset(
+            "latency_lognormal",
+            "Touch maker: log-normal latency",
+            "The baseline strategy with seeded log-normal order latency instead of a constant \
+             1 ms: entry, cancel and response latencies are each drawn independently with a \
+             median of 1 ms and sigma 0.5 on the log scale, so one message in ten takes under \
+             0.53 ms and one in ten over 1.90 ms (mean 1.13 ms). The draws come from the run \
+             seed; messages never overtake one another. Nothing else differs.",
+            "What dispersion alone does, at the same median latency as the baseline: quotes \
+             and cancels that arrive late some of the time.",
+            latency_lognormal,
+        ),
+        preset(
+            "latency_heavy_tail",
+            "Touch maker: heavy-tailed latency",
+            "The baseline strategy with ABIDES' cubic latency model on every message: 1 ms plus \
+             0.05 ms / x^3 with x uniform on (0.1, 1], so latencies range from 1.05 ms to 51 ms \
+             with a median of 1.30 ms, a mean of 3.75 ms and one message in ten above 8.3 ms. \
+             Seeded from the run seed; messages never overtake one another, so one slow \
+             message also holds back those sent after it. Nothing else differs.",
+            "Tail latency: rare slow quotes and cancels, which uniform jitter cannot produce, \
+             and what they cost a passive strategy.",
+            latency_heavy_tail,
+        ),
+        preset(
+            "glft_baseline",
+            "GLFT market maker",
+            "Quotes with the Guéant-Lehalle-Fernandez-Tapia (2013) asymptotic formulas in the \
+             trade-size form of Guéant (2017), with the 10-lot quote size as the trade size. \
+             Parameters are scaled to the tick size: the flat half spread is 1.82 ticks plus a \
+             volatility term, and each 10 lots of inventory skew both quotes. Volatility is \
+             estimated from the size-weighted mid; the fill intensity A = 1 per second is an \
+             assumption, not calibrated to the data. Execution as the baseline.",
+            "A model whose quotes stay valid far from any terminal time, with an explicit trade \
+             size and inventory bound, against the Avellaneda-Stoikov preset.",
+            glft_baseline,
         ),
     ]
 }
@@ -380,6 +488,9 @@ mod tests {
                 "avellaneda_stoikov",
                 "imbalance_taker",
                 "forensics_probe",
+                "latency_lognormal",
+                "latency_heavy_tail",
+                "glft_baseline",
             ]
         );
         for p in &presets {
@@ -419,6 +530,19 @@ mod tests {
         let mut rebate_reset = rebate.clone();
         rebate_reset.execution.fees = base.execution.fees;
         assert_eq!(&rebate_reset, base);
+
+        for id in ["latency_lognormal", "latency_heavy_tail"] {
+            let variant = &by_id(&presets, id).config;
+            assert_ne!(
+                variant.execution.order_latency,
+                base.execution.order_latency
+            );
+            // Same location as the baseline's constant 1 ms.
+            assert_eq!(variant.execution.order_latency.base_entry_ns(), 1_000_000);
+            let mut reset = variant.clone();
+            reset.execution.order_latency = base.execution.order_latency;
+            assert_eq!(&reset, base, "{id}");
+        }
     }
 
     #[test]
@@ -454,6 +578,22 @@ mod tests {
                 (half_spread_ticks - 1.823).abs() < 0.01,
                 "tick {tick}: {half_spread_ticks}"
             );
+        }
+    }
+
+    #[test]
+    fn glft_liquidity_term_is_about_two_ticks_for_any_instrument() {
+        for (tick, lot) in [(0.01, 0.001), (0.1, 0.001), (0.5, 0.01), (25.0, 1.0)] {
+            let presets = build("ds", &instrument(tick, lot), None);
+            let StrategyKind::Glft(p) = &by_id(&presets, "glft_baseline").config.strategy.kind
+            else {
+                panic!("wrong strategy kind");
+            };
+            assert_eq!(p.order_qty, 10.0 * lot);
+            // c1 = ln(1 + gamma Delta / k) / (gamma Delta) = 10 ln(1.2) ticks.
+            let x = p.gamma * p.order_qty / p.kappa;
+            let c1_ticks = x.ln_1p() / (p.gamma * p.order_qty) / tick;
+            assert!((c1_ticks - 1.823).abs() < 0.01, "tick {tick}: {c1_ticks}");
         }
     }
 
