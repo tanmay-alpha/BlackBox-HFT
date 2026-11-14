@@ -16,6 +16,7 @@ import { NsError, nsToSafeNumber, parseNs, type NsInput } from '../components/ns
 import { ApiError } from './http';
 import type * as M from './model';
 import type {
+  CubicLeg,
   DatasetManifest,
   DecisionOutcome,
   EquitySample,
@@ -24,8 +25,10 @@ import type {
   FlightEvent,
   GridAxis,
   GridSpec,
+  LogNormalLeg,
   MarketView,
   MarkoutStat,
+  OrderLatencyConfig,
   OrderPair,
   OrderRecord,
   Preset,
@@ -89,11 +92,50 @@ function config(c: RunConfig, path: string): RunConfig {
   ns(c, 'seed', path);
   ns(c.strategy, 'interval_ns', `${path}.strategy`);
   ns(c.execution, 'feed_latency_offset_ns', `${path}.execution`);
+  nsOpt(c.execution, 'think_time_ns', `${path}.execution`);
   const lat = c.execution.order_latency;
-  ns(lat, 'entry_ns', `${path}.execution.order_latency`);
-  ns(lat, 'response_ns', `${path}.execution.order_latency`);
-  if (lat.type === 'jitter') ns(lat, 'jitter_ns', `${path}.execution.order_latency`);
+  const lp = `${path}.execution.order_latency`;
+  switch (lat.type) {
+    case 'constant':
+    case 'jitter':
+      ns(lat, 'entry_ns', lp);
+      ns(lat, 'response_ns', lp);
+      if (lat.type === 'jitter') ns(lat, 'jitter_ns', lp);
+      break;
+    case 'log_normal':
+    case 'heavy_tail': {
+      const key = lat.type === 'log_normal' ? 'median_ns' : 'min_ns';
+      ns(lat.entry, key, `${lp}.entry`);
+      ns(lat.response, key, `${lp}.response`);
+      if (lat.cancel) ns(lat.cancel, key, `${lp}.cancel`);
+      break;
+    }
+  }
   return c;
+}
+
+/** The order-latency model with every ns value as a decimal string. */
+function latencyOut(lat: OrderLatencyConfig): unknown {
+  const p = 'config.execution.order_latency';
+  switch (lat.type) {
+    case 'constant':
+      return { ...lat, entry_ns: nsOut(lat.entry_ns, `${p}.entry_ns`), response_ns: nsOut(lat.response_ns, `${p}.response_ns`) };
+    case 'jitter':
+      return {
+        ...lat,
+        entry_ns: nsOut(lat.entry_ns, `${p}.entry_ns`),
+        response_ns: nsOut(lat.response_ns, `${p}.response_ns`),
+        jitter_ns: nsOut(lat.jitter_ns, `${p}.jitter_ns`),
+      };
+    case 'log_normal': {
+      const leg = (l: LogNormalLeg, name: string) => ({ ...l, median_ns: nsOut(l.median_ns, `${p}.${name}.median_ns`) });
+      return { ...lat, entry: leg(lat.entry, 'entry'), response: leg(lat.response, 'response'), cancel: lat.cancel && leg(lat.cancel, 'cancel') };
+    }
+    case 'heavy_tail': {
+      const leg = (l: CubicLeg, name: string) => ({ ...l, min_ns: nsOut(l.min_ns, `${p}.${name}.min_ns`) });
+      return { ...lat, entry: leg(lat.entry, 'entry'), response: leg(lat.response, 'response'), cancel: lat.cancel && leg(lat.cancel, 'cancel') };
+    }
+  }
 }
 
 function markouts(list: MarkoutStat[], path: string): void {
@@ -380,6 +422,22 @@ export const normalize = {
       absNs(e, 'created_at_ns', path);
       return e;
     }),
+  /** Integer ns fields of the analytics stay strings; each is checked to be an exact i64. */
+  analytics(a: W.RunAnalytics): W.RunAnalytics {
+    const walk = (v: unknown, path: string): void => {
+      if (Array.isArray(v)) {
+        v.forEach((x, i) => walk(x, `${path}[${i}]`));
+      } else if (typeof v === 'object' && v !== null) {
+        for (const [k, x] of Object.entries(v)) {
+          if (k.endsWith('_ns') && typeof x === 'string') absNs(v, k, path);
+          else walk(x, `${path}.${k}`);
+        }
+      }
+    };
+    walk(a, 'analytics');
+    a.execution?.opportunities.forEach((o, i) => absNs(o, '0', `analytics.execution.opportunities[${i}]`));
+    return a;
+  },
   apiKeys(list: W.ApiKeyInfo[]): W.ApiKeyInfo[] {
     list.forEach((k, i) => {
       const path = `api_keys[${i}]`;
@@ -404,23 +462,18 @@ function nsOut(v: NsInput, path: string): string {
 /** Request bodies: every ns value and `seed` as a decimal string (API_CONTRACT §1). */
 export const toWire = {
   config(c: RunConfig): unknown {
-    const lat = c.execution.order_latency;
+    // `think_time_ns` is omitted when zero, as the server serializes it.
+    const { think_time_ns: think, ...execution } = c.execution;
+    const withThink = think === undefined || think === 0 ? {} : { think_time_ns: nsOut(think, 'config.execution.think_time_ns') };
     return {
       ...c,
       seed: nsOut(c.seed, 'config.seed'),
       strategy: { ...c.strategy, interval_ns: nsOut(c.strategy.interval_ns, 'config.strategy.interval_ns') },
       execution: {
-        ...c.execution,
+        ...execution,
+        ...withThink,
         feed_latency_offset_ns: nsOut(c.execution.feed_latency_offset_ns, 'config.execution.feed_latency_offset_ns'),
-        order_latency:
-          lat.type === 'jitter'
-            ? {
-                ...lat,
-                entry_ns: nsOut(lat.entry_ns, 'entry_ns'),
-                response_ns: nsOut(lat.response_ns, 'response_ns'),
-                jitter_ns: nsOut(lat.jitter_ns, 'jitter_ns'),
-              }
-            : { ...lat, entry_ns: nsOut(lat.entry_ns, 'entry_ns'), response_ns: nsOut(lat.response_ns, 'response_ns') },
+        order_latency: latencyOut(c.execution.order_latency),
       },
     };
   },

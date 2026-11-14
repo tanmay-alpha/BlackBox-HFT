@@ -9,6 +9,7 @@ import type {
   OrderDetail,
   Question,
 } from "../../api/types";
+import { latencyLabel } from "../../components/describe";
 import { SplitPane } from "../../components/SplitPane";
 import { Tabs } from "../../components/Tabs";
 import { Term } from "../../components/Tooltip";
@@ -188,8 +189,11 @@ function ExecutionAssumptions({ execution }: { execution: ExecutionConfig }) {
         Order <Term term="latency">latency</Term>
       </dt>
       <dd className="mono">
-        entry {fmtDuration(latency.entry_ns)}, response {fmtDuration(latency.response_ns)}
-        {latency.type === "jitter" ? `, jitter up to ${fmtDuration(latency.jitter_ns)}` : ""}
+        {latency.type === "constant" || latency.type === "jitter"
+          ? `entry ${fmtDuration(latency.entry_ns)}, response ${fmtDuration(latency.response_ns)}${
+              latency.type === "jitter" ? `, jitter up to ${fmtDuration(latency.jitter_ns)}` : ""
+            }`
+          : `${latency.type}: ${latencyLabel(latency)}`}
       </dd>
       <dt>
         <Term term="feed_latency">Feed latency</Term> offset

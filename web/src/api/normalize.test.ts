@@ -131,6 +131,63 @@ describe('normalize: ns strings', () => {
     expect(toWire.config(config)).toEqual(CONFIG);
   });
 
+  const runWith = (config: unknown) =>
+    normalize.run({
+      run_id: 'abc',
+      dataset: { id: 'synthetic-demo', version: 1, events_sha256: 'x', origin_ns: '1700000000000000000' },
+      interval_ns: '100000000',
+      created_at_ns: '1763095313707237000',
+      metrics: { markouts: [] },
+      config,
+    } as never).config as RunConfig;
+
+  it('round-trips a log_normal latency, think time and a glft strategy exactly', () => {
+    const wire = {
+      ...CONFIG,
+      strategy: {
+        interval_ns: '100000000',
+        kind: { type: 'glft', order_qty: 0.01, max_position: 0.1, gamma: 100, kappa: 5, intensity_a: 1, sigma_source: 'weighted_mid', vol_halflife_ticks: 50 },
+      },
+      execution: {
+        ...CONFIG.execution,
+        think_time_ns: '2000000',
+        order_latency: { type: 'log_normal', entry: { median_ns: '1000000', sigma: 0.5 }, response: { median_ns: '59999999999', sigma: 0 }, cancel: null },
+      },
+    };
+    const config = runWith(structuredClone(wire));
+    expect(config.execution.think_time_ns).toBe(2_000_000);
+    const lat = config.execution.order_latency;
+    expect(lat.type === 'log_normal' && [lat.entry.median_ns, lat.response.median_ns, lat.cancel]).toEqual([1_000_000, 59_999_999_999, null]);
+    expect(toWire.config(config)).toEqual(wire);
+  });
+
+  it('round-trips a heavy_tail latency with a cancel leg and omits a zero think time', () => {
+    const wire = {
+      ...CONFIG,
+      execution: {
+        ...CONFIG.execution,
+        order_latency: {
+          type: 'heavy_tail',
+          entry: { min_ns: '1000000', jitter: 0.5, clip: 0.1, unit: 10 },
+          response: { min_ns: '2000000', jitter: 0, clip: 0.5, unit: 1 },
+          cancel: { min_ns: '9007199254740991', jitter: 1, clip: 0.9, unit: 2.5 },
+        },
+      },
+    };
+    const config = runWith(structuredClone(wire));
+    const lat = config.execution.order_latency;
+    expect(lat.type === 'heavy_tail' && [lat.entry.min_ns, lat.response.min_ns, lat.cancel?.min_ns]).toEqual([1_000_000, 2_000_000, 2 ** 53 - 1]);
+    expect(toWire.config(config)).toEqual(wire);
+    const zero = toWire.config({ ...config, execution: { ...config.execution, think_time_ns: 0 } }) as { execution: object };
+    expect('think_time_ns' in zero.execution).toBe(false);
+  });
+
+  it('names the leg of an inexact latency median', () => {
+    const order_latency = { type: 'log_normal', entry: { median_ns: '1.5', sigma: 0.5 }, response: { median_ns: '1', sigma: 0 }, cancel: null };
+    const wire = { ...CONFIG, execution: { ...CONFIG.execution, order_latency } };
+    expect(() => runWith(wire)).toThrow(/order_latency\.entry\.median_ns/);
+  });
+
   it('validates every job instant as an absolute decimal string', () => {
     const job = { id: 'j', state: 'running', version: 1, created_at_ns: '1', queued_at_ns: '2', started_at_ns: null, finished_at_ns: null, last_heartbeat_at_ns: 'x', cancel_requested_at_ns: null };
     expect(() => normalize.job(job as never)).toThrow(/job\.last_heartbeat_at_ns/);

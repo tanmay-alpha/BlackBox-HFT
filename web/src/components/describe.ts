@@ -2,15 +2,19 @@
 // execution assumption follows the documentation of the corresponding type in
 // `crates/bb-core/src/config.rs`; nothing here claims more than the engine model does.
 
-import type {
-  ExchangeModel,
-  FeeConfig,
-  OrderLatencyConfig,
-  OrderOutcome,
-  QueueModelConfig,
-  RunConfig,
-  Severity,
-  StrategyKind,
+import {
+  cubicMaxNs,
+  type CubicLeg,
+  type ExchangeModel,
+  type FeeConfig,
+  type LogNormalLeg,
+  type OrderLatencyConfig,
+  type OrderOutcome,
+  type QueueModelConfig,
+  type RunConfig,
+  type Severity,
+  type SigmaSource,
+  type StrategyKind,
 } from '../api/types';
 import { fmtDuration } from './fmt';
 import type { BadgeKind } from './ui';
@@ -97,6 +101,10 @@ export const STRATEGY_INFO: Record<StrategyKind['type'], OptionInfo> = {
     label: 'Avellaneda-Stoikov',
     help: 'Avellaneda-Stoikov (2008) reservation price and spread.',
   },
+  glft: {
+    label: 'GLFT market maker',
+    help: 'Gu\u00e9ant-Lehalle-Fernandez-Tapia (2013) asymptotic quotes with Gu\u00e9ant (2017) trade size; volatility estimated from a chosen price series.',
+  },
   imbalance_taker: {
     label: 'Imbalance taker',
     help: 'Takes liquidity when top-of-book imbalance exceeds a threshold, exits after a holding time.',
@@ -107,10 +115,50 @@ export const STRATEGY_INFO: Record<StrategyKind['type'], OptionInfo> = {
   },
 };
 
-/** `entry / response` order latency, with jitter when configured. */
+export const SIGMA_SOURCES: SigmaSource[] = ['mid', 'weighted_mid', 'trade'];
+
+export const SIGMA_SOURCE_INFO: Record<SigmaSource, OptionInfo> = {
+  mid: {
+    label: 'Mid',
+    help: 'Mid (bid + ask) / 2. Jumps by half the spread whenever one side of a wide book moves.',
+  },
+  weighted_mid: {
+    label: 'Size-weighted mid',
+    help: '(bid \u00d7 ask_qty + ask \u00d7 bid_qty) / (bid_qty + ask_qty) (Stoikov 2018, eqs. 2-3; not his calibrated micro-price).',
+  },
+  trade: {
+    label: 'Last trade',
+    help: 'Last trade price received locally, carried forward between trades.',
+  },
+};
+
+function logNormalLegLabel(l: LogNormalLeg): string {
+  return `LN(median ${fmtDuration(l.median_ns)}, \u03c3 ${l.sigma})`;
+}
+
+function cubicLegLabel(l: CubicLeg): string {
+  return `cubic(min ${fmtDuration(l.min_ns)}, jitter ${l.jitter}, clip ${l.clip}, unit ${l.unit}; max ${fmtDuration(Math.round(cubicMaxNs(l)))})`;
+}
+
+/**
+ * `entry / response` order latency, with jitter when configured; for the distribution models,
+ * each leg's parameters and a separate cancel-entry leg when there is one.
+ */
 export function latencyLabel(l: OrderLatencyConfig): string {
-  const base = `${fmtDuration(l.entry_ns)} / ${fmtDuration(l.response_ns)}`;
-  return l.type === 'jitter' ? `${base} + U[0, ${fmtDuration(l.jitter_ns)}]` : base;
+  switch (l.type) {
+    case 'constant':
+      return `${fmtDuration(l.entry_ns)} / ${fmtDuration(l.response_ns)}`;
+    case 'jitter':
+      return `${fmtDuration(l.entry_ns)} / ${fmtDuration(l.response_ns)} + U[0, ${fmtDuration(l.jitter_ns)}]`;
+    case 'log_normal': {
+      const base = `${logNormalLegLabel(l.entry)} / ${logNormalLegLabel(l.response)}`;
+      return l.cancel ? `${base}, cancel ${logNormalLegLabel(l.cancel)}` : base;
+    }
+    case 'heavy_tail': {
+      const base = `${cubicLegLabel(l.entry)} / ${cubicLegLabel(l.response)}`;
+      return l.cancel ? `${base}, cancel ${cubicLegLabel(l.cancel)}` : base;
+    }
+  }
 }
 
 /** Fraction of traded value expressed in basis points (1 bp = 0.0001), free of float noise. */
@@ -141,6 +189,9 @@ export function assumptionsLabel(c: RunConfig): string {
   ];
   if (e.feed_latency_offset_ns !== 0) {
     parts.push(`feed +${fmtDuration(e.feed_latency_offset_ns)}`);
+  }
+  if (e.think_time_ns) {
+    parts.push(`think ${fmtDuration(e.think_time_ns)}`);
   }
   return parts.join(' \u00b7 ');
 }

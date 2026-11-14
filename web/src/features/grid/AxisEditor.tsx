@@ -4,8 +4,8 @@
 import { Link } from "react-router-dom";
 
 import type { RunDetail } from "../../api/model";
-import type { RunConfig } from "../../api/types";
-import { fractionToBps } from "../../components/describe";
+import { baseEntryNs, baseResponseNs, type RunConfig } from "../../api/types";
+import { fractionToBps, latencyLabel } from "../../components/describe";
 import { fmtDurationExact } from "../../components/fmt";
 import { Term } from "../../components/Tooltip";
 import { BasisBadge, HashText } from "../../components/ui";
@@ -39,8 +39,11 @@ export function BaseSummary({ run }: { run: RunDetail }) {
         <Term term="latency">Order latency</Term>
       </dt>
       <dd>
-        entry {fmtDurationExact(latency.entry_ns)}, response {fmtDurationExact(latency.response_ns)}
-        {latency.type === "jitter" ? `, jitter up to ${fmtDurationExact(latency.jitter_ns)}` : ""}
+        {latency.type === "constant" || latency.type === "jitter"
+          ? `entry ${fmtDurationExact(latency.entry_ns)}, response ${fmtDurationExact(latency.response_ns)}${
+              latency.type === "jitter" ? `, jitter up to ${fmtDurationExact(latency.jitter_ns)}` : ""
+            }`
+          : `${latency.type}: ${latencyLabel(latency)}`}
       </dd>
       <dt>Seed</dt>
       <dd>{config.seed}</dd>
@@ -53,9 +56,9 @@ function baseValueText(param: AxisParam, config: RunConfig): string {
   const execution = config.execution;
   switch (param) {
     case "order_latency_ns":
-      return `entry ${fmtDurationExact(execution.order_latency.entry_ns)}, response ${fmtDurationExact(execution.order_latency.response_ns)}`;
+      return `entry ${fmtDurationExact(baseEntryNs(execution.order_latency))}, response ${fmtDurationExact(baseResponseNs(execution.order_latency))}`;
     case "entry_latency_ns":
-      return fmtDurationExact(execution.order_latency.entry_ns);
+      return fmtDurationExact(baseEntryNs(execution.order_latency));
     case "feed_latency_offset_ns":
       return fmtDurationExact(execution.feed_latency_offset_ns);
     case "queue_model":

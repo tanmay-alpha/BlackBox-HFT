@@ -83,7 +83,7 @@ export interface RunConfig {
   execution: ExecutionConfig;
   risk: RiskConfig;
   record: RecordConfig;
-  /** Seed for every stochastic component (currently only jittered order latency). */
+  /** Seed for every stochastic component: the `jitter`, `log_normal` and `heavy_tail` latency models. */
   seed: number;
 }
 
@@ -92,6 +92,11 @@ export interface ExecutionConfig {
   exchange_model: ExchangeModel;
   queue_model: QueueModelConfig;
   order_latency: OrderLatencyConfig;
+  /**
+   * Strategy compute ("think") time: requests decided on a tick are sent this long after the
+   * decision. Must be below `strategy.interval_ns`. The server omits it when zero.
+   */
+  think_time_ns?: number;
   /** Added to every feed event's local receipt time. Zero keeps the dataset's own latency. */
   feed_latency_offset_ns: number;
   fees: FeeConfig;
@@ -108,10 +113,70 @@ export type QueueModelConfig =
   | { type: 'power_prob2'; n: number }
   | { type: 'power_prob3'; n: number };
 
-/** Order-entry and order-response latency. */
+/**
+ * Order-entry and order-response latency. `constant` and `jitter` apply one entry latency to new
+ * orders and cancels alike; `log_normal` and `heavy_tail` may give cancels their own entry
+ * distribution (`cancel: null` draws cancels from `entry`'s parameters).
+ */
 export type OrderLatencyConfig =
   | { type: 'constant'; entry_ns: number; response_ns: number }
-  | { type: 'jitter'; entry_ns: number; response_ns: number; jitter_ns: number };
+  | { type: 'jitter'; entry_ns: number; response_ns: number; jitter_ns: number }
+  | { type: 'log_normal'; entry: LogNormalLeg; response: LogNormalLeg; cancel: LogNormalLeg | null }
+  | { type: 'heavy_tail'; entry: CubicLeg; response: CubicLeg; cancel: CubicLeg | null };
+
+/** One leg of the `log_normal` latency model: `median_ns * exp(sigma * Z)`, `Z ~ N(0, 1)`. */
+export interface LogNormalLeg {
+  /** Median latency, `exp(mu)`, in ns. */
+  median_ns: number;
+  /** Standard deviation of `ln(latency)`. Zero makes the leg constant at the median. */
+  sigma: number;
+}
+
+/**
+ * One leg of the `heavy_tail` (ABIDES cubic) latency model: `min + (jitter / x^3) * (min / unit)`
+ * with `x` uniform on `(clip, 1]`.
+ */
+export interface CubicLeg {
+  /** Minimum latency in ns; also the scale of the jitter. */
+  min_ns: number;
+  /** ABIDES `jitter`: shape of the cubic curve, in `[0, 1]`. */
+  jitter: number;
+  /** ABIDES `jitter_clip`: `x` is drawn from `(clip, 1]`; in `(0, 1)`. */
+  clip: number;
+  /** ABIDES `jitter_unit`: the jitter is measured in units of `min / unit`. */
+  unit: number;
+}
+
+/** Largest latency a `heavy_tail` leg can produce (`CubicLeg::max_ns`, at `x = clip`), in ns. */
+export function cubicMaxNs(l: CubicLeg): number {
+  return l.min_ns + (l.jitter / (l.clip * l.clip * l.clip)) * (l.min_ns / l.unit);
+}
+
+/** The entry-path location parameter (`OrderLatencyConfig::base_entry_ns`). */
+export function baseEntryNs(l: OrderLatencyConfig): number {
+  switch (l.type) {
+    case 'constant':
+    case 'jitter':
+      return l.entry_ns;
+    case 'log_normal':
+      return l.entry.median_ns;
+    case 'heavy_tail':
+      return l.entry.min_ns;
+  }
+}
+
+/** The response-path location parameter: `response_ns`, the response median or minimum. */
+export function baseResponseNs(l: OrderLatencyConfig): number {
+  switch (l.type) {
+    case 'constant':
+    case 'jitter':
+      return l.response_ns;
+    case 'log_normal':
+      return l.response.median_ns;
+    case 'heavy_tail':
+      return l.response.min_ns;
+  }
+}
 
 /** Fees as a fraction of traded value. Negative means a rebate. `0.0002` is 2 basis points. */
 export interface FeeConfig {
@@ -156,6 +221,26 @@ export interface AvellanedaStoikovParams {
   vol_halflife_ticks: number;
 }
 
+/** Price series whose clock-sampled changes estimate GLFT's `sigma`. */
+export type SigmaSource = 'mid' | 'weighted_mid' | 'trade';
+
+/** Guéant-Lehalle-Fernandez-Tapia market maker. Prices in price units, quantities in base units. */
+export interface GlftParams {
+  /** Quote size `Delta` (base units); also the trade size in the formulas. */
+  order_qty: number;
+  /** Inventory bound `Q` (base units). */
+  max_position: number;
+  /** Absolute risk aversion `gamma`, per unit of wealth. */
+  gamma: number;
+  /** Intensity decay `k` (per price unit) in `Lambda(delta) = A * exp(-k * delta)`. */
+  kappa: number;
+  /** Intensity scale `A`: fills per second of a quote at the reference price. */
+  intensity_a: number;
+  sigma_source: SigmaSource;
+  /** Half-life, in strategy ticks, of the exponentially weighted variance estimate. */
+  vol_halflife_ticks: number;
+}
+
 export interface ImbalanceTakerParams {
   order_qty: number;
   max_position: number;
@@ -187,6 +272,7 @@ export type ScriptedPrice = { type: 'tick'; tick: number } | { type: 'from_touch
 export type StrategyKind =
   | ({ type: 'touch_maker' } & TouchMakerParams)
   | ({ type: 'avellaneda_stoikov' } & AvellanedaStoikovParams)
+  | ({ type: 'glft' } & GlftParams)
   | ({ type: 'imbalance_taker' } & ImbalanceTakerParams)
   | ({ type: 'scripted' } & ScriptedParams);
 

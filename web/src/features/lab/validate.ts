@@ -2,7 +2,7 @@
 // order, same messages, so a problem reads identically whether the browser or the server finds
 // it. The server remains the authority: its `invalid_config` response is shown verbatim.
 
-import type { InstrumentMeta, JsonValue, RunConfig } from '../../api/types';
+import { cubicMaxNs, type CubicLeg, type InstrumentMeta, type JsonValue, type LogNormalLeg, type RunConfig } from '../../api/types';
 
 function finitePos(v: number): boolean {
   return Number.isFinite(v) && v > 0;
@@ -14,6 +14,38 @@ export const MIN_INTERVAL_NS = 1_000_000;
 export const MAX_INTERVAL_NS = 3_600_000_000_000;
 /** `MAX_LATENCY_NS` in bb-core: bound on any single modeled latency, jitter or feed offset (60 s). */
 export const MAX_LATENCY_NS = 60_000_000_000;
+/** `MAX_LOG_NORMAL_SIGMA` in bb-core: largest accepted log-normal `sigma`. */
+export const MAX_LOG_NORMAL_SIGMA = 3;
+
+/** The legs a cancel-capable latency model validates, in the server's order. */
+function legs<L>(entry: L, response: L, cancel: L | null): [string, L][] {
+  const out: [string, L][] = [
+    ['entry', entry],
+    ['response', response],
+  ];
+  if (cancel !== null) out.push(['cancel', cancel]);
+  return out;
+}
+
+function logNormalProblems(name: string, leg: LogNormalLeg, e: string[]): void {
+  if (!(leg.median_ns >= 1 && leg.median_ns <= MAX_LATENCY_NS)) {
+    e.push(`log_normal ${name}.median_ns must be between 1 and ${MAX_LATENCY_NS} ns (60 s)`);
+  }
+  if (!(leg.sigma >= 0 && leg.sigma <= MAX_LOG_NORMAL_SIGMA)) {
+    e.push(`log_normal ${name}.sigma must be between 0 and ${MAX_LOG_NORMAL_SIGMA}`);
+  }
+}
+
+function cubicProblems(name: string, leg: CubicLeg, e: string[]): void {
+  const shapeOk = leg.jitter >= 0 && leg.jitter <= 1 && leg.clip > 0 && leg.clip < 1 && finitePos(leg.unit);
+  if (!shapeOk) {
+    e.push(`heavy_tail ${name}: jitter must be in [0, 1], clip in (0, 1) and unit finite and positive`);
+  } else if (!(leg.min_ns >= 0 && leg.min_ns <= MAX_LATENCY_NS) || cubicMaxNs(leg) > MAX_LATENCY_NS) {
+    e.push(
+      `heavy_tail ${name}: min_ns and the largest possible latency min + jitter * min / (unit * clip^3) = ${Math.round(cubicMaxNs(leg))} ns must be between 0 and ${MAX_LATENCY_NS} ns (60 s)`,
+    );
+  }
+}
 
 /** Human-readable problems; empty means valid. */
 export function validateRunConfig(c: RunConfig): string[] {
@@ -29,12 +61,29 @@ export function validateRunConfig(c: RunConfig): string[] {
   }
   const latencyOk = (v: number) => v >= 0 && v <= MAX_LATENCY_NS;
   const l = c.execution.order_latency;
-  if (l.type === 'constant') {
-    if (!latencyOk(l.entry_ns) || !latencyOk(l.response_ns)) {
-      e.push(`order latency must be between 0 and ${MAX_LATENCY_NS} ns (60 s)`);
-    }
-  } else if (!latencyOk(l.entry_ns) || !latencyOk(l.response_ns) || !latencyOk(l.jitter_ns)) {
-    e.push(`order latency and jitter must each be between 0 and ${MAX_LATENCY_NS} ns (60 s)`);
+  switch (l.type) {
+    case 'constant':
+      if (!latencyOk(l.entry_ns) || !latencyOk(l.response_ns)) {
+        e.push(`order latency must be between 0 and ${MAX_LATENCY_NS} ns (60 s)`);
+      }
+      break;
+    case 'jitter':
+      if (!latencyOk(l.entry_ns) || !latencyOk(l.response_ns) || !latencyOk(l.jitter_ns)) {
+        e.push(`order latency and jitter must each be between 0 and ${MAX_LATENCY_NS} ns (60 s)`);
+      }
+      break;
+    case 'log_normal':
+      for (const [name, leg] of legs(l.entry, l.response, l.cancel)) logNormalProblems(name, leg, e);
+      break;
+    case 'heavy_tail':
+      for (const [name, leg] of legs(l.entry, l.response, l.cancel)) cubicProblems(name, leg, e);
+      break;
+  }
+  const think = c.execution.think_time_ns ?? 0;
+  if (!latencyOk(think) || (think > 0 && think >= c.strategy.interval_ns)) {
+    e.push(
+      `execution.think_time_ns must be at least 0, at most ${MAX_LATENCY_NS} ns (60 s) and below strategy.interval_ns (${c.strategy.interval_ns}), so that every decision is sent before the next one is made; got ${think}`,
+    );
   }
   if (!(c.execution.feed_latency_offset_ns >= 0)) {
     e.push(
@@ -89,6 +138,17 @@ export function validateRunConfig(c: RunConfig): string[] {
       }
       if (!(k.vol_halflife_ticks >= 1)) {
         e.push('avellaneda_stoikov: vol_halflife_ticks must be at least 1');
+      }
+      break;
+    case 'glft':
+      if (!finitePos(k.order_qty) || !finitePos(k.max_position)) {
+        e.push('glft: order_qty and max_position must be positive');
+      }
+      if (!finitePos(k.gamma) || !finitePos(k.kappa) || !finitePos(k.intensity_a)) {
+        e.push('glft: gamma, kappa and intensity_a must be finite and positive');
+      }
+      if (!(k.vol_halflife_ticks >= 1)) {
+        e.push('glft: vol_halflife_ticks must be at least 1');
       }
       break;
     case 'imbalance_taker':
