@@ -69,7 +69,7 @@ Commits come from `https://api.github.com/repos/<owner>/<repo>/commits?per_page=
   - Only the `backtest` cargo feature is used; `live` and `s3` are disabled (`Cargo.toml`: `default-features = false, features = ["backtest"]`).
   - Two algorithms are **ported to Rust with attribution**, because the Rust crate has no Tardis CSV converter: the converter `py-hftbacktest/hftbacktest/data/utils/tardis.py` and the event-order correction `py-hftbacktest/hftbacktest/data/validation.py` exist only in the Python package (`crates/bb-data/src/tardis.rs`, `crates/bb-data/src/normalize.rs`, both naming their source and licence in the module header). (Lead-verified.)
 - **Compatibility notes:** MIT is permissive; the obligation is to keep the copyright and permission notice with copies or substantial portions, which applies to the two ported algorithms as well as to the dependency. Replay data is stored as hftbacktest-compatible compressed `.npz`.
-- **Engine internals:** the five defects found in 0.9.4 and how BlackBox handles them, which engine items are reused, and what is modeled are documented in [EXECUTION_MODEL.md](EXECUTION_MODEL.md) and are not repeated here.
+- **Engine internals:** the six defects found in 0.9.4 and how BlackBox handles them, which engine items are reused, and what is modeled are documented in [EXECUTION_MODEL.md](EXECUTION_MODEL.md) and are not repeated here.
 
 ### Relevant technical assumptions (quoted from the docs)
 

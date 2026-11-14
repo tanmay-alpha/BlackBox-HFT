@@ -23,7 +23,7 @@ were taken earlier at 235 tests; re-run the command for current numbers.
 | `bb-strategies` | unit | 41 | Each strategy's quotes and intents on hand-built views: touch-maker join, offset, skew, replace-only-when-moved, gates; Avellaneda-Stoikov symmetry at zero inventory, inventory shading, γ widening, volatility scaling, warm-up, grid rounding, never crossing; imbalance taker entry, threshold, cooldown, hold and exit; scripted placement, price modes, cancel timing; shared rules (one place per slot, never cancel a non-cancellable order, same views → same intents) |
 | `bb-sim` | unit | 9 | Ledger arithmetic and the cash identity; jitter is a pure function within bounds; the queue probe reads the real engine models' state bit for bit and reports unreadable formats as unreadable |
 | `bb-sim` | `tests/engine_adapter.rs` | 20 | Recorder behaviour on hand-built markets where every value is worked out on paper: maker fills by trade-through and by queue exhaustion, taker IOC, post-only expiry, taker sweep one execution per level, cancels (resting, refused in flight, losing the race to a fill, late rejection after terminal), partial fills with `fill_reset`, queue-model differences, entry latency deciding fills, feed offset delaying only the view, risk rules before the engine and hard limits, drawdown halt and its use of locally known fills only, queue-update cap, in-flight at end of data |
-| `bb-sim` | `tests/engine_defects.rs` | 9 | The five upstream defects reproduced on the **unwrapped** engine, and the adapter's workaround for each ([below](#upstream-defect-pins)) |
+| `bb-sim` | `tests/engine_defects.rs` | 11 | The six upstream defects reproduced on the **unwrapped** engine, and the adapter's workaround for each ([below](#upstream-defect-pins)) |
 | `bb-sim` | `tests/determinism.rs` | 3 | Simultaneous fills recorded in a reproducible order (40 repeats per configuration); seed changes jitter and nothing else; tick grid independent of execution assumptions |
 | `bb-sim` | `tests/invariants.rs` | 3 | The tape grammar across a sweep of strategies and models ([below](#invariants-sweep)); feed offset keeps the invariants; fill side moves position the right way |
 | `bb-sim` | `tests/properties.rs` | 10 | Property-based tests on generated markets and request streams ([below](#property-based-tests)) |
@@ -52,6 +52,7 @@ workaround.
 | 3. Local account under-counts partial fills | `upstream_local_account_undercounts_partial_fills` | `engine_adapter.rs::partial_maker_fills_are_all_counted_and_the_engine_gap_is_reported` |
 | 4. `submit_order` ignores the side | `upstream_submit_order_ignores_the_requested_side` | (the adapter never calls it) |
 | 5. Market orders: sentinel price, 100-tick sweep | `upstream_market_buy_on_empty_ask_fills_at_the_sentinel_tick`, `upstream_partial_fill_market_order_scans_only_100_ticks` | `adapter_blocks_market_orders_before_the_engine`, `properties.rs::market_intents_are_blocked_before_the_engine` |
+| 6. A rejected cancel of a filled order books the fill twice in the engine's account | `upstream_rejected_cancel_of_a_filled_order_double_counts_the_fill` | `adapter_ledger_counts_the_fill_once_when_a_filled_order_is_cancelled`; `properties.rs::instrumentation_matches_the_unwrapped_engine` expects exactly one duplicate per rejected-and-filled response |
 
 ## Determinism
 
@@ -116,7 +117,8 @@ feed offset, maker and taker fees, position and order limits):
 
 The `proptest!` properties run 256 cases each with proptest's default random seed, so each run
 explores different inputs; `generated_corpus_exercises_execution_paths` uses a fixed seed so its
-coverage claim is reproducible. The market-order defect (5) was found by these properties.
+coverage claim is reproducible. The market-order defect (5) and the double-booked fill on a
+rejected cancel (6) were found by these properties.
 
 ## What is not tested
 

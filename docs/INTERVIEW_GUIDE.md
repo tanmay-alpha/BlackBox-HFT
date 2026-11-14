@@ -71,7 +71,7 @@ records every event with its clock and keeps all three latencies separate
 - **Data artifacts** (timestamp conventions, gaps, missing updates) look like opportunities. The
   real sample in BlackBox has 659 of 2,212 trades printing more than a tick outside the
   reconstructed book ([MARKET_DATA.md](MARKET_DATA.md#measured-findings-on-the-real-sample)).
-- **Engine bugs.** The pinned engine has five defects that would silently corrupt results if
+- **Engine bugs.** The pinned engine has six defects that would silently corrupt results if
   unhandled ([EXECUTION_MODEL.md](EXECUTION_MODEL.md#defects-in-094-and-what-blackbox-does-about-each)).
 
 BlackBox's answer is not a better forecast but transparency: every assumption is a parameter, every

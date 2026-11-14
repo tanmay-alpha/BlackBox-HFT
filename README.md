@@ -65,11 +65,13 @@ BlackBox annotations or post-run derivations.
 
 ## Engine findings
 
-Building the recorder meant reading the pinned engine closely. Five defects in hftbacktest 0.9.4
+Building the recorder meant reading the pinned engine closely. Six defects in hftbacktest 0.9.4
 were found, each pinned by a test against the unwrapped engine, and each handled without forking
 it: non-reproducible ordering of simultaneous fills, an abort after an exactly-completing partial
 fill, an under-counting local account under partial fills, `submit_order` ignoring the order
-side, and market orders that can execute at a sentinel price or stop sweeping after 100 ticks.
+side, market orders that can execute at a sentinel price or stop sweeping after 100 ticks, and a
+rejected cancel of an already-filled order booking the fill a second time in the engine's own
+account (found by the property tests).
 Details and evidence: [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md).
 
 ## Quick start
@@ -152,7 +154,7 @@ explains the concepts from scratch and has a five-minute demo script.
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, crates, data flow, determinism design, storage, why Rust/axum |
 | [MARKET_DATA.md](docs/MARKET_DATA.md) | Sources, Tardis schema and units, normalization, quality checks, synthetic generator, provenance |
-| [EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md) | How the engine is used and observed, its five defects, the workarounds |
+| [EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md) | How the engine is used and observed, its six defects, the workarounds |
 | [QUEUE_MODELS.md](docs/QUEUE_MODELS.md) | Every queue-position model's formula, a worked example, what L2 cannot reveal |
 | [LATENCY_MODEL.md](docs/LATENCY_MODEL.md) | Feed, entry and response latency, the two clocks, jitter, the order bus |
 | [STRATEGIES.md](docs/STRATEGIES.md) | The bundled strategies, Avellaneda-Stoikov derivation and scaling, no look-ahead |
