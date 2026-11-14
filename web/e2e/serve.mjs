@@ -1,6 +1,9 @@
 // Playwright web server for the v1 E2E stories: from the repo root, apply the migrations, seed the
-// public demo workspace, mint a research key (written to `<data-dir>/e2e-key.txt`; the key is
-// never logged), then run `blackbox serve` with the built UI on the same origin.
+// public demo workspace with `demo seed --wait` (demo runs, curated comparisons and saved reports
+// are stored before `serve` builds its anonymous demo snapshot; rows written later by another
+// process would only appear after the snapshot's next rebuild), mint a research key (written to
+// `<data-dir>/e2e-key.txt`; the key is never logged), then run `blackbox serve` with the built UI
+// on the same origin.
 //
 // Env: DATABASE_URL (default: the local Postgres database `blackbox_e2e_ui`, which holds only what
 // this suite creates: a shared database also lists runs whose bundles live in other data
@@ -27,7 +30,7 @@ const run = (args) => execFileSync(bin, ['--data-dir', dataDir, ...args], { cwd:
 
 mkdirSync(join(root, dataDir), { recursive: true });
 run(['migrate']);
-run(['demo', 'seed']);
+run(['demo', 'seed', '--wait']);
 const minted = run(['keys', 'mint', '--workspace', 'e2e-lab', '--label', 'e2e-ui', '--scopes', 'read,run']);
 const key = /bbk_[A-Za-z0-9_-]{43}/.exec(minted)?.[0];
 if (!key) throw new Error('keys mint printed no key');

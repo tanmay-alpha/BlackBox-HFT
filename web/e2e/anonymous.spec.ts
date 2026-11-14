@@ -8,7 +8,7 @@ interface RunItem {
 }
 
 test('anonymous read-only story: overview, forensics, risk, compare, report, system', async ({ page, request }) => {
-  // A fresh database: `demo seed` queued the demo experiments; the in-process worker computes them.
+  // A fresh database: `serve.mjs` stored the demo experiments with `demo seed --wait`.
   let items: RunItem[] = [];
   await expect
     .poll(

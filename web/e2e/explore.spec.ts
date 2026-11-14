@@ -3,10 +3,6 @@
 // both scenarios, book at the jump time), the assumptions, the forensics round trip (state and
 // scroll restored), narrow viewports without horizontal overflow, and a keyboard-only path.
 
-import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import type { APIRequestContext, Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
@@ -47,24 +43,6 @@ interface Stored {
   slow: Scenario;
 }
 
-const webDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const root = resolve(webDir, '..');
-
-/**
- * `serve.mjs` seeds the demo before its runs are computed; the curated comparisons are stored by
- * running `demo seed` again once they are (the command is idempotent). Same binary, data dir and
- * database as `serve.mjs`.
- */
-function storeCuratedComparisons(): void {
-  const exe = process.platform === 'win32' ? '.exe' : '';
-  const bin = resolve(root, process.env.BLACKBOX_BIN ?? `target/debug/blackbox${exe}`);
-  const env = {
-    ...process.env,
-    DATABASE_URL: process.env.DATABASE_URL ?? 'postgres://blackbox:blackbox-local@127.0.0.1:55432/blackbox_e2e_ui',
-  };
-  execFileSync(bin, ['--data-dir', 'data/e2e-ui', 'demo', 'seed'], { cwd: root, env, stdio: ['ignore', 'ignore', 'inherit'] });
-}
-
 const ns = (v: string | number) => Number(v);
 /** Plain seconds as the page prints them (`0.100000 s`). */
 const sec = (v: string | number, digits: number) => `${(ns(v) / 1e9).toFixed(digits)} s`;
@@ -73,38 +51,20 @@ const num = (x: number, digits: number) => Math.abs(x).toLocaleString('en-US', {
 
 let stored: Stored | null = null;
 
-/** The stored latency experiment, read from the API the page uses. */
+/**
+ * The stored latency experiment, read from the API the page uses. `serve.mjs` runs
+ * `demo seed --wait` before `serve` starts, so the demo runs, curated comparisons and reports are
+ * stored before the server builds its anonymous demo snapshot.
+ */
 async function experiment(request: APIRequestContext): Promise<Stored> {
   if (stored) return stored;
-  let runs: DemoRun[] = [];
-  await expect
-    .poll(
-      async () => {
-        const res = await request.get('/api/v1/demos');
-        const demos = res.ok() ? ((await res.json()) as { id: string; runs: DemoRun[] }[]) : [];
-        runs = demos.find((d) => d.id === DEMO_ID)?.runs ?? [];
-        return runs.length === 2 && runs.every((r) => r.run_id !== null);
-      },
-      { timeout: 170_000, intervals: [3_000] },
-    )
-    .toBe(true);
-  const ids = runs.map((r) => r.run_id as string);
-  const find = async () => {
-    const list = (await (await request.get('/api/v1/comparisons?limit=50')).json()) as { items: { id: string; run_a: string; run_b: string }[] };
-    return list.items.find((c) => ids.includes(c.run_a) && ids.includes(c.run_b)) ?? null;
-  };
-  // `run_id` is known once the runs are queued; `demo seed` curates only after both complete.
-  let summary = null as { id: string } | null;
-  await expect
-    .poll(
-      async () => {
-        summary = await find();
-        if (!summary) storeCuratedComparisons();
-        return summary !== null;
-      },
-      { message: 'the curated latency comparison is stored', timeout: 170_000, intervals: [3_000] },
-    )
-    .toBe(true);
+  const demos = (await (await request.get('/api/v1/demos')).json()) as { id: string; runs: DemoRun[] }[];
+  const runs = demos.find((d) => d.id === DEMO_ID)?.runs ?? [];
+  const ids = runs.flatMap((r) => (r.run_id === null ? [] : [r.run_id]));
+  expect(ids.length, 'both latency runs are stored').toBe(2);
+  const list = (await (await request.get('/api/v1/comparisons?limit=50')).json()) as { items: { id: string; run_a: string; run_b: string }[] };
+  const summary = list.items.find((c) => ids.includes(c.run_a) && ids.includes(c.run_b));
+  expect(summary, 'the curated latency comparison is stored').toBeDefined();
   const comparison = (await (await request.get(`/api/v1/comparisons/${summary!.id}`)).json()) as Comparison;
 
   const scenario = async (runId: string): Promise<Scenario & { entryNs: number }> => {
