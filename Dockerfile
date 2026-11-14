@@ -9,7 +9,7 @@
 #   docker run --rm -v blackbox-data:/data -v "$PWD/data/raw:/raw:ro" blackbox-hft \
 #     blackbox --data-dir /data ingest-tardis --trades /raw/.../trades.csv.gz --book ... --id ...
 
-FROM rust:1.91-bookworm AS rust-build
+FROM rust:1.94-bookworm AS rust-build
 WORKDIR /src
 # Rust >= 1.91.1 is required by the pinned engine.
 COPY Cargo.toml Cargo.lock ./

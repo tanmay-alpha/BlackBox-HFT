@@ -1,0 +1,21 @@
+[package]
+name = "bb-db"
+description = "PostgreSQL trust root, repositories and lease-backed job queue for BlackBox HFT."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+base64.workspace = true
+rand.workspace = true

@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
 # Listed explicitly so a half-written crate never breaks the whole workspace.
-members = ["crates/bb-core", "crates/bb-data", "crates/bb-sim", "crates/bb-strategies", "crates/bb-forensics", "crates/bb-app"]
+members = ["crates/bb-core", "crates/bb-data", "crates/bb-sim", "crates/bb-strategies", "crates/bb-forensics", "crates/bb-app", "crates/bb-db", "crates/bb-artifacts"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.91.1"
+rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/tanmay-alpha/BlackBox-HFT"
 
@@ -21,6 +21,8 @@ bb-data = { path = "crates/bb-data" }
 bb-strategies = { path = "crates/bb-strategies" }
 bb-sim = { path = "crates/bb-sim" }
 bb-forensics = { path = "crates/bb-forensics" }
+bb-db = { path = "crates/bb-db" }
+bb-artifacts = { path = "crates/bb-artifacts" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -30,6 +32,19 @@ sha2 = "0.10"
 hex = "0.4"
 flate2 = "1"
 zip = "6"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+tempfile = "3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "query", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-util = { version = "0.7", features = ["io"] }
+bytes = "1"
+httpdate = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+rand = "0.9"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
 
 [profile.release]
 opt-level = 3
