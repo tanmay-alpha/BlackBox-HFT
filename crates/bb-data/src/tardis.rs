@@ -14,7 +14,7 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
     fs::File,
-    io::{self, BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
 };
 
@@ -31,11 +31,10 @@ use hftbacktest::types::{
     BUY_EVENT, DEPTH_CLEAR_EVENT, DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, SELL_EVENT, TRADE_EVENT,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub use crate::quality::DEFAULT_GAP_WARN_NS;
 use crate::{
-    BuiltDataset, DataError, Event,
+    BuiltDataset, DataError, Event, HashingReader,
     decimal::Decimal,
     is_valid_id, make_event,
     normalize::{DEFAULT_MIN_FEED_LATENCY_NS, NormalizeOptions, normalize},
@@ -106,23 +105,6 @@ fn unit_name(unit: TimeUnit) -> &'static str {
     }
 }
 
-/// Passes bytes through while hashing and counting them, so the manifest records the hash of
-/// the file exactly as it is on disk (compressed bytes for `.gz`).
-struct HashingReader<R> {
-    inner: R,
-    hasher: Sha256,
-    bytes: u64,
-}
-
-impl<R: Read> Read for HashingReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        self.hasher.update(&buf[..n]);
-        self.bytes += n as u64;
-        Ok(n)
-    }
-}
-
 enum Lines {
     Plain(BufReader<HashingReader<File>>),
     // Boxed: the gzip decoder's state is several times larger than the plain reader.
@@ -143,11 +125,7 @@ struct CsvFile {
 impl CsvFile {
     fn open(path: &Path, header: &str, description: &str) -> Result<CsvFile, DataError> {
         let file = File::open(path).map_err(|err| DataError::io(path, err))?;
-        let raw = HashingReader {
-            inner: file,
-            hasher: Sha256::new(),
-            bytes: 0,
-        };
+        let raw = HashingReader::new(file);
         let gzip = path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"));
@@ -236,22 +214,14 @@ impl CsvFile {
     /// Hash and size of the whole file as stored.
     fn finish(self) -> Result<(String, u64), DataError> {
         let CsvFile { name, lines, .. } = self;
-        let mut raw = match lines {
+        let raw = match lines {
             Lines::Plain(reader) => reader.into_inner(),
             Lines::Gz(reader) => reader.into_inner().into_inner(),
         };
         // The line reader stops at the end of the content; make sure every stored byte has
         // passed through the hasher.
-        let mut sink = vec![0u8; READ_BUFFER_BYTES];
-        loop {
-            match raw.read(&mut sink) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(source) => return Err(DataError::Io { path: name, source }),
-            }
-        }
-        Ok((hex::encode(raw.hasher.finalize()), raw.bytes))
+        raw.finish()
+            .map_err(|source| DataError::Io { path: name, source })
     }
 }
 

@@ -262,7 +262,7 @@ impl BatchStats {
     }
 }
 
-fn check(
+pub(crate) fn check(
     id: &str,
     title: &str,
     severity: Severity,
