@@ -17,7 +17,10 @@ function withQuery(path: string, query: Query = {}): string {
 }
 
 export const paths = {
-  overview: () => '/',
+  /** The public latency experiment, the console's landing page. */
+  explore: () => '/',
+  /** The experiments catalogue (Mission Control). */
+  overview: () => '/experiments',
   datasets: () => '/data',
   dataset: (id: string) => `/data/${enc(id)}`,
   book: () => '/book',

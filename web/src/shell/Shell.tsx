@@ -46,7 +46,7 @@ class WorkspaceErrorBoundary extends Component<{ children: ReactNode }, { error:
           <ErrorBox error={this.state.error} />
           <p className="note">
             This workspace failed to render. Nothing was simulated or changed by this failure. Reload, or go to{' '}
-            <a href="/">Overview</a>.
+            <a href="/">the latency experiment</a>.
           </p>
         </div>
       );
@@ -201,7 +201,7 @@ function TopBar({ onPalette, onHelp }: { onPalette: () => void; onHelp: () => vo
   const { settings, update } = useSettings();
   return (
     <header className="topbar">
-      <Link to="/" className="brand" aria-label="BlackBox HFT, Overview">
+      <Link to={paths.explore()} className="brand" aria-label="BlackBox HFT, latency experiment">
         <span className="brand-mark" aria-hidden="true" />
         <span className="brand-name">BlackBox HFT</span>
       </Link>
@@ -259,7 +259,7 @@ function Rail() {
                 <li key={w.id}>
                   <NavLink
                     to={w.path}
-                    end={w.id === 'overview'}
+                    end={w.id === 'explore'}
                     className={({ isActive }) => (isActive ? 'rail-item active' : 'rail-item')}
                     title={`${s.name}: ${w.name} (g ${w.chord})`}
                     aria-label={w.name}

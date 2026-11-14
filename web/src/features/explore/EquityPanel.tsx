@@ -1,14 +1,18 @@
 // Equity of both scenarios over the whole run. Server-downsampled buckets are drawn as what the
 // server returned: the bucket's first-to-last line plus its min..max range as a light band.
-// Clicking the plot moves the shared replay time.
+// Clicking the plot moves the shared replay time. The curves load only once the panel is on
+// screen, so a visit that never scrolls to it does not spend the demo's data allowance on it.
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { isBucketed, type EquityPage } from '../../../api/model';
-import { fmtDuration, fmtInt, fmtSigned } from '../../../components/fmt';
-import { decimalsForStep, fmtAxisNs, niceStep, ticksBetween } from '../../forensics/axis';
-import { useElementSize } from '../../forensics/useElementSize';
-import type { Focus, ScenarioKey } from './data';
+import { isBucketed, type EquityPage } from '../../api/model';
+import { fmtDuration, fmtInt, fmtSigned } from '../../components/fmt';
+import { Spinner, useAsync } from '../../components/ui';
+import { decimalsForStep, fmtAxisNs, niceStep, ticksBetween } from '../forensics/axis';
+import { useElementSize } from '../forensics/useElementSize';
+import { loadEquity, type Focus, type ScenarioKey } from './data';
+import { PlainError } from './PlainError';
+import type { LatencyStory } from './story';
 
 interface Series {
   /** Polyline points [ts, equity]. */
@@ -31,11 +35,11 @@ function toSeries(page: EquityPage): Series {
   return { line: page.items.map((s) => [s.ts, s.equity]), band: [], last: page.items.at(-1)?.equity ?? null };
 }
 
-const H = 220;
-const PAD = { l: 64, r: 16, t: 12, b: 26 };
+const H = 240;
+const PAD = { l: 72, r: 16, t: 12, b: 28 };
 
 export interface EquityPanelProps {
-  pages: Record<ScenarioKey, EquityPage>;
+  story: LatencyStory;
   names: Record<ScenarioKey, string>;
   focus: Focus;
   /** Shared replay time. */
@@ -44,11 +48,40 @@ export interface EquityPanelProps {
   onPick: (t: number) => void;
 }
 
-export function EquityPanel({ pages, names, focus, t, divergenceTs, onPick }: EquityPanelProps) {
+/** Loads the curves once the panel scrolls into view, then draws them. */
+export function EquityPanel(props: EquityPanelProps) {
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    if (!host || seen) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) setSeen(true);
+    });
+    io.observe(host);
+    return () => io.disconnect();
+  }, [host, seen]);
+  const { story } = props;
+  const equity = useAsync((signal) => (seen ? loadEquity(story, signal) : Promise.resolve(null)), [story, seen]);
+  return (
+    <div ref={setHost} className="ex-equity">
+      {equity.error ? (
+        <PlainError error={equity.error} onRetry={equity.reload} what="Equity curves" />
+      ) : equity.data ? (
+        <EquityChart pages={equity.data} {...props} />
+      ) : (
+        <div className="ex-equity-wait">
+          <Spinner label="Loading the equity curves" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EquityChart({ pages, names, focus, t, divergenceTs, onPick }: EquityPanelProps & { pages: Record<ScenarioKey, EquityPage> }) {
   const [attach, size] = useElementSize<HTMLDivElement>();
   const series = useMemo(() => ({ fast: toSeries(pages.fast), slow: toSeries(pages.slow) }), [pages]);
   const width = Math.max(280, Math.floor(size.width));
-  const height = Math.max(160, Math.floor(size.height) || H);
+  const height = H;
   const plotW = width - PAD.l - PAD.r;
   const plotH = height - PAD.t - PAD.b;
 
@@ -77,7 +110,7 @@ export function EquityPanel({ pages, names, focus, t, divergenceTs, onPick }: Eq
     const x = (ts: number) => PAD.l + ((ts - t0) / (t1 - t0)) * plotW;
     const y = (v: number) => PAD.t + ((hi - v) / (hi - lo)) * plotH;
     const yStep = niceStep((hi - lo) / 4);
-    const xStep = niceStep((t1 - t0) / Math.max(2, Math.floor(plotW / 110)));
+    const xStep = niceStep((t1 - t0) / Math.max(2, Math.floor(plotW / 120)));
     return {
       t0,
       t1,
@@ -94,33 +127,34 @@ export function EquityPanel({ pages, names, focus, t, divergenceTs, onPick }: Eq
     geom ? s.band.map(([a, b, mn, mx]) => `M${geom.x(a).toFixed(1)},${geom.y(mx).toFixed(1)}H${geom.x(b).toFixed(1)}V${geom.y(mn).toFixed(1)}H${geom.x(a).toFixed(1)}Z`).join('') : '';
 
   const downsampled = (['fast', 'slow'] as const).filter((k) => pages[k].downsampled);
+  const page = downsampled.length > 0 ? pages[downsampled[0]] : null;
   const label = `Equity over the whole run for both scenarios. ${names.fast} ends at ${fmtSigned(series.fast.last, 2)}, ${names.slow} ends at ${fmtSigned(series.slow.last, 2)} (quote currency). Click a point in time to move the replay there.`;
 
   return (
-    <div className="pb-equity">
-      <div className="pb-legend" aria-hidden="true">
+    <>
+      <div className="ex-legend-row" aria-hidden="true">
         {(['fast', 'slow'] as const).map((k) => (
-          <span key={k} className={`pb-key pb-key-${k}`} data-dim={focus !== 'both' && focus !== k ? '' : undefined}>
-            <span className="pb-swatch" /> {names[k]} <span className="num">{fmtSigned(series[k].last, 2)}</span>
+          <span key={k} className={`ex-key ex-key-series-${k}`} data-dim={focus !== 'both' && focus !== k ? '' : undefined}>
+            <span className="ex-key-line" /> {names[k]} <span className="ex-num">{fmtSigned(series[k].last, 2)}</span>
           </span>
         ))}
         {divergenceTs !== null ? (
-          <span className="pb-key pb-key-div">
-            <span className="pb-swatch" /> first divergence
+          <span className="ex-key ex-key-div">
+            <span className="ex-key-line" /> first divergence
           </span>
         ) : null}
-        <span className="pb-key pb-key-cursor">
-          <span className="pb-swatch" /> replay time
+        <span className="ex-key ex-key-now">
+          <span className="ex-key-line" /> replay time
         </span>
       </div>
-      <div ref={attach} className="pb-equity-stage">
+      <div ref={attach} className="ex-equity-stage">
         {geom && size.width > 0 ? (
           <svg
             width={width}
             height={height}
             role="img"
             aria-label={label}
-            className="pb-svg pb-clickable"
+            className="ex-svg ex-clickable"
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
               const frac = (e.clientX - r.left - PAD.l) / plotW;
@@ -129,45 +163,35 @@ export function EquityPanel({ pages, names, focus, t, divergenceTs, onPick }: Eq
           >
             {geom.yTicks.map((tk) => (
               <g key={tk.label}>
-                <line x1={PAD.l} x2={width - PAD.r} y1={tk.y} y2={tk.y} className="pb-grid" />
-                <text x={PAD.l - 6} y={tk.y + 4} textAnchor="end" className="pb-axis">
+                <line x1={PAD.l} x2={width - PAD.r} y1={tk.y} y2={tk.y} className="ex-grid" />
+                <text x={PAD.l - 6} y={tk.y + 5} textAnchor="end" className="ex-axis">
                   {tk.label}
                 </text>
               </g>
             ))}
             {geom.xTicks.map((tk) => (
-              <text key={tk.label} x={tk.x} y={height - 8} textAnchor="middle" className="pb-axis">
+              <text key={tk.label} x={tk.x} y={height - 8} textAnchor="middle" className="ex-axis">
                 {tk.label}
               </text>
             ))}
-            <line x1={PAD.l} x2={width - PAD.r} y1={geom.zero} y2={geom.zero} className="pb-zero" />
+            <line x1={PAD.l} x2={width - PAD.r} y1={geom.zero} y2={geom.zero} className="ex-zero" />
             {(['slow', 'fast'] as const).map((k) => (
-              <g key={k} className={`pb-series pb-series-${k}`} data-dim={focus !== 'both' && focus !== k ? '' : undefined}>
-                <path d={bandPath(series[k])} className="pb-band" />
-                <path d={path(series[k])} className="pb-line" />
+              <g key={k} className={`ex-series ex-series-${k}`} data-dim={focus !== 'both' && focus !== k ? '' : undefined}>
+                <path d={bandPath(series[k])} className="ex-band" />
+                <path d={path(series[k])} className="ex-line" />
               </g>
             ))}
-            {divergenceTs !== null ? (
-              <line x1={geom.x(divergenceTs)} x2={geom.x(divergenceTs)} y1={PAD.t} y2={PAD.t + plotH} className="pb-div-line" />
-            ) : null}
-            {t >= geom.t0 && t <= geom.t1 ? (
-              <line x1={geom.x(t)} x2={geom.x(t)} y1={PAD.t} y2={PAD.t + plotH} className="pb-cursor-line" />
-            ) : null}
+            {divergenceTs !== null ? <line x1={geom.x(divergenceTs)} x2={geom.x(divergenceTs)} y1={PAD.t} y2={PAD.t + plotH} className="ex-div-line" /> : null}
+            {t >= geom.t0 && t <= geom.t1 ? <line x1={geom.x(t)} x2={geom.x(t)} y1={PAD.t} y2={PAD.t + plotH} className="ex-now-line" /> : null}
           </svg>
         ) : null}
       </div>
-      {downsampled.length > 0 ? (
-        <p className="pb-caption">
-          Downsampled by the server to {fmtInt(pages[downsampled[0]].items.length)} buckets
-          {(() => {
-            const page = pages[downsampled[0]];
-            return page.downsampled && page.bucket_ns !== null ? ` of ${fmtDuration(page.bucket_ns)}` : '';
-          })()}
-          ; the light band is each bucket&rsquo;s low-to-high range. Click the chart to move the replay.
-        </p>
-      ) : (
-        <p className="pb-caption">Every recorded sample is drawn. Click the chart to move the replay.</p>
-      )}
-    </div>
+      <p className="ex-muted">
+        {page
+          ? `Downsampled by the server to ${fmtInt(page.items.length)} buckets${page.downsampled && page.bucket_ns !== null ? ` of ${fmtDuration(page.bucket_ns)}` : ''}; the light band is each bucket’s low-to-high range.`
+          : 'Every recorded sample is drawn.'}{' '}
+        Click the chart to move the replay time there; the slider above does the same from the keyboard.
+      </p>
+    </>
   );
 }

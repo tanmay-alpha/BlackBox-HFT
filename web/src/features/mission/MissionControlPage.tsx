@@ -24,6 +24,7 @@ import { useNow, workerHealth } from '../../shell/StatusBar';
 import { Workspace } from '../../shell/Workspace';
 import { heartbeatText, JobProgress, JobStatePill, queueText } from '../sim/JobViews';
 import { usePolledJobs } from '../sim/jobs';
+import { LATENCY_DEMO_ID } from '../explore/story';
 import '../sim/sim.css';
 import './mission.css';
 
@@ -153,6 +154,7 @@ function Experiments({ datasetId }: { datasetId: string }) {
         const stored = storedDemoRuns(d);
         return (
           <span className="row ov-actions">
+            {d.id === LATENCY_DEMO_ID && stored ? <Link to={paths.explore()}>Guided walkthrough</Link> : null}
             {stored ? (
               <Link to={paths.compareSet({ runs: stored, demo: d.id })} title="Every run of this experiment is stored; open them without simulating.">
                 Open results
@@ -492,7 +494,7 @@ function System() {
         <dd className="row">
           {s && w ? (
             <>
-              <Pill tone={w.stale ? 'warn' : 'ok'}>{s.worker.state}</Pill>
+              <Pill tone={w.tone}>{w.label}</Pill>
               <span className="mono">
                 busy {s.worker.busy}/{s.worker.slots} {'\u00b7'} queued {fmtInt(w.queueDepth)} {'\u00b7'} running {fmtInt(w.running)}
               </span>
@@ -503,7 +505,7 @@ function System() {
         </dd>
         <dt>Heartbeat</dt>
         <dd className="mono">
-          {w && s ? (w.heartbeatAgeS === null ? 'none reported' : `${w.heartbeatAgeS} s ago (every ${Math.round(s.worker.heartbeat_interval_ms / 1000)} s)${w.stale ? ' STALE' : ''}`) : DASH}
+          {w && s ? (w.heartbeatAgeS === null ? 'none reported yet' : `${w.heartbeatAgeS} s ago (expected every ${Math.round(s.worker.heartbeat_interval_ms / 1000)} s)`) : DASH}
         </dd>
         <dt>Contract</dt>
         <dd className="row">

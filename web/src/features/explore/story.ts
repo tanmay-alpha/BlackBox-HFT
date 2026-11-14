@@ -160,7 +160,8 @@ export async function loadMoment(story: LatencyStory, w: MomentWindow, signal: A
   const timeline = (runId: string) =>
     fetchTimelineWindow(w, (cursor, s) => api.timeline(runId, { t0: w.t0, t1: w.t1, max_events: 5000, cursor }, { signal: s }), signal);
   const [market, fast, slow] = await Promise.all([
-    api.replay(ds.id, { t0: w.t0, t1: w.t1, levels: 10, max_trades: 5000 }, { signal, version: ds.version }),
+    // Six levels a side: what the page's book shows; more depth would only cost the visitor bytes.
+    api.replay(ds.id, { t0: w.t0, t1: w.t1, levels: 6, max_trades: 5000 }, { signal, version: ds.version }),
     timeline(story.fast.runId),
     timeline(story.slow.runId),
   ]);

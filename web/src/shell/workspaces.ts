@@ -8,6 +8,7 @@ import {
   Cpu,
   Database,
   FileText,
+  FlaskConical,
   GitCompareArrows,
   LayoutDashboard,
   LineChart,
@@ -31,7 +32,7 @@ export const SECTIONS: { id: SectionId; name: string }[] = [
 ];
 
 export interface WorkspaceDef {
-  id: 'overview' | 'data' | 'book' | 'strategy' | 'sim' | 'forensics' | 'risk' | 'compare' | 'reports' | 'system';
+  id: 'explore' | 'overview' | 'data' | 'book' | 'strategy' | 'sim' | 'forensics' | 'risk' | 'compare' | 'reports' | 'system';
   name: string;
   section: SectionId;
   /** Two-letter mnemonic, shown only in the collapsed rail. */
@@ -47,7 +48,8 @@ export interface WorkspaceDef {
 const under = (prefix: string) => (p: string) => p === prefix || p.startsWith(`${prefix}/`);
 
 export const WORKSPACES: WorkspaceDef[] = [
-  { id: 'overview', name: 'Experiments', section: 'explore', mnemonic: 'EX', chord: 'o', path: paths.overview(), icon: LayoutDashboard, owns: (p) => p === '/' },
+  { id: 'explore', name: 'Latency experiment', section: 'explore', mnemonic: 'LX', chord: 'e', path: paths.explore(), icon: FlaskConical, owns: (p) => p === '/' },
+  { id: 'overview', name: 'All experiments', section: 'explore', mnemonic: 'EX', chord: 'o', path: paths.overview(), icon: LayoutDashboard, owns: under('/experiments') },
   { id: 'strategy', name: 'Strategy Lab', section: 'studio', mnemonic: 'SL', chord: 'l', path: paths.strategy(), icon: SlidersHorizontal, owns: under('/strategy') },
   { id: 'sim', name: 'Jobs & Sweeps', section: 'studio', mnemonic: 'JS', chord: 'w', path: paths.sim(), icon: Cpu, owns: under('/sim') },
   { id: 'reports', name: 'Reports', section: 'studio', mnemonic: 'RE', chord: 'p', path: paths.reports(), icon: FileText, owns: under('/reports') },

@@ -25,8 +25,7 @@ const RunsPage = lazy(() => import('./features/runs/RunsPage'));
 const WorkbenchPage = lazy(() => import('./features/sim/WorkbenchPage'));
 const SystemPage = lazy(() => import('./features/system/SystemPage'));
 const ReplayTerminalPage = lazy(() => import('./features/terminal/ReplayTerminalPage'));
-const ChartFirstPrototype = lazy(() => import('./features/explore/protoA/ChartFirstPage'));
-const WorkspacePrototype = lazy(() => import('./features/explore/protoB/WorkspacePage'));
+const ExplorePage = lazy(() => import('./features/explore/ExplorePage'));
 
 /**
  * Redirect that keeps the query string (UI_DESIGN_SPEC.md §9.2). `to` maps the matched route
@@ -46,7 +45,8 @@ function NotFoundPage() {
     <Workspace>
       <Empty>
         <p>
-          No view at <span className="mono">{location.pathname}</span>. <Link to={paths.overview()}>Go to Overview</Link>
+          No view at <span className="mono">{location.pathname}</span>. <Link to={paths.explore()}>Go to the latency experiment</Link> or{' '}
+          <Link to={paths.overview()}>all experiments</Link>.
         </p>
       </Empty>
     </Workspace>
@@ -76,11 +76,9 @@ export default function App() {
     <BrowserRouter>
       <Suspense fallback={null}>
       <Routes>
-        {/* UI prototype competition (docs/rebuild/UI_PROTOTYPE_COMPARISON.md); outside the console shell. */}
-        <Route path="explore/a" element={<ChartFirstPrototype />} />
-        <Route path="explore/b" element={<WorkspacePrototype />} />
         <Route element={<Shell />}>
-          <Route index element={<MissionControlPage />} />
+          <Route index element={<ExplorePage />} />
+          <Route path="experiments" element={<MissionControlPage />} />
           <Route path="data" element={<DatasetsPage />} />
           <Route path="data/:datasetId" element={<DatasetsPage />} />
           <Route path="book" element={<BookIndexPage />} />

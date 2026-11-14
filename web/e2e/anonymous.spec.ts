@@ -22,7 +22,10 @@ test('anonymous read-only story: overview, forensics, risk, compare, report, sys
     .toBeGreaterThanOrEqual(2);
   const [a, b] = items;
 
+  // `/` is the latency experiment (explore.spec.ts); the experiments catalogue is `/experiments`.
   await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1, name: /What changes when a market-making strategy/ })).toBeVisible();
+  await page.goto('/experiments');
   await expect(page.getByTestId('access-badge')).toContainText('DEMO');
   await expect(page.getByTestId('sb-mode')).toContainText('DEMO read-only');
   await expect(page.locator('.sb-api')).toContainText('API ok');
