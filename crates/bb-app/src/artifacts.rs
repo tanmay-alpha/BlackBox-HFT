@@ -362,6 +362,66 @@ pub async fn open_run(
     })
 }
 
+/// The verified bundle trailer (manifest, metrics, counts) of a visible run without fetching or
+/// decoding any page: from the cached bundle if present, else from two ranged reads of the
+/// stored header and trailer, both checked against the trust root in Postgres.
+pub async fn verified_trailer(
+    db: &Database,
+    storage: &Storage,
+    cache: &Arc<BundleCache>,
+    metrics: &Arc<Metrics>,
+    limits: BundleLimits,
+    view: &RunView,
+) -> Result<BundleTrailer, ApiError> {
+    let artifact = db.artifact(view.run.id).await?;
+    let trust = match trust_of(view, &artifact) {
+        Ok(trust) => trust,
+        Err(object) => {
+            let expected = hex::encode(&artifact.page_index_sha256);
+            return Err(quarantine(db, metrics, view, object, &expected).await);
+        }
+    };
+    if let Some(path) = cache.touch(&trust.sha256) {
+        Metrics::inc(&metrics.artifact_cache_hits_total);
+        let open = OpenRun {
+            view: view.clone(),
+            artifact,
+            trust,
+            limits,
+            path,
+            cache: cache.clone(),
+            storage: storage.clone(),
+            db: db.clone(),
+            metrics: metrics.clone(),
+        };
+        return open.trailer().await;
+    }
+    let mut members = Vec::with_capacity(2);
+    for member in [&trust.header, &trust.trailer] {
+        let range = member
+            .range()
+            .map_err(|e| ApiError::internal(format!("bundle index: {e}")))?;
+        match storage.get_range(&artifact.storage_key, range).await {
+            Ok(bytes) => members.push(bytes),
+            Err(StorageError::Artifact(ArtifactError::NotFound)) => {
+                tracing::error!(run = %view.short_id, "bundle object missing from the store");
+                return Err(ApiError::unavailable("storage", 60));
+            }
+            Err(e) => return Err(e.into_api()),
+        }
+    }
+    let checked = BundleReader::new(&trust, limits)
+        .and_then(|reader| reader.check_metadata(&members[0], &members[1]));
+    match checked {
+        Ok(trailer) => Ok(trailer),
+        Err(ArtifactError::Integrity(e)) => {
+            tracing::error!(run = %view.short_id, error = %e, "bundle metadata failed verification");
+            Err(quarantine(db, metrics, view, "bundle", &trust.sha256).await)
+        }
+        Err(e) => Err(ApiError::internal(format!("bundle metadata: {e}"))),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn fetch_verified(
     db: &Database,
@@ -535,28 +595,22 @@ impl OpenRun {
     /// The complete run (for comparisons, timelines, reports and analytics). Bounded by the
     /// profile's output limit, and only used behind the heavy-read concurrency limit.
     pub async fn full(&self) -> Result<RunResult, ApiError> {
-        let pages: Vec<(usize, Section)> = self
-            .trust
-            .page_index
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (i, p.section))
-            .collect();
+        let sections: Vec<Section> = self.trust.page_index.iter().map(|p| p.section).collect();
         self.read(move |reader, path| {
-            let trailer = reader.trailer(path)?;
             let mut orders: Vec<OrderRecord> = Vec::new();
             let mut fills: Vec<FillRecord> = Vec::new();
             let mut equity: Vec<EquitySample> = Vec::new();
             let mut tape: Vec<FlightEvent> = Vec::new();
-            for (page_no, section) in &pages {
-                let bytes = reader.page(path, *page_no)?;
-                match section {
+            let all: Vec<usize> = (0..sections.len()).collect();
+            let trailer = reader.trailer_and_pages(path, &all, |page_no, bytes| {
+                match sections[page_no] {
                     Section::Orders => orders.extend(parse_rows::<OrderRecord>(&bytes)?),
                     Section::Fills => fills.extend(parse_rows::<FillRecord>(&bytes)?),
                     Section::Equity => equity.extend(parse_rows::<EquitySample>(&bytes)?),
                     Section::Tape => tape.extend(parse_rows::<FlightEvent>(&bytes)?),
                 }
-            }
+                Ok(())
+            })?;
             Ok(RunResult {
                 manifest: trailer.manifest,
                 metrics: trailer.metrics,
