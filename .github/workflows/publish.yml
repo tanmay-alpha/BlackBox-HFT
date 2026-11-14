@@ -1,0 +1,197 @@
+name: publish
+
+# Builds the hosted API image (Dockerfile target `hosted`) for a commit on main that passed CI,
+# pushes it to GHCR, attests it, deploys that exact digest to Render and smoke-tests the service.
+# Design, secrets and first-time setup: docs/engineering/DEPLOYMENT.md §2, §5, §7, §8.
+#
+# Gate: `workflow_run` on the `ci` workflow instead of re-running the tests here. ci.yml stays the
+# single definition of "tests pass" (this workflow never drifts from it, and the Rust suite is not
+# run twice per push). The run is skipped unless CI concluded `success` for a push to main of
+# this repository; the image is built from CI's `head_sha`, not from the moving branch head.
+# A manual `workflow_dispatch` on main publishes the current main commit only if a successful
+# `ci` push run exists for it.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # One publish at a time; a newer commit waits instead of cancelling a deploy in flight.
+  group: publish-main
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/tanmay-alpha/blackbox-hft
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    steps:
+      - name: Resolve the commit that passed CI
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_run ]; then
+            sha=$RUN_SHA
+          else
+            if [ "$REF" != refs/heads/main ]; then
+              echo "::error::manual publish runs only on main (got $REF)"; exit 1
+            fi
+            sha=$SHA
+            ok=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&status=success&per_page=1" --jq '.total_count')
+            if [ "$ok" -lt 1 ]; then
+              echo "::error::no successful ci push run for $sha; wait for CI or fix it first"; exit 1
+            fi
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad sha '$sha'"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: gate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      # Third-party actions are pinned to full commit SHAs (tag in the comment), as in ci.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Commit metadata
+        id: meta
+        run: echo "created=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: hosted
+          platforms: linux/amd64
+          push: true
+          build-args: GIT_SHA=${{ needs.gate.outputs.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.gate.outputs.sha }}
+            ${{ env.IMAGE }}:main
+          # Labels go on the image config; the same keys as index annotations, because the pushed
+          # artefact is an index (image + SBOM/provenance manifests) and GHCR reads the package
+          # description and source from the index.
+          labels: |
+            org.opencontainers.image.title=blackbox-hft
+            org.opencontainers.image.description=BlackBox HFT research API (hosted profile). Simulated results only.
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.licenses=MIT
+          annotations: |
+            index:org.opencontainers.image.description=BlackBox HFT research API (hosted profile). Simulated results only.
+            index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            index:org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
+            index:org.opencontainers.image.licenses=MIT
+          # BuildKit attestations stored with the image: SPDX SBOM and SLSA provenance.
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=hosted
+          cache-to: type=gha,scope=hosted,mode=max
+      # Sigstore-signed GitHub artifact attestation, verifiable with
+      # `gh attestation verify oci://ghcr.io/tanmay-alpha/blackbox-hft@<digest> -R tanmay-alpha/BlackBox-HFT`.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist only for organisation-owned repositories.
+          create-storage-record: false
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          {
+            echo "### Image"
+            echo "- \`$IMAGE@$DIGEST\`"
+            echo "- tags: \`$SHA\`, \`main\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    # Skipped (green) until the Render service exists and its deploy hook is stored as the
+    # repository secret RENDER_DEPLOY_HOOK_URL. RENDER_SERVICE_URL is a repository variable.
+    needs: [gate, image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      SERVICE_URL: ${{ vars.RENDER_SERVICE_URL }}
+      ALLOWED_ORIGIN: ${{ vars.BB_SMOKE_ALLOWED_ORIGIN || 'https://blackbox-hft.vercel.app' }}
+      DIGEST: ${{ needs.image.outputs.digest }}
+      SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - name: Deploy hook not configured
+        if: env.HOOK == ''
+        run: echo "::notice::RENDER_DEPLOY_HOOK_URL is not set; image published, deploy skipped"
+      - name: Trigger Render deploy of the pushed digest
+        if: env.HOOK != ''
+        run: |
+          set -euo pipefail
+          # https://render.com/docs/deploy-hooks#deploying-from-an-image-registry: imgURL must match
+          # the service's image URL except for the tag or digest, and must be URL-encoded.
+          img=$(jq -rn --arg v "$IMAGE@$DIGEST" '$v|@uri')
+          case "$HOOK" in *\?*) sep='&' ;; *) sep='?' ;; esac
+          code=$(curl -sS -o resp.json -w '%{http_code}' -X POST --max-time 60 "${HOOK}${sep}imgURL=${img}")
+          case "$code" in
+            200) echo "deploy started: $(jq -r '.deploy.id // "?"' resp.json)" ;;
+            202) echo "::notice::another deploy is in progress; Render queued this one" ;;
+            *) echo "::error::deploy hook answered HTTP $code"; cat resp.json; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HOOK != '' && env.SERVICE_URL != ''
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/deploy
+      - name: Smoke test the deployed revision
+        if: env.HOOK != '' && env.SERVICE_URL != ''
+        # Render pulls the image, starts it, runs migrations and waits for /healthz before it
+        # switches traffic; it cancels a deploy that is not healthy within 15 minutes.
+        timeout-minutes: 20
+        env:
+          BASE_URL: ${{ env.SERVICE_URL }}
+          EXPECT_GIT_SHA: ${{ env.SHA }}
+          WAIT_SECONDS: "900"
+        run: bash scripts/deploy/smoke.sh
+      - name: Smoke test skipped
+        if: env.HOOK != '' && env.SERVICE_URL == ''
+        run: echo "::warning::RENDER_SERVICE_URL variable is not set; deployed without a smoke test"
