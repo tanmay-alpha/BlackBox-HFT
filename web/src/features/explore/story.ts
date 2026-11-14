@@ -5,6 +5,7 @@
 // arithmetic is the explicit P&L identity check in `pnlBreakdown`, which states its inputs.
 
 import { api } from '../../api/client';
+import type { Comparison, Demo, OrderDetail, RunDetail, RunTimeline } from '../../api/model';
 import { fetchTimelineWindow } from '../terminal/timelinePaging';
 import type { MetricRow, OrderPair, ReplayWindow } from '../../api/types';
 import { baseEntryNs, baseResponseNs } from '../../api/types';
