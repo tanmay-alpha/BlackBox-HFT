@@ -3,6 +3,107 @@
 How BlackBox checks its inputs against real market data without publishing that data. Hosted
 data stays synthetic; everything below that touches exchange data runs on one machine only.
 
+## Latency experiment (public demo) — independent recomputation
+
+Measured 2026-11-14 on the local stack (Windows, DB `blackbox_explore`). **All data synthetic**
+(`synthetic-demo`, generator seed 7, `events_sha256 0bc26426…`); all results simulated. Scripts
+live outside the repo in `D:/bbwt-research/validation/`: `bbz.py` (own reader of the `.bbz` bundle:
+concatenated gzip members, JSONL pages), `recompute.py` (metrics + comparison from raw orders,
+fills, equity, tape), `timeline_check.py` (anonymous `/timeline` paging). Raw rows were read from the
+stored bundles in `data/explore/artifacts/runs/` rather than paged over HTTP (anonymous egress budget).
+
+```text
+python recompute.py          # A = 253bbc23b342f373 (1 ms), B = d6a57aed972e18d0 (50 ms)
+python timeline_check.py     # local API, Origin: http://localhost:5173
+```
+
+### Metrics: recomputed vs stored (`trailer.metrics` = `GET /runs/{id}` `.metrics`)
+
+Recomputed with `math.fsum` for sums and nearest-rank quantiles (`sorted[ceil(q·n)−1]`), latencies
+from tape `request_sent.entry_latency_ns` (≥ 0) / `exch_response.response_latency_ns`, round trip =
+`first_response_ts − first request_sent(new).ts`.
+
+| Metric | A recomputed | A stored | B recomputed | B stored | max abs residual |
+|---|---|---|---|---|---|
+| fills (maker / taker) | 1241 (1241/0) | 1241 (1241/0) | 745 (745/0) | 745 (745/0) | 0 |
+| orders submitted | 2060 | 2060 | 1759 | 1759 | 0 |
+| fees = Σ fill fee | 74.4610532 | 74.4610532 | 44.7006824 | 44.7006824 | 1.7e-13 |
+| volume | 12.41 | 12.41 | 7.45 | 7.45 | 2.2e-13 |
+| turnover | 372305.266 | 372305.266 | 223503.412 | 223503.412 | 1.0e-9 |
+| fill ratio orders / qty | 0.602427 / 0.602427 | same | 0.423536 / 0.423536 | same | 0 / 2.3e-14 |
+| realized / unrealized | −0.2485 / 0 | same | −0.136778 / 0.001278 | same | 0 |
+| net P&L (last sample) | −74.709553 | −74.709553 | −44.836182 | −44.836182 | 0 |
+| entry latency n, p50=p90=p99=max | 2835, 1 ms | same | 2891, 50 ms | same | 0 |
+| response latency n, p50=p90=p99=max | 4076, 1 ms | same | 3636, 50 ms | same | 0 |
+| round trip n, p50=p90=p99=max | 2060, 2 ms | same | 1759, 100 ms | same | 0 |
+
+Residuals are summation-order only (stored sums are sequential f64; `fsum` is exact-rounded).
+Tolerance used: `1e-9 × (1 + |x|)` for sums, exact for counts, quantiles and last-sample P&L.
+
+P&L identity (`docs/PNL_ACCOUNTING.md`), every one of 1201 equity samples per run:
+
+| Check | A | B |
+|---|---|---|
+| `equity − (realized + unrealized − fees)` max abs | 0 | 0 |
+| `realized + unrealized − (cash + position × mid_tick × 0.1 × 1.0)` max abs | 5.6e-12 | 3.5e-12 |
+| ledger `fees` (last sample) − Σ fill fees | −1.7e-13 | −6.4e-14 |
+| `realized + unrealized − Σ fill fees` vs stored net | 1.7e-13 | 7e-14 |
+
+### Comparison `01a1da55-7482-7c1c-a06b-e5104201d0df` (A vs B)
+
+Orders aligned by `order_id` (decision order); timing fields `decision_ts, exch_arrival_ts,
+first_response_ts, first_fill_ts, last_fill_ts, terminal_ts`; outcome fields side, price, qty, TIF,
+outcome, fill count/qty, average fill tick, maker/taker qty, fees.
+
+| | Recomputed | Stored (`interpretation`) |
+|---|---|---|
+| First divergence | order 0: same decision (t=0.100 s) and outcome (filled 0.01 @ 299999); arrival 0.101 s vs 0.150 s, first response 0.102 vs 0.200 s, fill 0.108869266 vs 0.165284155 s | tick 0, order 0, "same outcome, different timing", same timestamps |
+| First outcome divergence | order 256: present in A only | tick 1, order 256, "decision only in A" |
+| Fill / order counts Δ (B−A) | −496 fills, −301 submitted | −496, −301 |
+
+### Replay invariants (`GET /runs/{id}/timeline`, cursor-paged)
+
+| Run | Window (ns) | `max_events` | Pages | Σ page events = `events_total` | Raw tape count in window | seq strictly increasing | Dups across pages | ts in window | Clocks |
+|---|---|---|---|---|---|---|---|---|---|
+| A | 1e8 – 1.1e9 | 97 | 3 | 222 = 222 | 222 | yes | 0 | yes | local, exchange |
+| A | 6e10 – 6.3e10 | 500 | 2 | 681 = 681 | 681 | yes | 0 | yes | local, exchange |
+| B | 1e8 – 2.1e9 | 251 | 2 | 360 = 360 | 360 | yes | 0 | yes | local, exchange |
+| B | 1.18e11 – 1.201e11 | 400 | 1 | 332 = 332 | 332 | yes | 0 | yes | local, exchange |
+
+Every page also satisfied `next_cursor == null ⇔ truncated_by == null` and a constant `events_total`.
+
+### Determinism
+
+```text
+blackbox --data-dir dd synth                          # same events_sha256 0bc26426…
+blackbox --data-dir dd run --config cfgA_n.json       # config of A, wire strings → integers
+```
+
+| Source | Platform class | `result_sha256` |
+|---|---|---|
+| Stored A (local) | `windows-x86_64-gnu+libm-0352e099` | `57f055c52f8ad6b0…` |
+| Re-run A, `target/release/blackbox.exe` (built before platform classes; records `windows-x86_64`) | windows-gnu, same toolchain | `57f055c52f8ad6b0…` (identical) |
+| Hosted A (read-only GET, canonical) | `linux-x86_64+libm-53154a4e` | `e07028862afb5e2f…` |
+| Stored B (local) / hosted B | `…0352e099` / `…53154a4e` | `dffbcf7dece22181…` / `8c2ab2e3644f440a…` |
+
+Same run id (config + dataset identity) and identical counts, fees and net P&L on both platforms, but
+the result hash differs from the canonical Linux hash. Both runs use the `power_prob3` queue model,
+which calls the platform's `powf`; the windows-gnu math library differs from glibc in the last bit
+for some inputs, which changes queue-position floats on the tape and therefore the hash
+**[INFERENCE: the differing rows were not located; that needs the hosted tape, not downloaded]**.
+This is the documented platform-class policy ([EXPERIMENT_REPRODUCIBILITY.md](../EXPERIMENT_REPRODUCIBILITY.md#platform-policy)):
+results are bit-reproducible within a class, not across classes.
+
+### What this does NOT validate
+
+- Realism: no empirical calibration of latency, queue position or fill probability; the data is a
+  synthetic generator, not a market.
+- Market impact: replay only; simulated orders never move prices.
+- The engine itself (hftbacktest 0.9.4 matching): only that BlackBox's stored metrics, ledger and
+  comparison are consistent with its own raw records.
+- Cross-platform bit equality (shown above not to hold across libm classes), the other demo pairs,
+  markouts, spread capture, drawdown and order-age metrics (not recomputed here).
+
 ## ITCH reconstruction
 
 M7 workflow: decode a NASDAQ TotalView-ITCH 5.0 file, rebuild the order-by-order (L3) book of
