@@ -503,7 +503,7 @@
         "tags": [
           "datasets"
         ],
-        "summary": "Market analytics of the current version.",
+        "summary": "Market analytics of the current version, bounded as the versioned route.",
         "operationId": "current_analytics",
         "parameters": [
           {
@@ -526,6 +526,16 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`response_too_large`",
             "content": {
               "application/json": {
                 "schema": {
@@ -757,7 +767,7 @@
         "tags": [
           "datasets"
         ],
-        "summary": "Market microstructure analytics (M1–M10) of one version, computed once and cached.",
+        "summary": "Market microstructure analytics (M1–M10) of one version, computed once and cached.\nAggregates are complete; series are downsampled to fit the caller's byte cap exactly as for\n`/runs/{run_id}/analytics` (≤ 100 points, halved down to 2, listed in `downsampled`; complete\npoints via `/analytics/series`); 422 `response_too_large` only when even 2 points do not fit.",
         "operationId": "version_analytics",
         "parameters": [
           {
@@ -789,6 +799,16 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`response_too_large`",
             "content": {
               "application/json": {
                 "schema": {
@@ -2261,7 +2281,7 @@
         "tags": [
           "runs"
         ],
-        "summary": "Execution (E1–E10) and risk analytics of a run, with units, unavailability reasons and\ncaveats; verified against the stored digest. Aggregates are complete; series longer than\n100 points are downsampled and listed in `downsampled` (page them with `/analytics/series`).",
+        "summary": "Execution (E1–E10) and risk analytics of a run, with units, unavailability reasons and\ncaveats; verified against the stored digest. Aggregates are complete. Series longer than\n100 points are downsampled (evenly spaced by index, first and last kept) and listed in\n`downsampled` with `total` and `returned`; the points per series halve (50, 25, …, 2) until\nthe body fits the caller's byte cap (anonymous 1 MiB, keyed `BB_MAX_RESPONSE_BYTES`). Page\nthe complete points with `/analytics/series`. 422 `response_too_large` (`details.limit_bytes`,\n`details.hint`) only when even 2 points per series do not fit.",
         "operationId": "run_analytics",
         "parameters": [
           {
@@ -2293,6 +2313,16 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`response_too_large`",
             "content": {
               "application/json": {
                 "schema": {

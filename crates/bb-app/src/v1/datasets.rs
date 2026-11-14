@@ -21,8 +21,10 @@ use super::{
         DataSourceRef, Dataset, DatasetVersion, Demo, DemoRun, InstrumentRef, Preset, Quality,
         QualitySummary,
     },
-    respond::{Cache, Page, byte_cap, conditional, json, json_value, limit_param, ns_param},
-    runs::{SeriesQuery, series_page},
+    respond::{
+        Cache, Page, byte_cap, conditional, json, json_bytes, json_value, limit_param, ns_param,
+    },
+    runs::{SeriesQuery, analytics_body, series_page},
 };
 use crate::{
     analytics::{self, DatasetAnalytics},
@@ -503,19 +505,15 @@ async fn market_analytics_report(state: &Shared, v: &DbVersion) -> Result<Value,
     Ok(serde_json::from_str(&text)?)
 }
 
-/// The report as served: series downsampled (`downsampled`), wire-encoded.
-async fn market_analytics(state: &Shared, v: &DbVersion) -> Result<Value, ApiError> {
-    let mut value = market_analytics_report(state, v).await?;
-    analytics::downsample(&mut value, analytics::MAX_SERIES_POINTS);
-    wire::to_wire(&mut value).map_err(ApiError::internal)?;
-    Ok(value)
-}
-
 /// Market microstructure analytics (M1–M10) of one version, computed once and cached.
+/// Aggregates are complete; series are downsampled to fit the caller's byte cap exactly as for
+/// `/runs/{run_id}/analytics` (≤ 100 points, halved down to 2, listed in `downsampled`; complete
+/// points via `/analytics/series`); 422 `response_too_large` only when even 2 points do not fit.
 #[utoipa::path(get, path = "/datasets/{dataset_id}/versions/{version}/analytics", tag = "datasets",
     security((), ("bearer" = [])),
     params(("dataset_id" = String, Path), ("version" = i32, Path)),
-    responses((status = 200, body = DatasetAnalytics), (status = 404, body = ErrorEnvelope)))]
+    responses((status = 200, body = DatasetAnalytics), (status = 404, body = ErrorEnvelope),
+              (status = 422, description = "`response_too_large`", body = ErrorEnvelope)))]
 pub async fn version_analytics(
     State(state): State<Shared>,
     caller: Caller,
@@ -523,10 +521,11 @@ pub async fn version_analytics(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let v = visible_version(&state, &caller, &id, Some(version_param(&version)?)).await?;
-    let value = market_analytics(&state, &v).await?;
+    let report = market_analytics_report(&state, &v).await?;
+    let body = analytics_body(&report, &state, &caller)?;
     Ok(conditional(
         &headers,
-        json_value(StatusCode::OK, &value, Cache::Immutable)?,
+        json_bytes(StatusCode::OK, body, Cache::Immutable),
     ))
 }
 
@@ -552,18 +551,20 @@ pub async fn version_analytics_series(
     ))
 }
 
-/// Market analytics of the current version.
+/// Market analytics of the current version, bounded as the versioned route.
 #[utoipa::path(get, path = "/datasets/{dataset_id}/analytics", tag = "datasets", security((), ("bearer" = [])),
     params(("dataset_id" = String, Path)),
-    responses((status = 200, body = DatasetAnalytics), (status = 404, body = ErrorEnvelope)))]
+    responses((status = 200, body = DatasetAnalytics), (status = 404, body = ErrorEnvelope),
+              (status = 422, description = "`response_too_large`", body = ErrorEnvelope)))]
 pub async fn current_analytics(
     State(state): State<Shared>,
     caller: Caller,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let v = visible_version(&state, &caller, &id, None).await?;
-    let value = market_analytics(&state, &v).await?;
-    json_value(StatusCode::OK, &value, Cache::Revalidate)
+    let report = market_analytics_report(&state, &v).await?;
+    let body = analytics_body(&report, &state, &caller)?;
+    Ok(json_bytes(StatusCode::OK, body, Cache::Revalidate))
 }
 
 #[derive(Deserialize, IntoParams)]

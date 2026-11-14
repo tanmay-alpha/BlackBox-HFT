@@ -34,7 +34,7 @@ use super::{
     model::{BundleRef, RunSummary},
     respond::{
         Cache, ENVELOPE_RESERVE, Page, TruncatedBy, bounded, byte_cap, conditional, decode_cursor,
-        encode_cursor, json, json_value, ns_param, wire_item,
+        encode_cursor, json, json_bytes, json_value, ns_param, wire_item,
     },
 };
 use crate::{
@@ -1085,11 +1085,16 @@ pub async fn export(
 }
 
 /// Execution (E1–E10) and risk analytics of a run, with units, unavailability reasons and
-/// caveats; verified against the stored digest. Aggregates are complete; series longer than
-/// 100 points are downsampled and listed in `downsampled` (page them with `/analytics/series`).
+/// caveats; verified against the stored digest. Aggregates are complete. Series longer than
+/// 100 points are downsampled (evenly spaced by index, first and last kept) and listed in
+/// `downsampled` with `total` and `returned`; the points per series halve (50, 25, …, 2) until
+/// the body fits the caller's byte cap (anonymous 1 MiB, keyed `BB_MAX_RESPONSE_BYTES`). Page
+/// the complete points with `/analytics/series`. 422 `response_too_large` (`details.limit_bytes`,
+/// `details.hint`) only when even 2 points per series do not fit.
 #[utoipa::path(get, path = "/runs/{run_id}/analytics", tag = "runs", security((), ("bearer" = [])),
     params(("run_id" = String, Path), PlatformQuery),
     responses((status = 200, body = RunAnalytics), (status = 404, body = ErrorEnvelope),
+              (status = 422, description = "`response_too_large`", body = ErrorEnvelope),
               (status = 500, body = ErrorEnvelope)))]
 pub async fn run_analytics(
     State(state): State<Shared>,
@@ -1099,10 +1104,36 @@ pub async fn run_analytics(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let view = resolve_run(&state, &caller, &run_id, q.platform.as_deref()).await?;
-    let mut value: Value = serde_json::from_str(&run_analytics_json(&state, &view).await?)?;
-    analytics::downsample(&mut value, analytics::MAX_SERIES_POINTS);
-    wire::to_wire(&mut value).map_err(ApiError::internal)?;
-    immutable_value(&headers, &value)
+    let report: Value = serde_json::from_str(&run_analytics_json(&state, &view).await?)?;
+    let body = analytics_body(&report, &state, &caller)?;
+    Ok(conditional(
+        &headers,
+        json_bytes(StatusCode::OK, body, Cache::Immutable),
+    ))
+}
+
+/// The served body of a stored analytics report (run or dataset) within the caller's byte cap:
+/// aggregates intact, series downsampled to [`analytics::MAX_SERIES_POINTS`] points and halved
+/// down to 2 until it fits; 422 `response_too_large` when even that does not fit.
+pub fn analytics_body(
+    report: &Value,
+    state: &Shared,
+    caller: &Caller,
+) -> Result<Vec<u8>, ApiError> {
+    let cap = byte_cap(state, caller);
+    let mut points = analytics::MAX_SERIES_POINTS;
+    loop {
+        let mut value = analytics::downsampled(report, points);
+        wire::to_wire(&mut value).map_err(ApiError::internal)?;
+        let body = serde_json::to_vec(&value)?;
+        if body.len() <= cap {
+            return Ok(body);
+        }
+        if points <= 2 {
+            return Err(super::edge::response_too_large(cap, caller.is_anonymous()));
+        }
+        points = (points / 2).max(2);
+    }
 }
 
 #[derive(Deserialize, IntoParams)]

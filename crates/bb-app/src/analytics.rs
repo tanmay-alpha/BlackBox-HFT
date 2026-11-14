@@ -50,8 +50,9 @@ pub struct DatasetAnalytics {
 }
 
 /// Most points of one series in an analytics response. Aggregate scalars are never touched; a
-/// longer series is replaced by this many points evenly spaced by index (the first and last
-/// kept) and listed in `downsampled`.
+/// longer series is replaced by at most this many points evenly spaced by index (the first and
+/// last kept) and listed in `downsampled`. Responses halve it until the body fits the caller's
+/// byte cap (`v1::runs::analytics_body`).
 pub const MAX_SERIES_POINTS: usize = 100;
 
 /// Array fields that hold series: Kaplan–Meier curves, market series points and the interval
@@ -70,61 +71,67 @@ pub struct DownsampledSeries {
     pub returned: usize,
 }
 
-/// Bounds a stored report (as JSON) for serving: every series longer than `max_points` keeps
-/// `max_points` evenly spaced points, and `downsampled` lists what was shortened.
-pub fn downsample(report: &mut serde_json::Value, max_points: usize) {
-    fn walk(
-        v: &mut serde_json::Value,
-        path: &mut String,
-        max: usize,
-        out: &mut Vec<DownsampledSeries>,
-    ) {
+/// The served form of a stored report (as JSON): every series longer than `max_points` (≥ 2)
+/// keeps `max_points` evenly spaced points, and `downsampled` lists what was shortened. Only
+/// the kept points are copied.
+pub fn downsampled(report: &serde_json::Value, max_points: usize) -> serde_json::Value {
+    use serde_json::Value;
+    fn walk(v: &Value, path: &mut String, max: usize, out: &mut Vec<DownsampledSeries>) -> Value {
         match v {
-            serde_json::Value::Object(map) => {
-                for (key, child) in map.iter_mut() {
-                    let len = path.len();
-                    path.push('/');
-                    path.push_str(&key.replace('~', "~0").replace('/', "~1"));
-                    match child {
-                        serde_json::Value::Array(items)
-                            if SERIES_FIELDS.contains(&key.as_str()) && items.len() > max =>
-                        {
-                            let total = items.len();
-                            let kept: Vec<serde_json::Value> = evenly_spaced(total, max)
-                                .map(|i| std::mem::take(&mut items[i]))
-                                .collect();
-                            *items = kept;
-                            out.push(DownsampledSeries {
-                                path: path.clone(),
-                                total,
-                                returned: items.len(),
-                            });
-                        }
-                        _ => walk(child, path, max, out),
-                    }
-                    path.truncate(len);
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for (i, child) in items.iter_mut().enumerate() {
-                    let len = path.len();
-                    path.push('/');
-                    path.push_str(&i.to_string());
-                    walk(child, path, max, out);
-                    path.truncate(len);
-                }
-            }
-            _ => {}
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(key, child)| {
+                        let len = path.len();
+                        path.push('/');
+                        path.push_str(&key.replace('~', "~0").replace('/', "~1"));
+                        let copy = match child {
+                            Value::Array(items)
+                                if SERIES_FIELDS.contains(&key.as_str()) && items.len() > max =>
+                            {
+                                out.push(DownsampledSeries {
+                                    path: path.clone(),
+                                    total: items.len(),
+                                    returned: max,
+                                });
+                                Value::Array(
+                                    evenly_spaced(items.len(), max)
+                                        .map(|i| items[i].clone())
+                                        .collect(),
+                                )
+                            }
+                            _ => walk(child, path, max, out),
+                        };
+                        path.truncate(len);
+                        (key.clone(), copy)
+                    })
+                    .collect(),
+            ),
+            Value::Array(items) => Value::Array(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, child)| {
+                        let len = path.len();
+                        path.push('/');
+                        path.push_str(&i.to_string());
+                        let copy = walk(child, path, max, out);
+                        path.truncate(len);
+                        copy
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
         }
     }
     let mut out = Vec::new();
-    walk(report, &mut String::new(), max_points.max(2), &mut out);
-    if let (false, Some(map)) = (out.is_empty(), report.as_object_mut()) {
+    let mut copy = walk(report, &mut String::new(), max_points.max(2), &mut out);
+    if let (false, Some(map)) = (out.is_empty(), copy.as_object_mut()) {
         map.insert(
             "downsampled".into(),
             serde_json::to_value(out).expect("plain data serializes"),
         );
     }
+    copy
 }
 
 /// `max` distinct indices of `0..total` (`total > max >= 2`), evenly spaced, first and last

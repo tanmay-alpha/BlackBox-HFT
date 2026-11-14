@@ -310,6 +310,7 @@ export type ErrorState =
   | 'invalid'
   | 'budget_exceeded'
   | 'rate_limited'
+  | 'response_too_large'
   | 'quota_exceeded'
   | 'integrity_failed'
   | 'platform_mismatch'
@@ -343,6 +344,7 @@ const STATE_OF: Record<string, ErrorState> = {
   invalid_config: 'invalid',
   budget_exceeded: 'budget_exceeded',
   rate_limited: 'rate_limited',
+  response_too_large: 'response_too_large',
   quota_exceeded: 'quota_exceeded',
   integrity_failed: 'integrity_failed',
   platform_mismatch: 'platform_mismatch',
@@ -400,6 +402,10 @@ export function describeError(error: unknown): ErrorView {
     case 'quota_exceeded':
       if (d.scope !== undefined) facts.push(`quota ${String(d.scope)}: used ${num(d.used)} of ${num(d.limit)}`);
       if (typeof d.resets_at_ns === 'string') facts.push(`resets at ns ${d.resets_at_ns}`);
+      break;
+    case 'response_too_large':
+      if (typeof d.limit_bytes === 'number') facts.push(`limit: ${num(d.limit_bytes)} bytes for this caller`);
+      action = typeof d.hint === 'string' ? d.hint : null;
       break;
     case 'integrity_failed':
       if (d.run_id) facts.push(`run ${String(d.run_id)}, ${String(d.object)} expected sha256 ${String(d.expected_sha256)}`);

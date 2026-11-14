@@ -52,6 +52,7 @@ Every non-2xx response has this body (and `Cache-Control: no-store`):
 | 409 | `conflict` | `If-Match` version mismatch; cancel of a terminal job; 16-hex id ambiguity/collision; alignment requested on a `metrics_only` comparison | `{ "reason": "version_mismatch" \| "job_terminal" \| "identity_collision" \| "alignment_unavailable", "current_version"?: number }` |
 | 422 | `invalid_config` | `RunConfig`/`SweepSpec` validation failed (bounded problem list) | `{ "problems": string[] }` |
 | 422 | `budget_exceeded` | admission: the work estimate exceeds `ExecutionLimits` of this deployment | `{ "what": string, "limit": number, "estimate": number, "profile": "hosted" \| "local" }` |
+| 422 | `response_too_large` | the response body would exceed the caller's byte cap (§7) even in its smallest representation | `{ "limit_bytes": number, "hint": string }` |
 | 429 | `rate_limited` | request-rate limit (§5) | `{ "retry_after_s": number }` + `Retry-After` header |
 | 429 | `quota_exceeded` | daily submission quota, active-job quota, or the monthly storage budget | `{ "scope": "experiments_per_day" \| "sweeps_per_day" \| "active_jobs" \| "storage", "limit": number, "used": number, "resets_at_ns": string \| null }` |
 | 500 | `integrity_failed` | a stored artefact or summary does not match its recorded hash; the run is quarantined (TARGET_ARCHITECTURE §7) | `{ "run_id": string, "object": "summary" \| "bundle" \| "page", "expected_sha256": string }` |
@@ -160,16 +161,23 @@ limits) → 500 `internal`.
 
 **One enforcement point.** Every response passes the egress middleware, which buffers the serialized body (all
 bodies are built in memory), measures its exact length and refuses a body above the caller's cap (anonymous 1 MiB,
-keyed `BB_MAX_RESPONSE_BYTES`) with **500 `internal`, `details: {"reason": "response_too_large", "limit_bytes": n}`**.
-Handlers bound their output first (pages, downsampled series, replay windows answer 400 with advice), so this refusal
-signals a server defect, never silently truncated JSON. The only exempt body is the keyed bundle export
-(`application/gzip`, bounded by the output limit). The same measured length, not a `Content-Length` header, is added
-to the daily egress counter of the class (cached anonymous bodies included; `HEAD` counts 0).
+keyed `BB_MAX_RESPONSE_BYTES`) with **422 `response_too_large`, `details: {"limit_bytes": n, "hint": "…"}`** (the
+hint names paging, narrower windows and `…/analytics/series`; for anonymous callers also the larger keyed limit).
+Handlers bound their output first (pages, analytics series downsampled to fit, replay windows answer 400 with
+advice), so a client sees it only when even the smallest representation does not fit; never silently truncated
+JSON. The only exempt body is the keyed bundle export (`application/gzip`, bounded by the output limit). The same
+measured length, not a `Content-Length` header, is added to the daily egress counter of the class (cached anonymous
+bodies included; `HEAD` counts 0). Today's persisted counter is added once per class: read before the first body
+above 64 KiB (if that read fails, the body is refused with 503 `unavailable` `database`, fail closed) or taken from
+the first 5 MB flush; a body above 64 KiB reserves its bytes atomically and is refused with 503 `unavailable`
+(`details.budget = "egress"`) when the daily budget would be exceeded.
 
 **Analytics series.** `GET /runs/{id}/analytics` and `GET /datasets/{id}[/versions/{v}]/analytics` return every
 aggregate in full; each series field (`curve`, `points`, `ofi_intervals`, `trade_intervals`) longer than 100 points
 is replaced by 100 points evenly spaced by index (first and last kept) and listed in
-`downsampled: [{ "path": "<JSON Pointer>", "total": n, "returned": 100 }]` (absent when nothing was shortened).
+`downsampled: [{ "path": "<JSON Pointer>", "total": n, "returned": n }]` (absent when nothing was shortened). When
+that body is still above the caller's cap, the points per series halve (50, 25, 12, 6, 3, 2) until it fits; if even
+2 points do not fit → 422 `response_too_large`. The demo runs fit anonymously at 100 points.
 The complete points are paged by `GET /runs/{id}/analytics/series?path=&offset=&limit≤5000` and
 `GET /datasets/{id}/versions/{v}/analytics/series?path=&offset=&limit≤5000` →
 `{ "path", "total", "offset", "items": [...], "next_offset": n | null, "truncated_by": … }` (offset style above). The

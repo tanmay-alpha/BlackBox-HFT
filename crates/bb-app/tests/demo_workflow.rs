@@ -89,10 +89,14 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
         let id = c["id"].as_str().unwrap();
         let (status, _, body) = server.get(&format!("/api/v1/comparisons/{id}"), None).await;
         assert_eq!(status, 200, "{body}");
+        // Markdown bodies are counted exactly too.
+        let before = server.state.egress.today(true);
         let (status, body) =
             get_raw(&server, &format!("/api/v1/comparisons/{id}/report"), None).await;
         assert_eq!(status, 200);
         assert!(String::from_utf8_lossy(&body).starts_with('#'));
+        assert!(!body.is_empty());
+        assert_eq!(server.state.egress.today(true) - before, body.len() as i64);
     }
     let (status, _, reports) = server.get("/api/v1/reports?limit=20", None).await;
     assert_eq!(status, 200, "{reports}");
@@ -100,9 +104,11 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
     assert_eq!(reports.len(), 3);
     for r in &reports {
         let id = r["id"].as_str().unwrap();
+        let before = server.state.egress.today(true);
         let (status, body) = get_raw(&server, &format!("/api/v1/reports/{id}/content"), None).await;
         assert_eq!(status, 200);
         assert_eq!(body.len(), r["size_bytes"].as_u64().unwrap() as usize);
+        assert_eq!(server.state.egress.today(true) - before, body.len() as i64);
     }
 
     // Anonymous run analytics of every demo run: < 1 MiB, egress counts the exact body.
@@ -228,6 +234,32 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
     );
     eprintln!("aligned demo comparison: {elapsed:?}");
 
+    // Keyed run analytics stay within the keyed cap (4 MiB) and are counted exactly; so is the
+    // run's Markdown report.
+    let keyed_cap = server.state.cfg.max_response_bytes;
+    assert_eq!(keyed_cap, 4 * MIB);
+    for run in &runs {
+        let before = server.state.egress.today(false);
+        let (status, body) = get_raw(
+            &server,
+            &format!("/api/v1/runs/{run}/analytics"),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        assert!(
+            body.len() <= keyed_cap,
+            "keyed analytics {} bytes",
+            body.len()
+        );
+        assert_eq!(server.state.egress.today(false) - before, body.len() as i64);
+    }
+    let before = server.state.egress.today(true);
+    let (status, body) = get_raw(&server, &format!("/api/v1/runs/{}/report", runs[0]), None).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert!(String::from_utf8_lossy(&body).starts_with('#'));
+    assert_eq!(server.state.egress.today(true) - before, body.len() as i64);
+
     // The idle in-process worker keeps a fresh in-memory heartbeat (no stale flag).
     let interval = server.state.cfg.heartbeat_interval;
     tokio::time::sleep(interval * 4).await;
@@ -240,6 +272,61 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
     );
 
     server.stop().await;
+
+    // Small caps on the same data: anonymous analytics halve their series points until the
+    // body fits (aggregates intact); a keyed cap below the aggregates answers 422.
+    const SMALL: usize = 128 * 1024;
+    let server = Server::start(
+        &tdb,
+        dir.path(),
+        Options {
+            tweak: Box::new(|c| {
+                c.anonymous_max_response_bytes = SMALL;
+                c.max_response_bytes = 4096;
+            }),
+            ..Options::default()
+        },
+    )
+    .await;
+    // The restarted process adds today's persisted anonymous bytes (flushed by the first server)
+    // once, at its first response above 64 KiB.
+    let mut stored = server.db.egress_today("anonymous").await.unwrap();
+    assert!(stored > 0, "the first server flushed its anonymous egress");
+    for path in runs
+        .iter()
+        .map(|run| format!("/api/v1/runs/{run}/analytics"))
+        .chain(["/api/v1/datasets/synthetic-demo/analytics".to_string()])
+    {
+        let before = server.state.egress.today(true);
+        let (status, body) = get_raw(&server, &path, None).await;
+        assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body));
+        assert!(body.len() <= SMALL, "{path}: {} bytes", body.len());
+        let expected = std::mem::take(&mut stored) + body.len() as i64;
+        assert_eq!(server.state.egress.today(true) - before, expected);
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let downsampled = value["downsampled"].as_array().expect("series shortened");
+        assert!(
+            downsampled
+                .iter()
+                .all(|s| s["returned"].as_u64().unwrap()
+                    < bb_app::analytics::MAX_SERIES_POINTS as u64),
+            "{path}: {downsampled:?}"
+        );
+        eprintln!("{path}: {} bytes within a {SMALL}-byte cap", body.len());
+    }
+    let (status, body) = get_raw(
+        &server,
+        &format!("/api/v1/runs/{}/analytics", runs[0]),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, 422, "{}", String::from_utf8_lossy(&body));
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["error"]["code"], "response_too_large", "{error}");
+    assert_eq!(error["error"]["details"]["limit_bytes"], 4096);
+    assert!(error["error"]["details"]["hint"].is_string());
+
+    server.stop().await;
     tdb.drop_db().await;
 }
 
@@ -247,33 +334,36 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
 async fn oversize_bodies_are_refused_and_egress_counts_true_bytes() {
     let tdb = db_or_skip!();
     let dir = tempfile::tempdir().unwrap();
+    const KEYED_BUDGET: i64 = 1_000_000;
     let server = Server::start(
         &tdb,
         dir.path(),
         Options {
-            tweak: Box::new(|c| c.anonymous_max_response_bytes = 4096),
+            tweak: Box::new(|c| {
+                c.anonymous_max_response_bytes = 4096;
+                c.egress_keyed_daily_bytes = KEYED_BUDGET;
+            }),
             ..Options::default()
         },
     )
     .await;
     let (_, key) = workspace_key(&server.db, "lab", &[Scope::Read]).await;
 
-    // The OpenAPI document is far above 4 KiB: refused for anonymous callers, counted exactly.
+    // The OpenAPI document is far above 4 KiB: refused for anonymous callers with 422
+    // `response_too_large` (limit and hint), counted exactly.
     let before = server.state.egress.today(true);
     let (status, body) = get_raw(&server, "/api/v1/openapi.json", None).await;
-    assert_eq!(status, 500);
+    assert_eq!(status, 422);
     let error: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(error["error"]["code"], "internal", "{error}");
-    assert_eq!(error["error"]["details"]["reason"], "response_too_large");
+    assert_eq!(error["error"]["code"], "response_too_large", "{error}");
     assert_eq!(error["error"]["details"]["limit_bytes"], 4096);
+    assert!(
+        error["error"]["details"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("API key")
+    );
     assert_eq!(server.state.egress.today(true) - before, body.len() as i64);
-
-    // Keyed callers have the 4 MiB cap; the egress counter adds the real body length.
-    let before = server.state.egress.today(false);
-    let (status, body) = get_raw(&server, "/api/v1/openapi.json", Some(&key)).await;
-    assert_eq!(status, 200);
-    assert!(body.len() > 4096);
-    assert_eq!(server.state.egress.today(false) - before, body.len() as i64);
 
     // Small anonymous responses still pass and are counted.
     let before = server.state.egress.today(true);
@@ -281,6 +371,44 @@ async fn oversize_bodies_are_refused_and_egress_counts_true_bytes() {
     assert_eq!(status, 200);
     assert!(!body.is_empty());
     assert_eq!(server.state.egress.today(true) - before, body.len() as i64);
+
+    // Today's persisted keyed counter cannot be read: a large keyed response is refused (fail
+    // closed), a small one is still served and counted.
+    let pool = server.db.pool();
+    sqlx::query("ALTER TABLE bb.egress_usage_daily RENAME TO egress_usage_daily_hidden")
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, body) = get_raw(&server, "/api/v1/openapi.json", Some(&key)).await;
+    assert_eq!(status, 503, "{}", String::from_utf8_lossy(&body));
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["error"]["details"]["reason"], "database", "{error}");
+    assert_eq!(server.state.egress.today(false), 0);
+    let (status, body) = get_raw(&server, "/api/v1/whoami", Some(&key)).await;
+    assert_eq!(status, 200);
+    let small = body.len() as i64;
+    assert_eq!(server.state.egress.today(false), small);
+    sqlx::query("ALTER TABLE bb.egress_usage_daily_hidden RENAME TO egress_usage_daily")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    // Bytes persisted by an earlier process today count against the budget after a restart:
+    // the first large keyed response adds the stored value once, plus its exact length.
+    let stored = 600_000;
+    server.db.add_egress("keyed", stored).await.unwrap();
+    let (status, body) = get_raw(&server, "/api/v1/openapi.json", Some(&key)).await;
+    assert_eq!(status, 200);
+    let doc = body.len() as i64;
+    assert!(doc > 64 * 1024 && stored + small + doc <= KEYED_BUDGET);
+    assert_eq!(server.state.egress.today(false), stored + small + doc);
+    // The next one would pass the budget: refused, and its reservation is released.
+    assert!(stored + small + 2 * doc > KEYED_BUDGET);
+    let (status, body) = get_raw(&server, "/api/v1/openapi.json", Some(&key)).await;
+    assert_eq!(status, 503, "{}", String::from_utf8_lossy(&body));
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["error"]["details"]["budget"], "egress", "{error}");
+    assert_eq!(server.state.egress.today(false), stored + small + doc);
 
     server.stop().await;
     tdb.drop_db().await;
