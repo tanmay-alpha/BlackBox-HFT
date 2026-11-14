@@ -31,6 +31,7 @@ pub mod platform;
 pub mod result;
 pub mod rng;
 pub mod strategy;
+pub mod sweep;
 pub mod time;
 
 pub use time::{Ns, RelNs};
