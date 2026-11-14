@@ -12,7 +12,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Mutex, PoisonError,
+        LazyLock, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicI64, Ordering},
     },
     time::{Duration, Instant},
@@ -26,6 +26,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::json;
+use utoipa::openapi::{RefOr, path::ParameterIn};
 
 use super::{
     Shared,
@@ -43,8 +44,10 @@ const EXPOSE_HEADERS: &str =
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const INFLIGHT_WAIT: Duration = Duration::from_secs(2);
-/// Responses above this size are refused once a class's daily egress budget is spent.
-const EGRESS_SMALL_RESPONSE: usize = 64 * 1024;
+/// Non-error responses above this size read today's persisted egress counter first and are
+/// refused once a class's daily egress budget is spent; tiny ones and errors are always served
+/// (and counted).
+const EGRESS_TINY_RESPONSE: usize = 2 * 1024;
 /// Egress is flushed to Postgres every this many bytes per class.
 const EGRESS_FLUSH_BYTES: i64 = 5_000_000;
 
@@ -369,11 +372,12 @@ async fn measured(
 /// outside [`anon_cache`]).
 ///
 /// Today's persisted counter is added to the in-memory total once per class and day: read before
-/// the first response above 64 KiB, or taken from the first flush (`add_egress` returns the new
-/// stored total). Until then only that one loading flush may run, so the persisted value is
-/// added exactly once and the total stays exact across restarts. A response above 64 KiB is
-/// refused (503 `unavailable`) while the stored value cannot be read (fail closed), and reserves
-/// its bytes atomically against the budget, so concurrent large responses cannot overshoot it.
+/// the first refusable response (a non-error body above 2 KiB), or taken from the first flush
+/// (`add_egress` returns the new stored total). Until then only that one loading flush may run,
+/// so the persisted value is added exactly once and the total stays exact across restarts. A
+/// refusable response is refused (503 `unavailable`) while the stored value cannot be read (fail
+/// closed), and once the budget is spent (503 `busy`), so tiny pages cannot keep draining it; it
+/// reserves its bytes atomically against the budget, so concurrent responses cannot overshoot it.
 pub async fn egress(State(state): State<Shared>, request: Request, next: Next) -> Response {
     let anonymous = !request.headers().contains_key(header::AUTHORIZATION);
     let head = request.method() == Method::HEAD;
@@ -399,8 +403,10 @@ pub async fn egress(State(state): State<Shared>, request: Request, next: Next) -
     };
     // A HEAD response carries no body on the wire.
     let size = if head { 0 } else { size as i64 };
-    let large = size as usize > EGRESS_SMALL_RESPONSE;
-    if large && !counter.loaded.load(Ordering::SeqCst) {
+    let refusable = size as usize > EGRESS_TINY_RESPONSE
+        && !response.status().is_client_error()
+        && !response.status().is_server_error();
+    if refusable && !counter.loaded.load(Ordering::SeqCst) {
         match state.db.egress_today(class).await {
             Ok(stored) => {
                 if !counter.loaded.swap(true, Ordering::SeqCst) {
@@ -408,13 +414,13 @@ pub async fn egress(State(state): State<Shared>, request: Request, next: Next) -
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, class, "egress counter not loaded; large response refused");
+                tracing::warn!(error = %e, class, "egress counter not loaded; response refused");
                 return ApiError::unavailable("database", 5).into_response();
             }
         }
     }
     let total = counter.total.fetch_add(size, Ordering::SeqCst) + size;
-    if large && total > budget {
+    if refusable && total > budget {
         counter.total.fetch_sub(size, Ordering::SeqCst);
         return ApiError::unavailable("busy", seconds_to_utc_midnight())
             .with_details(json!({ "reason": "busy", "budget": "egress" }))
@@ -466,6 +472,8 @@ const ANON_MAX_BYTES: usize = 32 << 20;
 struct Cached {
     generation: u64,
     at: Instant,
+    /// Last time it was stored or served (eviction order).
+    used: Instant,
     status: StatusCode,
     headers: Vec<(HeaderName, HeaderValue)>,
     body: Bytes,
@@ -478,30 +486,105 @@ pub struct AnonCache {
     entries: Mutex<HashMap<String, Cached>>,
 }
 
-/// The cache key of an anonymous GET: the path and its query pairs in a canonical order (stable
-/// by parameter name, so repeated parameters keep their meaning), without empty pairs. Reordered
-/// or padded query strings share one entry.
-fn cache_key(uri: &axum::http::Uri) -> String {
-    let Some(query) = uri.query() else {
-        return uri.path().to_string();
-    };
-    let mut pairs: Vec<&str> = query.split('&').filter(|p| !p.is_empty()).collect();
+impl AnonCache {
+    /// Stores `entry`, first dropping entries of an older generation or past the longest TTL,
+    /// then the least recently used ones until it fits in 512 entries / 32 MiB.
+    fn insert(&self, key: String, entry: Cached) {
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.remove(&key);
+        entries.retain(|_, c| c.generation == entry.generation && c.at.elapsed() < ANON_TTL);
+        let mut used: usize = entries.values().map(|c| c.body.len()).sum();
+        while entries.len() >= ANON_MAX_ENTRIES || used + entry.body.len() > ANON_MAX_BYTES {
+            let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, c)| c.used)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            if let Some(c) = entries.remove(&oldest) {
+                used -= c.body.len();
+            }
+        }
+        entries.insert(key, entry);
+    }
+}
+
+/// Query parameter names of every documented GET route, from the OpenAPI document: the path
+/// split at `/` (a `{…}` segment matches any one segment) and its query parameter names.
+static ROUTE_QUERY_PARAMS: LazyLock<Vec<(Vec<String>, Vec<String>)>> = LazyLock::new(|| {
+    let (_, api) = super::api_router().split_for_parts();
+    api.paths
+        .paths
+        .into_iter()
+        .filter_map(|(path, item)| {
+            let names = item
+                .parameters
+                .into_iter()
+                .chain(item.get?.parameters)
+                .flatten()
+                .filter_map(|p| match p {
+                    RefOr::T(p) if p.parameter_in == ParameterIn::Query => Some(p.name),
+                    _ => None,
+                })
+                .collect();
+            Some((path.split('/').map(str::to_string).collect(), names))
+        })
+        .collect()
+});
+
+/// The query parameter names the GET route(s) matching `path` read; `None` for an undocumented
+/// path.
+fn known_query_params(path: &str) -> Option<Vec<&'static str>> {
+    let segments: Vec<&str> = path.split('/').collect();
+    let mut known: Option<Vec<&'static str>> = None;
+    for (template, names) in ROUTE_QUERY_PARAMS.iter() {
+        let matches = template.len() == segments.len()
+            && template
+                .iter()
+                .zip(&segments)
+                .all(|(t, s)| t == s || (t.starts_with('{') && !s.is_empty()));
+        if matches {
+            known
+                .get_or_insert_with(Vec::new)
+                .extend(names.iter().map(String::as_str));
+        }
+    }
+    known
+}
+
+/// The cache key of an anonymous GET: the path and the route's known query pairs in a canonical
+/// order (stable by parameter name, so repeated parameters keep their meaning), without empty
+/// pairs. Reordered or padded query strings and unknown parameters (which the handlers ignore)
+/// share one entry. `None` (not cached) for an undocumented path or an encoded parameter name,
+/// which could decode to a known one.
+fn cache_key(uri: &axum::http::Uri) -> Option<String> {
+    let known = known_query_params(uri.path())?;
+    let mut pairs = Vec::new();
+    for pair in uri.query().unwrap_or("").split('&') {
+        let name = pair.split('=').next().unwrap_or(pair);
+        if name.contains(['%', '+']) {
+            return None;
+        }
+        if !pair.is_empty() && known.contains(&name) {
+            pairs.push(pair);
+        }
+    }
     pairs.sort_by_key(|p| p.split('=').next().unwrap_or(p));
-    if pairs.is_empty() {
+    Some(if pairs.is_empty() {
         uri.path().to_string()
     } else {
         format!("{}?{}", uri.path(), pairs.join("&"))
-    }
+    })
 }
 
 pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Next) -> Response {
     let cacheable = request.method() == Method::GET
         && !request.headers().contains_key(header::AUTHORIZATION)
         && request.uri().path().starts_with("/api/v1/");
-    if !cacheable {
+    let Some(key) = cacheable.then(|| cache_key(request.uri())).flatten() else {
         return next.run(request).await;
-    }
-    let key = cache_key(request.uri());
+    };
     let ttl = if request.uri().path().starts_with("/api/v1/jobs") {
         ANON_TTL_JOBS
     } else {
@@ -513,9 +596,12 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         .entries
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
+        .get_mut(&key)
         .filter(|c| c.generation == generation && c.at.elapsed() < ttl)
-        .cloned();
+        .map(|c| {
+            c.used = Instant::now();
+            c.clone()
+        });
     if let Some(c) = hit {
         let mut response = Response::new(Body::from(c.body));
         *response.status_mut() = c.status;
@@ -552,37 +638,32 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    {
-        let mut entries = state
-            .anon_cache
-            .entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let used: usize = entries.values().map(|c| c.body.len()).sum();
-        if entries.len() >= ANON_MAX_ENTRIES || used + bytes.len() > ANON_MAX_BYTES {
-            entries.clear();
-        }
-        entries.insert(
-            key,
-            Cached {
-                generation,
-                at: Instant::now(),
-                status: parts.status,
-                headers,
-                body: bytes.clone(),
-            },
-        );
-    }
+    let now = Instant::now();
+    state.anon_cache.insert(
+        key,
+        Cached {
+            generation,
+            at: now,
+            used: now,
+            status: parts.status,
+            headers,
+            body: bytes.clone(),
+        },
+    );
     Response::from_parts(parts, Body::from(bytes))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::cache_key;
+    use std::time::{Duration, Instant};
+
+    use axum::{body::Bytes, http::StatusCode};
+
+    use super::{ANON_MAX_ENTRIES, AnonCache, Cached, cache_key};
 
     #[test]
     fn anonymous_cache_keys_are_normalized() {
-        let key = |s: &str| cache_key(&s.parse().unwrap());
+        let key = |s: &str| cache_key(&s.parse().unwrap()).unwrap();
         assert_eq!(key("/api/v1/runs"), "/api/v1/runs");
         assert_eq!(key("/api/v1/runs?&&"), "/api/v1/runs");
         assert_eq!(
@@ -595,8 +676,49 @@ mod tests {
             key("/api/v1/runs?limit=2&limit=1")
         );
         assert_eq!(
-            key("/api/v1/experiments?status=failed&b=1&status=completed"),
-            "/api/v1/experiments?b=1&status=failed&status=completed"
+            key("/api/v1/jobs?state=failed&b=1&state=completed"),
+            "/api/v1/jobs?state=failed&state=completed"
         );
+    }
+
+    #[test]
+    fn anonymous_cache_keys_hold_only_the_routes_known_parameters() {
+        let key = |s: &str| cache_key(&s.parse().unwrap());
+        // Unknown parameters share the entry of the request without them.
+        assert_eq!(
+            key("/api/v1/runs/r1/timeline?x=1&t0_ns=5&cursor=c&y").unwrap(),
+            "/api/v1/runs/r1/timeline?cursor=c&t0_ns=5"
+        );
+        assert_eq!(key("/api/v1/whoami?x=2").unwrap(), "/api/v1/whoami");
+        // A known parameter of another route is unknown here.
+        assert_eq!(key("/api/v1/status?limit=3").unwrap(), "/api/v1/status");
+        // Encoded names may decode to a known one; undocumented paths are not cached.
+        assert_eq!(key("/api/v1/runs?li%6Dit=1"), None);
+        assert_eq!(key("/api/v1/runs?a+b=1"), None);
+        assert_eq!(key("/api/v1/no/such/path"), None);
+    }
+
+    #[test]
+    fn anonymous_cache_evicts_the_least_recently_used_entry() {
+        let cache = AnonCache::default();
+        let start = Instant::now();
+        let entry = |i: u64| Cached {
+            generation: 1,
+            at: start,
+            used: start + Duration::from_millis(i),
+            status: StatusCode::OK,
+            headers: Vec::new(),
+            body: Bytes::from_static(b"{}"),
+        };
+        for i in 0..ANON_MAX_ENTRIES as u64 {
+            cache.insert(format!("k{i}"), entry(i + 1));
+        }
+        // `k0` was served most recently: `k1` goes, the others stay.
+        cache.entries.lock().unwrap().get_mut("k0").unwrap().used = start + Duration::from_secs(10);
+        cache.insert("new".into(), entry(10_000));
+        let entries = cache.entries.lock().unwrap();
+        assert_eq!(entries.len(), ANON_MAX_ENTRIES);
+        assert!(entries.contains_key("k0") && entries.contains_key("new"));
+        assert!(!entries.contains_key("k1"));
     }
 }

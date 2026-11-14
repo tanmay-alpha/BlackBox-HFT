@@ -76,6 +76,7 @@ impl AppState {
         hub: Arc<WorkerHub>,
         metrics: Arc<Metrics>,
     ) -> Self {
+        respond::set_cursor_key(cfg.api_key_pepper.expose().as_bytes());
         Self {
             limiters: auth::Limiters::new(&cfg),
             workspaces: auth::WorkspaceCache::default(),

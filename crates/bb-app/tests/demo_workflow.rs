@@ -289,7 +289,7 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
     )
     .await;
     // The restarted process adds today's persisted anonymous bytes (flushed by the first server)
-    // once, at its first response above 64 KiB.
+    // once, at its first non-error response above 2 KiB.
     let mut stored = server.db.egress_today("anonymous").await.unwrap();
     assert!(stored > 0, "the first server flushed its anonymous egress");
     for path in runs
@@ -409,6 +409,47 @@ async fn oversize_bodies_are_refused_and_egress_counts_true_bytes() {
     let error: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(error["error"]["details"]["budget"], "egress", "{error}");
     assert_eq!(server.state.egress.today(false), stored + small + doc);
+
+    // Once the budget is spent, every non-error body above 2 KiB is refused, not only large
+    // ones, so small pages cannot keep draining it; tiny bodies and errors are still served.
+    // The medium body: the admin list of a few dozen API keys.
+    let mut admin = String::new();
+    for _ in 0..30 {
+        admin = workspace_key(&server.db, "ops", &[Scope::Read, Scope::Admin])
+            .await
+            .1;
+    }
+    server.stop().await;
+    let server = Server::start(&tdb, dir.path(), Options::default()).await;
+    let (status, body) = get_raw(&server, "/api/v1/system/api-keys", Some(&admin)).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert!(
+        (4 * 1024..32 * 1024).contains(&body.len()),
+        "{} bytes",
+        body.len()
+    );
+    server.stop().await;
+    // A restart with today's persisted keyed bytes above the budget: the first such body loads
+    // the persisted counter and is refused.
+    let server = Server::start(
+        &tdb,
+        dir.path(),
+        Options {
+            tweak: Box::new(|c| c.egress_keyed_daily_bytes = 1_000),
+            ..Options::default()
+        },
+    )
+    .await;
+    let (status, body) = get_raw(&server, "/api/v1/system/api-keys", Some(&admin)).await;
+    assert_eq!(status, 503, "{}", String::from_utf8_lossy(&body));
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["error"]["details"]["budget"], "egress", "{error}");
+    let (status, body) = get_raw(&server, "/api/v1/whoami", Some(&key)).await;
+    assert_eq!(status, 200);
+    assert!(body.len() <= 2048);
+    let (status, _) = get_raw(&server, "/api/v1/runs/0000000000000000", Some(&key)).await;
+    assert_eq!(status, 404);
+    assert!(server.state.egress.today(false) > 1_000);
 
     server.stop().await;
     tdb.drop_db().await;

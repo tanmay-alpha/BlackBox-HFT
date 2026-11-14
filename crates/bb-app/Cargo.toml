@@ -30,10 +30,11 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 anyhow.workspace = true
 thiserror.workspace = true
-# Gzip for report and export payloads; sha2/hex for content hashes.
+# Gzip for report and export payloads; sha2/hex for content hashes; hmac for cursor MACs.
 flate2.workspace = true
 sha2.workspace = true
 hex.workspace = true
+hmac.workspace = true
 uuid = { workspace = true, features = ["v7"] }
 base64.workspace = true
 chrono.workspace = true

@@ -3104,7 +3104,7 @@
           {
             "name": "max_events",
             "in": "query",
-            "description": "Events per page: default 5000, values above 50000 are capped. `0` returns no events\n(counts and context only) with `next_cursor` at the window's first event.",
+            "description": "Events per page: default 5000; values below 100 are raised to 100 and values above\n50000 are capped. `0` returns no events (counts and context only) and no `next_cursor`;\nit is refused on `cursor` pages.",
             "required": false,
             "schema": {
               "type": "integer",

@@ -813,14 +813,15 @@ async fn at3_tampering_is_detected_and_at10_pages_are_bounded() {
     let mut cursor: Option<String> = None;
     let mut first_cursor: Option<String> = None;
     loop {
-        let mut path = format!("/api/v1/runs/{run_id}/timeline?{window}&max_events=7");
+        let mut path = format!("/api/v1/runs/{run_id}/timeline?{window}&max_events=1");
         if let Some(c) = &cursor {
             path.push_str(&format!("&cursor={c}"));
         }
         let (status, _, page) = server.get(&path, Some(&key)).await;
         assert_eq!(status, 200, "{page}");
         assert_eq!(page["events_total"].as_u64().unwrap(), tape_len);
-        assert!(page["events"].as_array().unwrap().len() <= 7);
+        // Page sizes below 100 are raised to 100.
+        assert!(page["events"].as_array().unwrap().len() <= 100);
         if cursor.is_some() {
             assert_eq!(page["orders"], json!([]), "context on a cursor page");
         }

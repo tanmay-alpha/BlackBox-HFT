@@ -5909,8 +5909,9 @@ export interface operations {
                 /** @description Inclusive window end (default: `min(run end, t0 + 60 s)`). */
                 t1_ns?: string;
                 /**
-                 * @description Events per page: default 5000, values above 50000 are capped. `0` returns no events
-                 *     (counts and context only) with `next_cursor` at the window's first event.
+                 * @description Events per page: default 5000; values below 100 are raised to 100 and values above
+                 *     50000 are capped. `0` returns no events (counts and context only) and no `next_cursor`;
+                 *     it is refused on `cursor` pages.
                  */
                 max_events?: number;
                 /** @description `next_cursor` of the previous page; `t0_ns`, `t1_ns` and `platform` must be unchanged. */
