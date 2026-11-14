@@ -1,29 +1,32 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 
 import { Empty } from './components/ui';
-import BookIndexPage from './features/book/BookIndexPage';
-import DatasetsPage from './features/datasets/DatasetsPage';
-import PairWorkspace from './features/experiments/PairWorkspace';
-import OrderForensicsPage from './features/forensics/OrderForensicsPage';
-import SweepFormPage from './features/grid/SweepFormPage';
-import SweepPage from './features/grid/SweepPage';
-import SweepsPage from './features/grid/SweepsPage';
-import LabPage from './features/lab/LabPage';
-import LatencyLabPage from './features/latency/LatencyLabPage';
-import MissionControlPage from './features/mission/MissionControlPage';
-import ReplayPage from './features/replay/ReplayPage';
-import ReportsPage from './features/reports/ReportsPage';
-import RiskPage from './features/risk/RiskPage';
-import RunOverviewPage from './features/runs/RunOverviewPage';
-import RunsPage from './features/runs/RunsPage';
-import WorkbenchPage from './features/sim/WorkbenchPage';
-import SystemPage from './features/system/SystemPage';
-import ReplayTerminalPage from './features/terminal/ReplayTerminalPage';
-import ChartFirstPrototype from './features/explore/protoA/ChartFirstPage';
-import WorkspacePrototype from './features/explore/protoB/WorkspacePage';
 import { paths } from './shell/paths';
 import { Shell } from './shell/Shell';
 import { Workspace } from './shell/Workspace';
+
+// Every workspace is its own chunk (PRODUCT_BASELINE D7); the shell suspends while one loads.
+const BookIndexPage = lazy(() => import('./features/book/BookIndexPage'));
+const DatasetsPage = lazy(() => import('./features/datasets/DatasetsPage'));
+const PairWorkspace = lazy(() => import('./features/experiments/PairWorkspace'));
+const OrderForensicsPage = lazy(() => import('./features/forensics/OrderForensicsPage'));
+const SweepFormPage = lazy(() => import('./features/grid/SweepFormPage'));
+const SweepPage = lazy(() => import('./features/grid/SweepPage'));
+const SweepsPage = lazy(() => import('./features/grid/SweepsPage'));
+const LabPage = lazy(() => import('./features/lab/LabPage'));
+const LatencyLabPage = lazy(() => import('./features/latency/LatencyLabPage'));
+const MissionControlPage = lazy(() => import('./features/mission/MissionControlPage'));
+const ReplayPage = lazy(() => import('./features/replay/ReplayPage'));
+const ReportsPage = lazy(() => import('./features/reports/ReportsPage'));
+const RiskPage = lazy(() => import('./features/risk/RiskPage'));
+const RunOverviewPage = lazy(() => import('./features/runs/RunOverviewPage'));
+const RunsPage = lazy(() => import('./features/runs/RunsPage'));
+const WorkbenchPage = lazy(() => import('./features/sim/WorkbenchPage'));
+const SystemPage = lazy(() => import('./features/system/SystemPage'));
+const ReplayTerminalPage = lazy(() => import('./features/terminal/ReplayTerminalPage'));
+const ChartFirstPrototype = lazy(() => import('./features/explore/protoA/ChartFirstPage'));
+const WorkspacePrototype = lazy(() => import('./features/explore/protoB/WorkspacePage'));
 
 /**
  * Redirect that keeps the query string (UI_DESIGN_SPEC.md §9.2). `to` maps the matched route
@@ -71,6 +74,7 @@ const LEGACY: [string, (p: Record<string, string | undefined>) => string][] = [
 export default function App() {
   return (
     <BrowserRouter>
+      <Suspense fallback={null}>
       <Routes>
         {/* UI prototype competition (docs/rebuild/UI_PROTOTYPE_COMPARISON.md); outside the console shell. */}
         <Route path="explore/a" element={<ChartFirstPrototype />} />
@@ -105,6 +109,7 @@ export default function App() {
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }

@@ -3,13 +3,13 @@
 // (§8.1). Browser- and OS-reserved bindings are never taken; Ctrl+K is the only modified chord
 // taken over, and single-key shortcuts can be turned off and never fire while typing.
 
-import { Component, useCallback, useEffect, useRef, useState } from 'react';
+import { Component, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { ChevronDown, CircleHelp, PanelRightClose, PanelRightOpen, Search } from 'lucide-react';
 
-import { BasisLegend, ErrorBox } from '../components/ui';
+import { BasisLegend, ErrorBox, Spinner } from '../components/ui';
 import { GLOSSARY } from '../components/glossary';
 import { fmtClock } from '../components/fmt';
 import { AccessProvider, useAccess } from './access';
@@ -474,7 +474,9 @@ function ShellFrame({ announce }: { announce: (text: string) => void }) {
         <Panel id="workspace" minSize="40%">
           <main id="main" tabIndex={-1} className="shell-main">
             <WorkspaceErrorBoundary key={location.pathname}>
-              <Outlet />
+              <Suspense fallback={<Spinner label="Loading workspace" />}>
+                <Outlet />
+              </Suspense>
             </WorkspaceErrorBoundary>
           </main>
         </Panel>
