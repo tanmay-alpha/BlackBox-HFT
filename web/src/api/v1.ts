@@ -478,3 +478,174 @@ export interface ApiKeyInfo {
   revoked_at_ns: NsString | null;
   last_used_at_ns: NsString | null;
 }
+
+// ----- analytics (bb-analytics, `GET /runs/{id}/analytics`) -----------------------------------
+//
+// Integer ns fields (`horizon_ns`, `elapsed_ns`, `sent_ns`, `observation_end_ns`, the first
+// element of `opportunities`) are decimal strings and stay strings in the views (formatted
+// exactly by `fmtNsDuration`). `AnalyticsValue.value` is an f64 statistic in `unit`.
+
+/** Every analytics number: available with its unit and counts, or unavailable with the reason. */
+export type AnalyticsValue =
+  | { status: 'available'; value: number; unit: string; n: number; excluded: number }
+  | { status: 'unavailable'; reason: string; unit: string; n: number; excluded: number };
+
+export interface PriceMetric {
+  price: AnalyticsValue;
+  ticks: AnalyticsValue;
+  bps: AnalyticsValue;
+}
+
+export interface ConfidenceBand {
+  lower: AnalyticsValue;
+  upper: AnalyticsValue;
+  method: string;
+}
+
+export interface HorizonMetrics {
+  horizon_ns: NsString;
+  matched_effective_half: PriceMetric;
+  realised_half: PriceMetric;
+  markout: PriceMetric;
+  adverse_selection: PriceMetric;
+  adverse_selection_95: ConfidenceBand;
+}
+
+export interface SpreadMetrics {
+  filled_quantity: AnalyticsValue;
+  effective_half: PriceMetric;
+  effective_full: PriceMetric;
+  arrival_slippage: PriceMetric;
+  decision_slippage: PriceMetric;
+  latency_drift: PriceMetric;
+  horizons: HorizonMetrics[];
+}
+
+export interface LiquiditySplit<T> {
+  all: T;
+  maker: T;
+  taker: T;
+}
+
+export interface Distribution {
+  total: AnalyticsValue;
+  median: AnalyticsValue;
+  p05: AnalyticsValue;
+  p95: AnalyticsValue;
+}
+
+export interface ShortfallComponents {
+  execution: Distribution;
+  delay: Distribution;
+  trading: Distribution;
+  opportunity: Distribution;
+  fees: Distribution;
+}
+
+export interface CancelSummary {
+  attempts: number;
+  exchange_censored: number;
+  acknowledgement_censored: number;
+  late_cancels: number;
+  to_exchange_ns: Distribution;
+  round_trip_ns: Distribution;
+  in_flight_quantity: Distribution;
+}
+
+export interface SurvivalPoint {
+  elapsed_ns: NsString;
+  survival: AnalyticsValue;
+  fill_probability: AnalyticsValue;
+  probability_95: ConfidenceBand;
+  at_risk: number;
+  events: number;
+  censored: number;
+}
+
+export interface KaplanMeier {
+  n: number;
+  excluded: number;
+  censored: number;
+  curve: SurvivalPoint[];
+  fill_probability: AnalyticsValue;
+  probability_95: ConfidenceBand;
+  median_ns: AnalyticsValue;
+}
+
+export interface QueueBucket {
+  lower: number | null;
+  upper: number | null;
+  covariate_unit: string;
+  estimate: KaplanMeier;
+}
+
+export interface QueueMetrics {
+  horizon_ns: NsString;
+  modeled: boolean;
+  relative: QueueBucket[];
+  absolute_lots: QueueBucket[];
+  excluded_relative: number;
+  excluded_absolute: number;
+}
+
+export interface FillTimes {
+  observed_ns: Distribution;
+  km: KaplanMeier;
+}
+
+export interface PnlDecomposition {
+  edge: AnalyticsValue;
+  drift: AnalyticsValue;
+  fees: AnalyticsValue;
+  net: AnalyticsValue;
+}
+
+export interface ExecutionReport {
+  analytics_version: string;
+  order_count: number;
+  order_details_streamed: boolean;
+  spreads: LiquiditySplit<SpreadMetrics>;
+  /** Empty in the API: per-order details are not retained. */
+  orders: unknown[];
+  shortfall: Distribution;
+  shortfall_components: ShortfallComponents;
+  cancels: CancelSummary;
+  opportunities: [NsString, Distribution][];
+  queue: QueueMetrics;
+  first_fill: FillTimes;
+  complete_fill: FillTimes;
+  pnl: LiquiditySplit<PnlDecomposition>;
+  exchange_end_mid: AnalyticsValue;
+  observation_end_ns: NsString | null;
+  unassociated_fills: number;
+  caveats: string[];
+}
+
+export interface RiskReport {
+  analytics_version: string;
+  mark: string;
+  sample_interval_ns: AnalyticsValue;
+  bucket_horizon_ns: AnalyticsValue;
+  trials: number;
+  net_pnl: AnalyticsValue;
+  turnover: AnalyticsValue;
+  pnl_per_turnover_bps: AnalyticsValue;
+  max_drawdown: AnalyticsValue;
+  time_under_water_ns: AnalyticsValue;
+  mean_absolute_position: AnalyticsValue;
+  time_at_position_limit_ns: AnalyticsValue;
+  max_long: AnalyticsValue;
+  max_short: AnalyticsValue;
+  /** Non-annualised mean / sd of bucket P&L; unavailable below 30 buckets. */
+  bucket_sharpe: AnalyticsValue;
+  sharpe_hac_se: AnalyticsValue;
+  caveats: string[];
+}
+
+export interface RunAnalytics {
+  analytics_version: string;
+  /** `null` when the execution report could not be computed; the reason otherwise. */
+  execution: ExecutionReport | null;
+  risk: RiskReport;
+  execution_unavailable: string | null;
+}

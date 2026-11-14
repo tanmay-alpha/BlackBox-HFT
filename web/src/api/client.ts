@@ -144,6 +144,8 @@ export const api = {
     collectAll((cursor, signal) => api.runsPage({ ...q, cursor, limit: 100 }, { signal }), { maxItems: LIST_CAP, signal: o.signal }),
   run: (id: string, o: Opts = {}) => request<W.RunSummary>('GET', `/runs/${enc(id)}`, o).then((r) => normalize.run(r) as M.RunDetail),
   engineCheck: (id: string, o: Opts = {}) => request<M.Run['engine_check']>('GET', `/runs/${enc(id)}/engine-check`, o),
+  /** bb-analytics execution and risk reports of a run (`GET /runs/{id}/analytics`). */
+  runAnalytics: (id: string, o: Opts = {}) => request<W.RunAnalytics>('GET', `/runs/${enc(id)}/analytics`, o).then(normalize.analytics),
   orders: (id: string, q: OrdersQuery = {}, o: Opts = {}) =>
     request<W.OffsetPage<OrderRecord>>('GET', `/runs/${enc(id)}/orders`, { query: q, ...o }).then(normalize.orders),
   orderDetail: (id: string, orderId: number, o: Opts = {}) =>

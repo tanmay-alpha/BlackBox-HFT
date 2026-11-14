@@ -10,7 +10,19 @@ import type * as W from './v1';
 type NsNum<T, K extends keyof T> = Omit<T, K> & { [P in K]: null extends T[P] ? number | null : number };
 
 export type {
+  AnalyticsValue,
   ApiKeyInfo,
+  ConfidenceBand,
+  Distribution,
+  ExecutionReport,
+  HorizonMetrics,
+  KaplanMeier,
+  PnlDecomposition,
+  PriceMetric,
+  QueueBucket,
+  RiskReport,
+  RunAnalytics,
+  SpreadMetrics,
   CursorPage,
   DatasetQuality,
   ExperimentStatus,

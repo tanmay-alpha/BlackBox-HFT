@@ -13,12 +13,13 @@ import { isBucketed, type EquityBucket, type EquityPage, type Run } from '../../
 import type { EquitySample, Metrics } from '../../api/types';
 import { DataTable, type Column } from '../../components/DataTable';
 import { QuantileTable } from '../../components/data';
-import { DASH, fmtBp, fmtDuration, fmtInt, fmtNum, fmtPct, fmtPnl, fmtTicks } from '../../components/fmt';
+import { DASH, fmtDuration, fmtInt, fmtNum, fmtPct, fmtPnl, fmtTicks } from '../../components/fmt';
 import { cssVar } from '../../components/theme';
 import { Empty, ErrorBox, Notice, Panel, Spinner, Stat, useAsync } from '../../components/ui';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { lastPerSecond, TimeSeriesChart, type ChartSeries } from '../runs/TimeSeriesChart';
+import { ExecutionAnalytics, RiskAnalytics } from './AnalyticsPanels';
 import './risk.css';
 
 const MAX_POINTS = 5000;
@@ -32,19 +33,6 @@ export function drawdownSeries<T>(items: readonly T[], equity: (x: T) => number,
     peak = Math.max(peak, peakOf(x));
     return peak - equity(x);
   });
-}
-
-/** Share of the sampled span spent below the running equity peak (DERIVED, as sampled). */
-export function timeUnderWater(samples: readonly EquitySample[]): number | null {
-  if (samples.length < 2) return null;
-  let peak = Number.NEGATIVE_INFINITY;
-  let under = 0;
-  for (let i = 0; i < samples.length - 1; i += 1) {
-    peak = Math.max(peak, samples[i].equity);
-    if (samples[i].equity < peak) under += samples[i + 1].ts - samples[i].ts;
-  }
-  const span = samples[samples.length - 1].ts - samples[0].ts;
-  return span > 0 ? under / span : null;
 }
 
 function RunPicker() {
@@ -123,17 +111,14 @@ function executionRows(m: Metrics): MetricRow[] {
   return rows;
 }
 
-function riskRows(m: Metrics, tuw: number | null, sampledNote: string): MetricRow[] {
-  const perUnit = m.turnover > 0 ? (m.net_pnl / m.turnover) * 1e4 : null;
+function runMetricRows(m: Metrics, sampledNote: string): MetricRow[] {
   return [
     { key: 'net', label: 'Net P&L', value: fmtPnl(m.net_pnl), unit: 'quote', caveat: `Realized ${fmtPnl(m.realized_pnl)} + unrealized ${fmtPnl(m.unrealized_pnl)} (fees included). ${REPLAY_CAVEAT}` },
     { key: 'gross', label: 'Gross P&L (before fees)', value: fmtPnl(m.net_pnl + m.fees), unit: 'quote', caveat: 'Net P&L + fees, both served.' },
     { key: 'fees', label: 'Fees', value: fmtNum(m.fees, 4), unit: 'quote', caveat: 'Modeled from the configured maker/taker rates.' },
-    { key: 'per_unit', label: 'Net P&L per unit traded', value: fmtBp(perUnit), unit: 'bp of turnover', caveat: 'Net P&L \u00f7 turnover \u00d7 10\u2074. Fee-dominated when the edge is small.' },
     { key: 'turnover', label: 'Turnover', value: fmtNum(m.turnover, 2), unit: 'quote', caveat: 'Traded notional.' },
     { key: 'volume', label: 'Volume', value: fmtNum(m.volume, 4), unit: 'base', caveat: 'Traded quantity.' },
     { key: 'dd', label: 'Maximum drawdown', value: fmtNum(m.max_drawdown, 4), unit: 'quote', caveat: `Peak to trough on the equity series as sampled (${sampledNote}). Path-dependent; one realisation; not a risk forecast.` },
-    { key: 'tuw', label: 'Time under water', value: fmtPct(tuw), unit: 'share of span', caveat: 'DERIVED here from the served equity samples: time below the running peak \u00f7 sampled span. Unavailable when the series is downsampled.' },
     { key: 'mean_abs', label: 'Mean |position|', value: fmtNum(m.mean_abs_position, 4), unit: 'base', caveat: 'Inventory risk, time-averaged over samples.' },
     { key: 'max_long', label: 'Max long / max short', value: `${fmtNum(m.max_long, 4)} / ${fmtNum(m.max_short, 4)}`, unit: 'base', caveat: '' },
     { key: 'final', label: 'Final position', value: fmtNum(m.final_position, 4), unit: 'base', caveat: 'Marked at the last mid (unrealized P&L).' },
@@ -146,18 +131,6 @@ const METRIC_COLUMNS: Column<MetricRow>[] = [
   { id: 'value', header: 'Value', numeric: true, cell: (r) => <span className="mono">{r.value}</span>, raw: (r) => r.value },
   { id: 'unit', header: 'Unit', cell: (r) => <span className="dim">{r.unit}</span> },
   { id: 'caveat', header: 'Caveat', cell: (r) => <span className="note">{r.caveat || DASH}</span> },
-];
-
-/** Analytics in MARKET_MICROSTRUCTURE §3/§5.3 that `/api/v1` does not serve yet. */
-const NOT_SERVED = [
-  'E1 effective spread and E2 realised spread on the pre-fill mid m0 = M(t\u207b)',
-  'E4 implementation shortfall and E5 slippage vs arrival mid',
-  'E6 fill probability vs modeled queue position',
-  'E8 cancel latency distribution and E10 opportunity cost of unfilled orders',
-  'E9 maker/taker decomposition of P&L (edge, drift, fees)',
-  'Markout curves with n and block-bootstrap confidence intervals',
-  'Time at the position limit',
-  'A Sharpe-type statistic per horizon (only with \u2265 30 non-overlapping buckets, HAC standard error, never annualised)',
 ];
 
 function Charts({ page }: { page: EquityPage }) {
@@ -224,9 +197,8 @@ function Charts({ page }: { page: EquityPage }) {
 function RunRisk({ runId }: { runId: string }) {
   const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
   const equity = useAsync((signal) => api.equity(runId, { max_points: MAX_POINTS }, { signal }), [runId]);
+  const analytics = useAsync((signal) => api.runAnalytics(runId, { signal }), [runId]);
   const r = run.data;
-  const samples = equity.data && !equity.data.downsampled ? (equity.data.items as EquitySample[]) : null;
-  const tuw = samples ? timeUnderWater(samples) : null;
   const sampledNote = r?.config ? `every ${fmtInt(r.config.record.sample_every_ticks)} ticks` : 'sampling as recorded';
 
   const toolbar = (
@@ -264,10 +236,13 @@ function RunRisk({ runId }: { runId: string }) {
                 {equity.data?.next_cursor ? <p className="note">The equity window was cut by the server ({equity.data.truncated_by}); later samples are not shown.</p> : null}
               </div>
               <div className="col">
-                <Panel title="Risk and P&L" basis="derived" flush>
-                  <DataTable label="Risk and P&L metrics" columns={METRIC_COLUMNS} rows={riskRows(r.metrics, tuw, sampledNote)} rowKey={(x) => x.key} />
+                {analytics.loading ? <Spinner label="Loading analytics" /> : null}
+                <ErrorBox error={analytics.error} onRetry={analytics.reload} />
+                {analytics.data ? <RiskAnalytics risk={analytics.data.risk} /> : null}
+                <Panel title="Run metrics" basis="derived" flush caption="bb-core Metrics recorded with the run.">
+                  <DataTable label="Run metrics" columns={METRIC_COLUMNS} rows={runMetricRows(r.metrics, sampledNote)} rowKey={(x) => x.key} />
                 </Panel>
-                <Panel title="Execution" basis="derived" flush>
+                <Panel title="Execution counts and markouts" basis="derived" flush>
                   <DataTable label="Execution metrics" columns={METRIC_COLUMNS} rows={executionRows(r.metrics)} rowKey={(x) => x.key} />
                 </Panel>
                 <Panel title="Timing" basis="modeled" flush caption="Latencies are the configured latency model's draws; order age is right-censored at the end.">
@@ -282,15 +257,14 @@ function RunRisk({ runId }: { runId: string }) {
                     ]}
                   />
                 </Panel>
-                <Panel title="Not served by the API" caption="MARKET_MICROSTRUCTURE.md recommends these; /api/v1 does not provide them yet, so they are not shown or computed here.">
-                  <ul className="risk-gaps">
-                    {NOT_SERVED.map((g) => (
-                      <li key={g}>{g}</li>
-                    ))}
-                  </ul>
-                </Panel>
               </div>
             </div>
+            {analytics.data?.execution_unavailable ? (
+              <Notice tag="EXECUTION ANALYTICS UNAVAILABLE" tone="info">
+                {analytics.data.execution_unavailable}
+              </Notice>
+            ) : null}
+            {analytics.data?.execution ? <ExecutionAnalytics execution={analytics.data.execution} /> : null}
           </>
         ) : null}
       </div>
