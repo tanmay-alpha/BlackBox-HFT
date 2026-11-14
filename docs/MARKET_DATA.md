@@ -20,6 +20,12 @@ The level of every dataset is `DataLevel::L2MbpWithTrades`: quantity per price l
 Individual orders are never visible, which is why queue position has to be modeled
 ([QUEUE_MODELS.md](QUEUE_MODELS.md)).
 
+NASDAQ TotalView-ITCH 5.0 files are a validation input only, used locally because the sample files
+carry no redistribution grant: `blackbox itch-reconstruct` (`crates/bb-data/src/itch/`) rebuilds the
+order-by-order book, which does show individual orders and their observed queue, and aggregates
+chosen stocks into the same engine rows with its own manifest. ITCH has no receipt clock, so it
+stores no dataset ([rebuild/EXPERIMENT_VALIDATION.md](rebuild/EXPERIMENT_VALIDATION.md#itch-reconstruction)).
+
 ## The engine's event format
 
 hftbacktest replays rows of eight fields: `ev`, `exch_ts`, `local_ts`, `px`, `qty`, `order_id`,

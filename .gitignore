@@ -13,6 +13,10 @@
 # All datasets, runs and downloads are generated locally. Vendor market data must never be
 # committed: its terms forbid redistribution, including converted files (docs/OPEN_SOURCE_RESEARCH.md).
 /data/
+# NASDAQ ITCH sample files carry no redistribution grant: local use only
+# (docs/rebuild/EXPERIMENT_VALIDATION.md#itch-reconstruction).
+*NASDAQ_ITCH50*
+*-v50.txt.gz
 
 # Scratch
 /.research/
