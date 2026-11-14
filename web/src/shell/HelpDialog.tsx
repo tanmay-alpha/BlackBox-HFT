@@ -2,6 +2,7 @@
 // the server's disclaimer, third-party attribution).
 
 import { BasisLegend } from '../components/ui';
+import { fmtBytes, fmtInt } from '../components/fmt';
 import { GLOSSARY } from '../components/glossary';
 import { Dialog } from './Dialog';
 import { useHealth } from './health';
@@ -59,7 +60,7 @@ function KeyTable({ caption, rows }: { caption: string; rows: [string, string][]
 
 export function HelpDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { settings, update } = useSettings();
-  const { health } = useHealth();
+  const { status } = useHealth();
   return (
     <Dialog open={open} onClose={onClose} title="Help, shortcuts and settings" className="help">
       <section aria-labelledby="help-settings" className="help-section">
@@ -102,13 +103,18 @@ export function HelpDialog({ open, onClose }: { open: boolean; onClose: () => vo
       <section aria-labelledby="help-about" className="help-section">
         <h3 id="help-about">About</h3>
         <p className="prose">BlackBox HFT {'\u2014'} Market Microstructure &amp; Execution Research Laboratory.</p>
-        {health ? (
+        {status ? (
           <>
             <p className="mono">
-              blackbox {health.blackbox_version} {'\u00b7'} contract v{health.contract_version} {'\u00b7'} {health.engine.name}{' '}
-              {health.engine.version}
+              blackbox {status.blackbox_version} ({status.git_sha.slice(0, 12)}) {'\u00b7'} API {status.api_version} {'\u00b7'} contract v
+              {status.contract_version} {'\u00b7'} {status.engine.name} {status.engine.version}
             </p>
-            <p className="prose">{health.disclaimer}</p>
+            <p className="mono">
+              limits ({status.limits.profile}): {fmtInt(status.limits.max_ticks)} ticks {'\u00b7'} {fmtInt(status.limits.max_tape_events)} tape events{' '}
+              {'\u00b7'} {fmtInt(status.limits.max_sweep_cells)} sweep cells {'\u00b7'} {fmtInt(status.limits.deadline_ms)} ms deadline {'\u00b7'}{' '}
+              {fmtBytes(status.limits.max_output_bytes)} output
+            </p>
+            <p className="prose">{status.disclaimer}</p>
           </>
         ) : null}
         <p className="prose">

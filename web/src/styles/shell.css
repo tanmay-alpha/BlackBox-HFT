@@ -980,3 +980,42 @@
     overflow-x: auto;
   }
 }
+
+/* ----- access (UI_DESIGN_SPEC §10.2) ----------------------------------------------------- */
+
+.access-badge {
+  gap: var(--sp-2);
+}
+
+button.badge {
+  cursor: pointer;
+}
+
+.btn-locked,
+button[aria-disabled='true'] {
+  color: var(--fg-1);
+  cursor: not-allowed;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.key-dialog .key-input {
+  flex: 1;
+  min-width: 36ch;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.error-box-facts {
+  margin: 0;
+  padding-left: var(--sp-4);
+  color: var(--fg-1);
+}
+
+.error-box-action {
+  color: var(--fg-1);
+}

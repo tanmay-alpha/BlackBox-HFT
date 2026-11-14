@@ -1,21 +1,26 @@
 // Strategy Lab (UI_DESIGN_SPEC.md §11.4): presets on the left, the configuration in tabs (one per
 // section of `fields.ts`) in the centre, validation, the diff against the loaded values, the
-// optional baseline run ("Compare with…") and the run request on the right.
+// optional baseline run ("Compare with…") and the submission on the right. Submitting enqueues an
+// experiment job (`POST /api/v1/experiments`) and opens it in the Simulation Workbench; the same
+// configuration returns the live job or the stored run instead of a duplicate.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
-import { api, isStaticViewer, STATIC_VIEWER_MESSAGE } from '../../api/client';
-import type { DatasetManifest, Preset, RunConfig, RunSummary } from '../../api/types';
+import { api } from '../../api/client';
+import { toWire } from '../../api/normalize';
+import type { DatasetSummary, Run, RunDetail, SubmitExperimentResult } from '../../api/model';
+import type { Preset, RunConfig } from '../../api/types';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
 import { JsonBlock } from '../../components/data';
 import { assumptionsLabel, strategyLabel } from '../../components/describe';
 import { SplitPane } from '../../components/SplitPane';
-import { StaticViewerNote } from '../../components/staticViewer';
 import { Tabs } from '../../components/Tabs';
 import { Badge, Empty, ErrorBox, Panel, Pill, Spinner, useAsync } from '../../components/ui';
+import { GatedButton, useAccess } from '../../shell/access';
+import { useAnnounce } from '../../shell/announce';
 import { useInspector } from '../../shell/inspector';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
@@ -46,9 +51,9 @@ function originText(o: Origin, current: RunConfig | null): string {
   return `Values loaded from ${source}, then edited by you (${edits} field${edits === 1 ? ' differs' : 's differ'}).`;
 }
 
-function runOptionLabel(r: RunSummary): string {
+function runOptionLabel(r: Run): string {
   const name = r.label ? `${r.label} ` : '';
-  return `${name}${r.manifest.run_id} \u00b7 ${strategyLabel(r.manifest.config.strategy.kind)} \u00b7 ${r.manifest.dataset.id}`;
+  return `${name}${r.run_id} \u00b7 ${r.strategy_kind} \u00b7 ${r.dataset.id}`;
 }
 
 const PRESET_COLUMNS: Column<Preset>[] = [
@@ -118,14 +123,16 @@ function ChangesTable({ caption, a, b, changes }: { caption: string; a: string; 
 
 export default function LabPage() {
   const navigate = useNavigate();
+  const announce = useAnnounce();
+  const access = useAccess();
   const [searchParams] = useSearchParams();
   const datasetParam = searchParams.get('dataset');
   const fromParam = searchParams.get('from');
 
-  const datasets = useAsync(() => api.datasets(), []);
-  const runs = useAsync(() => api.runs(), []);
-  const fromRun = useAsync<RunSummary | null>(
-    () => (fromParam ? api.run(fromParam) : Promise.resolve(null)),
+  const datasets = useAsync((signal) => api.datasets({ signal }).then((c) => c.items), []);
+  const runs = useAsync((signal) => api.runs({}, { signal }), []);
+  const fromRun = useAsync<RunDetail | null>(
+    (signal) => (fromParam ? api.run(fromParam, { signal }) : Promise.resolve(null)),
     [fromParam],
   );
 
@@ -136,18 +143,18 @@ export default function LabPage() {
   const [label, setLabel] = useState('');
   const [submitting, setSubmitting] = useState<SubmitMode | null>(null);
   const [submitError, setSubmitError] = useState<unknown>(null);
-  const [submitNote, setSubmitNote] = useState<string | null>(null);
+  const [submitNote, setSubmitNote] = useState<ReactNode>(null);
   const [activeSection, setActiveSection] = useState('strategy');
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
 
   const presets = useAsync<Preset[]>(
-    () => (datasetId ? api.presets(datasetId) : Promise.resolve([])),
+    (signal) => (datasetId ? api.presets(datasetId, { signal }) : Promise.resolve([])),
     [datasetId],
   );
 
-  const dataset: DatasetManifest | null =
+  const dataset: DatasetSummary | null =
     datasets.data?.find((d) => d.id === datasetId) ?? null;
-  const instrument = dataset ? dataset.instrument : null;
+  const instrument = dataset?.current_version?.instrument ?? null;
 
   // Initial form contents, decided once: the run named by ?from=, else the dataset named by
   // ?dataset= (or the first installed one) with starting values.
@@ -156,17 +163,17 @@ export default function LabPage() {
     if (config !== null || fromLoading) return;
     if (fromRun.data) {
       const run = fromRun.data;
-      setDatasetId(run.manifest.config.dataset_id);
-      setConfig(run.manifest.config);
-      setOrigin({ type: 'run', runId: run.manifest.run_id, loaded: run.manifest.config });
-      setBaseRunId(run.manifest.run_id);
+      setDatasetId(run.config.dataset_id);
+      setConfig(run.config);
+      setOrigin({ type: 'run', runId: run.run_id, loaded: run.config });
+      setBaseRunId(run.run_id);
       return;
     }
     const list = datasets.data;
     if (!list || list.length === 0) return;
     const chosen = list.find((d) => d.id === datasetParam) ?? list[0];
     setDatasetId(chosen.id);
-    setConfig(startingConfig(chosen.id, chosen.instrument));
+    setConfig(startingConfig(chosen.id, chosen.current_version?.instrument ?? null));
     setOrigin({ type: 'defaults' });
   }, [config, fromLoading, fromRun.data, datasets.data, datasetParam]);
 
@@ -196,11 +203,17 @@ export default function LabPage() {
     [config, instrument],
   );
 
-  const baseRun = runs.data?.find((r) => r.manifest.run_id === baseRunId) ?? fromRun.data ?? null;
-  const baseRunMatches = baseRun !== null && baseRun.manifest.run_id === baseRunId;
+  // List items carry no configuration; scenario A's comes from `GET /runs/{id}`.
+  const baseRunDetail = useAsync<RunDetail | null>(
+    (signal) =>
+      baseRunId === '' ? Promise.resolve(null) : fromRun.data?.run_id === baseRunId ? Promise.resolve(fromRun.data) : api.run(baseRunId, { signal }),
+    [baseRunId, fromRun.data],
+  );
+  const baseRun = baseRunDetail.data?.run_id === baseRunId ? baseRunDetail.data : null;
+  const baseRunMatches = baseRun !== null;
   const changes = useMemo(
-    () => (config && baseRunMatches && baseRun ? diffConfigs(baseRun.manifest.config, config) : []),
-    [config, baseRun, baseRunMatches],
+    () => (config && baseRun ? diffConfigs(baseRun.config, config) : []),
+    [config, baseRun],
   );
   const originChanges = useMemo(
     () => (config && origin.type !== 'defaults' ? diffConfigs(origin.loaded, config) : []),
@@ -218,7 +231,7 @@ export default function LabPage() {
     setSubmitError(null);
     setSubmitNote(null);
     const ds = datasets.data?.find((d) => d.id === id) ?? null;
-    setConfig((c) => (c ? { ...c, dataset_id: id } : startingConfig(id, ds ? ds.instrument : null)));
+    setConfig((c) => (c ? { ...c, dataset_id: id } : startingConfig(id, ds?.current_version?.instrument ?? null)));
   };
 
   const applyPreset = (p: Preset) => {
@@ -230,32 +243,53 @@ export default function LabPage() {
 
   const loadBaseRun = () => {
     if (!baseRun) return;
-    setDatasetId(baseRun.manifest.config.dataset_id);
-    edit(baseRun.manifest.config);
-    setOrigin({ type: 'run', runId: baseRun.manifest.run_id, loaded: baseRun.manifest.config });
+    setDatasetId(baseRun.config.dataset_id);
+    edit(baseRun.config);
+    setOrigin({ type: 'run', runId: baseRun.run_id, loaded: baseRun.config });
   };
 
   const blocked = fieldProblems.length > 0 || ruleProblems.length > 0;
-  // The hosted read-only viewer cannot simulate; the button title and the run panel say so.
-  const readOnly = isStaticViewer();
+
+  /** What the submission returned, in words (UI_DESIGN_SPEC §11.4: idempotence reported honestly). */
+  const outcomeText = (r: SubmitExperimentResult): string => {
+    if (r.run) return `Already simulated \u2014 stored run ${r.run.run_id} returned.`;
+    if (r.job && !r.created) return `The same experiment is already ${r.job.state}: existing job ${r.job.id} returned (first label wins).`;
+    if (r.job) return `Job ${r.job.id} ${r.job.state}${r.job.queue_position !== null ? `, position #${r.job.queue_position}` : ''}.`;
+    return `Experiment ${r.experiment.id} is ${r.experiment.status}.`;
+  };
 
   const submit = async (mode: SubmitMode) => {
-    if (!config || blocked || readOnly || submitting) return;
+    if (!config || blocked || submitting) return;
+    if (!access.hasScope('run')) {
+      if (access.mode !== 'research') access.openKeyDialog();
+      return;
+    }
     setSubmitting(mode);
     setSubmitError(null);
     setSubmitNote(null);
     try {
       const trimmed = label.trim();
-      const summary = await api.createRun({ config, label: trimmed === '' ? null : trimmed });
-      const runId = summary.manifest.run_id;
-      if (mode === 'run') {
-        navigate(paths.run(runId));
-      } else if (runId === baseRunId) {
+      const result = await api.submitExperiment(config, trimmed === '' ? null : trimmed);
+      const runId = result.experiment.run_id;
+      const text = outcomeText(result);
+      announce(text);
+      if (mode === 'scenario_b' && runId === baseRunId) {
         setSubmitNote(
           `This configuration is the same experiment as scenario A (run ${runId}): identical inputs give an identical run. Change at least one assumption to get a scenario B.`,
         );
-      } else {
+      } else if (mode === 'scenario_b' && result.run) {
         navigate(paths.comparePair(baseRunId, runId));
+      } else if (mode === 'scenario_b' && result.job) {
+        setSubmitNote(
+          <>
+            {text} Scenario B is run {runId}; when <Link to={paths.job(result.job.id)}>its job</Link> completes,{' '}
+            <Link to={paths.comparePair(baseRunId, runId)}>compare A and B</Link>.
+          </>,
+        );
+      } else if (result.job) {
+        navigate(paths.job(result.job.id), { state: { submitted: text } });
+      } else {
+        navigate(paths.run(runId));
       }
     } catch (e) {
       setSubmitError(e);
@@ -283,11 +317,7 @@ export default function LabPage() {
   const noDatasets = datasets.data !== null && datasets.data !== undefined && datasets.data.length === 0;
   const ready = config !== null && datasets.data;
 
-  const runTitle = readOnly
-    ? STATIC_VIEWER_MESSAGE
-    : blocked
-      ? 'Fix the invalid configuration first.'
-      : 'Simulate this configuration (Ctrl+Enter)';
+  const notReady = !ready ? 'Loading\u2026' : blocked ? 'Fix the invalid configuration first.' : submitting !== null ? 'Submitting\u2026' : null;
 
   const toolbar = (
     <>
@@ -329,16 +359,10 @@ export default function LabPage() {
           </option>
         ))}
       </select>
-      <button
-        type="submit"
-        form={FORM_ID}
-        className="btn-primary"
-        disabled={!ready || blocked || readOnly || submitting !== null}
-        title={runTitle}
-      >
-        {submitting === 'run' ? 'Simulating' : 'Run simulation'}
-      </button>
-      {submitting !== null ? <Spinner label="Replaying the dataset" /> : null}
+      <GatedButton className="btn-primary" onClick={() => void submit('run')} blockedReason={notReady} title="Submit this configuration as an experiment job (Ctrl+Enter)" data-testid="lab-submit">
+        {submitting === 'run' ? 'Submitting' : 'Run simulation'}
+      </GatedButton>
+      {submitting !== null ? <Spinner label="Submitting the experiment" /> : null}
     </>
   );
 
@@ -479,8 +503,14 @@ export default function LabPage() {
                 ) : (
                   <Badge kind="observed">recorded market data</Badge>
                 )}{' '}
-                tick size <span className="mono">{dataset.instrument.tick_size}</span>, lot size{' '}
-                <span className="mono">{dataset.instrument.lot_size}</span>.{' '}
+                {dataset.current_version ? (
+                  <>
+                    v{dataset.current_version.version}, tick size <span className="mono">{dataset.current_version.instrument.tick_size}</span>, lot
+                    size <span className="mono">{dataset.current_version.instrument.lot_size}</span>.{' '}
+                  </>
+                ) : (
+                  'No current version. '
+                )}
                 <Link to={paths.bookDataset(dataset.id)}>Open in Order Book Lab</Link>
               </>
             ) : (
@@ -528,11 +558,11 @@ export default function LabPage() {
                 }}
               >
                 <option value="">none</option>
-                {baseRunId !== '' && !runs.data?.some((r) => r.manifest.run_id === baseRunId) ? (
+                {baseRunId !== '' && !runs.data?.items.some((r) => r.run_id === baseRunId) ? (
                   <option value={baseRunId}>{baseRunId}</option>
                 ) : null}
-                {(runs.data ?? []).map((r) => (
-                  <option key={r.manifest.run_id} value={r.manifest.run_id}>
+                {(runs.data?.items ?? []).map((r) => (
+                  <option key={r.run_id} value={r.run_id}>
                     {runOptionLabel(r)}
                   </option>
                 ))}
@@ -543,11 +573,13 @@ export default function LabPage() {
             <button type="button" onClick={loadBaseRun} disabled={!baseRunMatches}>
               Load A&apos;s configuration into the form
             </button>
-            {runs.loading ? <Spinner label="Loading runs" /> : null}
+            {runs.loading || baseRunDetail.loading ? <Spinner label="Loading runs" /> : null}
+            {runs.data?.incomplete ? <span className="note">first {runs.data.items.length} runs listed</span> : null}
           </div>
+          <ErrorBox error={baseRunDetail.error} onRetry={baseRunDetail.reload} />
           {baseRunMatches && baseRun ? (
             <>
-              <p className="mono small wrap-anywhere">A: {assumptionsLabel(baseRun.manifest.config)}</p>
+              <p className="mono small wrap-anywhere">A: {assumptionsLabel(baseRun.config)}</p>
               {changes.length === 0 ? (
                 <p className="notice">The form is identical to scenario A. Running it would return A itself.</p>
               ) : (
@@ -561,14 +593,13 @@ export default function LabPage() {
             </>
           ) : null}
           <div className="row">
-            <button
-              type="button"
-              disabled={blocked || readOnly || submitting !== null || baseRunId === ''}
+            <GatedButton
               onClick={() => void submit('scenario_b')}
-              title={readOnly ? STATIC_VIEWER_MESSAGE : baseRunId === '' ? 'Pick a scenario A run first.' : undefined}
+              blockedReason={baseRunId === '' ? 'Pick a scenario A run first.' : notReady}
+              data-testid="lab-submit-b"
             >
-              {submitting === 'scenario_b' ? 'Simulating' : 'Run as scenario B'}
-            </button>
+              {submitting === 'scenario_b' ? 'Submitting' : 'Run as scenario B'}
+            </GatedButton>
             {baseRunId === '' ? (
               <span className="note">Scenario B needs a scenario A run selected above.</span>
             ) : (
@@ -604,13 +635,14 @@ export default function LabPage() {
               {submitNote}
             </p>
           ) : null}
-          <StaticViewerNote />
           <p className="note">
-            The run is synchronous and idempotent: a configuration already simulated on this dataset
-            returns the stored run with the same run id and result hash. Results are simulated on
-            historical replay and are never exchange executions.
+            Submitting enqueues an experiment job and opens it in the Simulation Workbench. It is idempotent: the
+            same configuration returns the live job, or the stored run with the same run id and result hash, instead
+            of simulating twice. Results are simulated on historical replay and are never exchange executions.
           </p>
-          {blocked ? null : <JsonBlock summary="Request body (RunConfig as it will be sent)" value={config} />}
+          {blocked ? null : (
+            <JsonBlock summary="Request body (POST /api/v1/experiments, ns values and seed as decimal strings)" value={{ config: toWire.config(config), label: label.trim() === '' ? null : label.trim() }} />
+          )}
         </section>
       </div>
     </Panel>

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import type { EquitySample } from "../../api/types";
-import { fmtNum, fmtSigned } from "../../components/fmt";
-import { Empty } from "../../components/ui";
+import { isBucketed, type EquityBucket, type EquityPage } from "../../api/model";
+import { fmtDuration, fmtNum, fmtSigned } from "../../components/fmt";
+import { Empty, Notice } from "../../components/ui";
 import {
   decimalsForStep,
   fmtAxisNs,
@@ -22,10 +22,27 @@ const PLOT_HEIGHT = HEIGHT - TOP - AXIS_BAND;
 interface Trace {
   ts: number[];
   equity: number[];
+  /** Set when the server downsampled the series: the buckets behind the drawn points. */
+  buckets: EquityBucket[] | null;
 }
 
-function toTrace(samples: EquitySample[]): Trace {
-  return { ts: samples.map((s) => s.ts), equity: samples.map((s) => s.equity) };
+/**
+ * Raw samples are drawn as they are. A downsampled bucket is drawn as its first value at `t0`, a
+ * vertical stroke over its served `[min_equity, max_equity]` range at its midpoint, and its last
+ * value at `t1`: the envelope the server reported, with no point invented inside the bucket.
+ */
+function toTrace(page: EquityPage): Trace {
+  if (isBucketed(page)) {
+    const ts: number[] = [];
+    const equity: number[] = [];
+    for (const b of page.items) {
+      const mid = b.t0_ns + Math.floor((b.t1_ns - b.t0_ns) / 2);
+      ts.push(b.t0_ns, mid, mid, b.t1_ns);
+      equity.push(b.first, b.min_equity, b.max_equity, b.last);
+    }
+    return { ts, equity, buckets: page.items };
+  }
+  return { ts: page.items.map((s) => s.ts), equity: page.items.map((s) => s.equity), buckets: null };
 }
 
 /** First and last sample index needed to draw `[t0, t1]`, including one sample beyond each edge. */
@@ -82,14 +99,25 @@ function tracePath(
   return parts.join("");
 }
 
-function valueAt(trace: Trace, ts: number): number | null {
+/** What the curve says at `ts`: the last sample at or before it, or the bucket's served range. */
+function readAt(trace: Trace, ts: number): { value: number | null; text: string } {
+  if (trace.buckets !== null) {
+    const i = lastAtOrBefore(
+      trace.buckets.map((b) => b.t0_ns),
+      ts,
+    );
+    const b = i < 0 ? undefined : trace.buckets[i];
+    if (b === undefined || ts > b.t1_ns) return { value: null, text: "\u2014" };
+    return { value: null, text: `${fmtNum(b.min_equity, 4)}..${fmtNum(b.max_equity, 4)} (${b.n} samples)` };
+  }
   const i = lastAtOrBefore(trace.ts, ts);
-  return i < 0 ? null : (trace.equity[i] as number);
+  const value = i < 0 ? null : (trace.equity[i] as number);
+  return { value, text: fmtNum(value, 4) };
 }
 
 export interface EquityOverlayProps {
-  a: EquitySample[];
-  b: EquitySample[];
+  a: EquityPage;
+  b: EquityPage;
   /** Local-clock decision time of the first divergence, if there is one. */
   divergenceTs: number | null;
   sameDataset: boolean;
@@ -176,7 +204,7 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
     };
   }, [traceA, traceB, aroundDivergence, divergenceTs, plotWidth]);
 
-  if (a.length === 0 && b.length === 0) {
+  if (a.items.length === 0 && b.items.length === 0) {
     return <Empty>Neither run recorded an equity sample.</Empty>;
   }
 
@@ -190,11 +218,34 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
     chart && cursorTs !== null && cursorTs >= chart.t0 && cursorTs <= chart.t1
       ? chart.xOf(cursorTs)
       : null;
-  const atA = cursorTs === null ? null : valueAt(traceA, cursorTs);
-  const atB = cursorTs === null ? null : valueAt(traceB, cursorTs);
+  const atA = cursorTs === null ? null : readAt(traceA, cursorTs);
+  const atB = cursorTs === null ? null : readAt(traceB, cursorTs);
+  const downsampled = (["A", "B"] as const).flatMap((tag) => {
+    const page = tag === "A" ? a : b;
+    return page.downsampled ? [{ tag, page }] : [];
+  });
+  const partial = (["A", "B"] as const).filter((tag) => (tag === "A" ? a : b).next_cursor !== null);
 
   return (
     <div className="cmp-equity">
+      {downsampled.length > 0 ? (
+        <Notice tag="DOWNSAMPLED" tone="info">
+          {downsampled.map(({ tag, page }, i) => (
+            <span key={tag}>
+              {i > 0 ? "; " : ""}
+              {tag}: {page.items.length} buckets
+              {page.bucket_ns !== null ? ` of ${fmtDuration(page.bucket_ns)}` : ""}
+            </span>
+          ))}
+          . The server reduced each bucket to its first, last, minimum and maximum equity; each is drawn
+          as that range, and the hover reading prints the range, not a value inside it.
+        </Notice>
+      ) : null}
+      {partial.length > 0 ? (
+        <Notice tag="PARTIAL" tone="warn">
+          The server returned more equity pages for {partial.join(" and ")}; only the first page is drawn.
+        </Notice>
+      ) : null}
       <div className="cmp-equity-bar">
         <ul className="cmp-equity-key">
           <li>
@@ -214,8 +265,8 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
             <span className="dim">hover the chart to read both curves</span>
           ) : (
             <>
-              <ClockText ns={cursorTs} /> A {fmtNum(atA, 4)} B {fmtNum(atB, 4)} B-A{" "}
-              {fmtSigned(atA !== null && atB !== null ? atB - atA : null, 4)}
+              <ClockText ns={cursorTs} /> A {atA?.text} B {atB?.text} B-A{" "}
+              {fmtSigned(atA?.value != null && atB?.value != null ? atB.value - atA.value : null, 4)}
             </>
           )}
         </span>
@@ -296,8 +347,8 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
       </div>
       <p className="dim cmp-note">
         Equity is realized P&amp;L plus unrealized P&amp;L minus fees, in quote currency, as
-        sampled on each run's local clock; lines connect consecutive samples. The horizontal axis
-        is time relative to the dataset origin.
+        sampled on each run's local clock; lines connect consecutive points as served by the API
+        (at most 2,000 per run). The horizontal axis is time relative to the dataset origin.
         {sameDataset
           ? ""
           : " The two runs use different datasets, so each curve's time is relative to its own dataset's origin."}

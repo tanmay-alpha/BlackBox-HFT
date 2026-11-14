@@ -1,21 +1,29 @@
-import { useState } from "react";
+// Experiment Comparison -> Pair (`/compare/pair?a=&b=`). Every number on this page is a field of a
+// comparison the server stored (`/api/v1/comparisons`) or of the two runs; nothing is compared in
+// the browser. Without a stored comparison for the pair the page offers to create one (scope
+// `run`), and lists the comparisons that already exist.
+
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
+import type { Comparison, CursorPage, RunDetail, Run } from "../../api/model";
 import type {
   Alignment,
-  Comparison,
-  DatasetManifest,
   DecisionOutcome,
   DeltaStats,
   InstrumentMeta,
   MetricRow,
   OrderPair,
   PairClass,
-  RunSummary,
 } from "../../api/types";
 import { ConfigValue, metricLabel } from "../../components/configValue";
-import { fmtDuration, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
-import { Badge, Empty, ErrorBox, Panel, Spinner, useAsync } from "../../components/ui";
+import { DataTable, type Column } from "../../components/DataTable";
+import { fmtDuration, fmtInt, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
+import { fmtNsUtc } from "../../components/ns";
+import { Badge, Empty, ErrorBox, HashText, Notice, Panel, Pill, Spinner, useAsync } from "../../components/ui";
+import { GatedButton } from "../../shell/access";
+import { paths } from "../../shell/paths";
 import { ClockText, EvidenceLegend } from "../forensics/evidence";
 import {
   EM_DASH,
@@ -28,7 +36,11 @@ import { CLASS_LABEL, CLASS_MEANING, EligibilityNotice, PAIR_CLASSES } from "./c
 import { EquityOverlay } from "./EquityOverlay";
 import "./compare.css";
 
-const PAGE_ROWS = 200;
+/** `GET /comparisons/{id}/pairs` page size (the contract's maximum). */
+const PAIRS_PAGE = 1000;
+
+/** Equity points per run requested for the overlay; the server downsamples above it. */
+const EQUITY_POINTS = 2000;
 
 export default function ComparePage() {
   const [params, setParams] = useSearchParams();
@@ -40,12 +52,15 @@ export default function ComparePage() {
       <header className="cmp-title">
         <h1>Scenario comparison</h1>
         <p className="dim">
-          Two simulations side by side: which configuration fields differ, which measured outcomes
-          differ, and where the two tapes first part. Both are simulations on historical replay.
+          Two simulations side by side, as compared by the server: which configuration fields differ, which measured
+          outcomes differ, and where the two tapes first part. Both are simulations on historical replay.
         </p>
       </header>
       {a === "" || b === "" ? (
-        <RunPicker a={a} b={b} onPick={(nextA, nextB) => setParams({ a: nextA, b: nextB })} />
+        <>
+          <RunPicker a={a} b={b} onPick={(nextA, nextB) => setParams({ a: nextA, b: nextB })} />
+          <StoredComparisons />
+        </>
       ) : (
         <CompareView
           key={`${a}|${b}`}
@@ -59,9 +74,9 @@ export default function ComparePage() {
   );
 }
 
-function runOptionText(run: RunSummary): string {
-  const label = run.label === "" ? "(no label)" : run.label;
-  return `${label} | ${run.manifest.config.strategy.kind.type} | ${run.manifest.dataset.id} | ${run.manifest.run_id}`;
+function runOptionText(run: Run): string {
+  const label = run.label === null || run.label === "" ? "(no label)" : run.label;
+  return `${label} | ${run.strategy_kind} | ${run.dataset.id} | ${run.run_id}`;
 }
 
 function RunPicker({
@@ -73,32 +88,32 @@ function RunPicker({
   b: string;
   onPick: (a: string, b: string) => void;
 }) {
-  const runs = useAsync(() => api.runs(), []);
+  const runs = useAsync((signal) => api.runs({}, { signal }), []);
   const [pickA, setPickA] = useState(a);
   const [pickB, setPickB] = useState(b);
 
-  if (runs.error) return <ErrorBox error={runs.error} />;
-  if (!runs.data) return <Spinner />;
-  if (runs.data.length < 2) {
+  if (runs.error) return <ErrorBox error={runs.error} onRetry={runs.reload} />;
+  if (!runs.data) return <Spinner label="Loading runs" />;
+  const list = runs.data.items;
+  if (list.length < 2) {
     return (
       <Empty>
-        A comparison needs two stored runs; {runs.data.length === 0 ? "none exists" : "one exists"}{" "}
-        so far. <Link to="/lab">Run a simulation in the strategy laboratory</Link>
+        A comparison needs two stored runs; {list.length === 0 ? "none exists" : "one exists"} so far.{" "}
+        <Link to={paths.strategy()}>Run a simulation in the Strategy Lab</Link>
       </Empty>
     );
   }
 
-  const list = runs.data;
   const select = (id: string, value: string, onChange: (v: string) => void, legend: string) => (
     <label className="cmp-pick" htmlFor={id}>
       <span className="cmp-pick-label">{legend}</span>
       <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Select a run</option>
-        {value !== "" && !list.some((r) => r.manifest.run_id === value) ? (
-          <option value={value}>{value} (not among stored runs)</option>
+        {value !== "" && !list.some((r) => r.run_id === value) ? (
+          <option value={value}>{value} (not among the listed runs)</option>
         ) : null}
         {list.map((r) => (
-          <option key={r.manifest.run_id} value={r.manifest.run_id}>
+          <option key={r.run_id} value={r.run_id}>
             {runOptionText(r)}
           </option>
         ))}
@@ -109,6 +124,9 @@ function RunPicker({
 
   return (
     <Panel title="Choose two runs">
+      {runs.data.incomplete ? (
+        <Notice tag="List incomplete">First {fmtInt(list.length)} runs shown; older runs are not listed here.</Notice>
+      ) : null}
       <form
         className="cmp-picker"
         onSubmit={(e) => {
@@ -129,6 +147,70 @@ function RunPicker({
   );
 }
 
+/** The comparisons the server already holds for this workspace (the demo lists its curated ones). */
+function StoredComparisons() {
+  const list = useAsync((signal) => api.comparisons({ signal }), []);
+  const columns: Column<Comparison>[] = [
+    {
+      id: "label",
+      header: "Comparison",
+      rowHeader: true,
+      cell: (c) => (
+        <Link to={paths.comparePair(c.run_a, c.run_b)}>{c.label === "" ? `comparison ${c.id.slice(0, 12)}` : c.label}</Link>
+      ),
+      raw: (c) => c.label,
+      sortValue: (c) => c.label,
+    },
+    { id: "a", header: "A", cell: (c) => <span title={c.run_a}>{c.label_a === "" ? c.run_a.slice(0, 12) : c.label_a}</span> },
+    { id: "b", header: "B", cell: (c) => <span title={c.run_b}>{c.label_b === "" ? c.run_b.slice(0, 12) : c.label_b}</span> },
+    {
+      id: "status",
+      header: "Status",
+      cell: (c) => <Pill tone={c.status === "aligned" ? "ok" : "warn"}>{c.status}</Pill>,
+      raw: (c) => c.status,
+      sortValue: (c) => c.status,
+    },
+    {
+      id: "created",
+      header: "Created",
+      unit: "UTC",
+      cell: (c) => <span className="mono">{fmtNsUtc(c.created_at_ns, 0)}</span>,
+      sortValue: (c) => c.created_at_ns.padStart(20, "0"),
+    },
+  ];
+  return (
+    <Panel
+      title="Stored comparisons"
+      caption="Comparisons the server has already computed in this workspace; the public demo lists its curated ones. Open one to read it."
+      flush
+    >
+      {list.error ? <ErrorBox error={list.error} onRetry={list.reload} /> : null}
+      {list.loading && !list.data ? <Spinner label="Loading comparisons" /> : null}
+      {list.data?.incomplete ? (
+        <Notice tag="List incomplete">First {fmtInt(list.data.items.length)} comparisons shown; older ones are not listed here.</Notice>
+      ) : null}
+      {list.data ? (
+        <DataTable
+          label="Stored comparisons"
+          rows={list.data.items}
+          rowKey={(c) => c.id}
+          columns={columns}
+          empty="No comparison is stored in this workspace yet."
+          maxHeight={360}
+        />
+      ) : null}
+    </Panel>
+  );
+}
+
+interface Lookup {
+  hit: Comparison | null;
+  /** The stored comparison has `run_a = b` and `run_b = a`. */
+  swapped: boolean;
+  incomplete: boolean;
+  listed: number;
+}
+
 function CompareView({
   a,
   b,
@@ -140,23 +222,44 @@ function CompareView({
   onSwap: () => void;
   onChange: () => void;
 }) {
-  const loaded = useAsync(
-    () => Promise.all([api.compare(a, b), api.run(a), api.run(b)]),
-    [a, b],
-  );
-  const equity = useAsync(() => Promise.all([api.equity(a), api.equity(b)]), [a, b]);
+  const runs = useAsync((signal) => Promise.all([api.run(a, { signal }), api.run(b, { signal })]), [a, b]);
+  const lookup = useAsync(async (signal): Promise<Lookup> => {
+    const list = await api.comparisons({ signal });
+    const direct = list.items.find((c) => c.run_a === a && c.run_b === b);
+    const reverse = direct ? undefined : list.items.find((c) => c.run_a === b && c.run_b === a);
+    return { hit: direct ?? reverse ?? null, swapped: !direct && reverse !== undefined, incomplete: list.incomplete, listed: list.items.length };
+  }, [a, b]);
+  const [created, setCreated] = useState<Comparison | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<unknown>(null);
 
-  const fresh =
-    loaded.data && loaded.data[0].run_a === a && loaded.data[0].run_b === b ? loaded.data : null;
-  const datasetA = fresh ? fresh[1].manifest.dataset.id : null;
-  const datasetB = fresh ? fresh[2].manifest.dataset.id : null;
-  // Instruments are needed only to print ticks as prices; ticks are shown until they arrive.
-  const datasets = useAsync<[DatasetManifest, DatasetManifest] | null>(async () => {
-    if (datasetA === null || datasetB === null) return null;
-    const first = await api.dataset(datasetA);
-    const second = datasetB === datasetA ? first : await api.dataset(datasetB);
-    return [first, second];
-  }, [datasetA, datasetB]);
+  const current: { id: string; swapped: boolean } | null = created
+    ? { id: created.id, swapped: false }
+    : lookup.data?.hit
+      ? { id: lookup.data.hit.id, swapped: lookup.data.swapped }
+      : null;
+  // The list omits `alignment`; the resource itself carries it (with `pairs` empty: they are paged).
+  const detail = useAsync(
+    (signal) => (current === null ? Promise.resolve(null) : api.comparison(current.id, { signal })),
+    [current?.id ?? null],
+  );
+
+  const create = async () => {
+    setCreating(true);
+    setCreateError(null);
+    try {
+      setCreated(await api.createComparison(a, b));
+    } catch (e) {
+      setCreateError(e);
+    } finally {
+      setCreating(false);
+    }
+  };
+  const createButton = (text: string) => (
+    <GatedButton scope="run" className="cmp-btn" onClick={() => void create()} blockedReason={creating ? "Creating the comparison\u2026" : null}>
+      {creating ? "Creating\u2026" : text}
+    </GatedButton>
+  );
 
   const actions = (
     <div className="cmp-actions">
@@ -169,57 +272,155 @@ function CompareView({
     </div>
   );
 
-  if (!fresh) {
-    if (loaded.error) {
-      const missing = loaded.error instanceof ApiError && loaded.error.status === 404;
-      return (
-        <div className="col">
-          {missing ? (
-            <Empty>
-              At least one of the runs <span className="mono">{a}</span> and{" "}
-              <span className="mono">{b}</span> is not stored. {loaded.error.message}
-            </Empty>
-          ) : (
-            <ErrorBox error={loaded.error} />
-          )}
-          <div className="cmp-actions">
-            <button type="button" className="cmp-btn" onClick={loaded.reload}>
-              Retry
-            </button>
-            <button type="button" className="cmp-btn" onClick={onChange}>
-              Choose other runs
-            </button>
-          </div>
+  if (runs.error) {
+    const missing = runs.error instanceof ApiError && runs.error.status === 404;
+    return (
+      <div className="col">
+        {missing ? (
+          <Empty>
+            At least one of the runs <span className="mono">{a}</span> and <span className="mono">{b}</span> is not
+            visible in this workspace. {runs.error.message}
+          </Empty>
+        ) : (
+          <ErrorBox error={runs.error} />
+        )}
+        <div className="cmp-actions">
+          <button type="button" className="cmp-btn" onClick={runs.reload}>
+            Retry
+          </button>
+          <button type="button" className="cmp-btn" onClick={onChange}>
+            Choose other runs
+          </button>
         </div>
-      );
-    }
-    return <Spinner />;
+      </div>
+    );
   }
+  if (!runs.data) return <Spinner label="Loading both runs" />;
+  const [runA, runB] = runs.data;
 
-  const [cmp, runA, runB] = fresh;
-  const instA = datasets.data ? datasets.data[0].instrument : null;
-  const instB = datasets.data ? datasets.data[1].instrument : null;
-  const alignment = cmp.alignment;
-  const first = alignment === null ? null : alignment.first_divergence;
-  const notAligned = (
-    <Empty>
-      No per-order alignment: the runs differ in{" "}
-      {cmp.eligibility.reasons
-        .filter((r) => r.effect === "no_alignment")
-        .map((r) => r.field)
-        .join(", ")}
-      , so the same order id does not name the same decision in both runs.
-    </Empty>
-  );
+  let body: ReactNode;
+  if (lookup.error && current === null) {
+    body = <ErrorBox error={lookup.error} onRetry={lookup.reload} />;
+  } else if (current === null && lookup.loading) {
+    body = <Spinner label="Looking for a stored comparison of these runs" />;
+  } else if (current === null) {
+    body = (
+      <>
+        <Panel title="No stored comparison">
+          <div className="col">
+            <p className="prose">
+              The server holds no comparison of A <span className="mono">{a}</span> with B <span className="mono">{b}</span>
+              {lookup.data?.incomplete ? (
+                <>
+                  {" "}
+                  among the first {fmtInt(lookup.data.listed)} comparisons listed (the list is incomplete; an older one may
+                  exist)
+                </>
+              ) : null}
+              . A comparison is computed by the server from both stored runs; this page does not compare runs itself.
+            </p>
+            <div className="cmp-actions">{createButton("Create comparison")}</div>
+            {createError ? <ErrorBox error={createError} /> : null}
+          </div>
+        </Panel>
+        <StoredComparisons />
+      </>
+    );
+  } else if (detail.error) {
+    body = <ErrorBox error={detail.error} onRetry={detail.reload} />;
+  } else if (!detail.data) {
+    body = <Spinner label="Loading the comparison" />;
+  } else {
+    const cmp = detail.data;
+    body = (
+      <>
+        {current.swapped ? (
+          <Notice tag="A/B swapped" tone="info">
+            The stored comparison has A = <span className="mono">{cmp.run_a}</span> and B ={" "}
+            <span className="mono">{cmp.run_b}</span>, the reverse of this link. It is shown as stored: every delta is its B
+            minus its A.{" "}
+            <button type="button" className="cmp-btn" onClick={onSwap}>
+              Open in stored order
+            </button>{" "}
+            {createButton("Create comparison in this order")}
+          </Notice>
+        ) : null}
+        {createError ? <ErrorBox error={createError} /> : null}
+        <ComparisonBody cmp={cmp} runs={[runA, runB]} />
+      </>
+    );
+  }
 
   return (
     <>
       {actions}
+      {detail.data ? null : (
+        <section className="cmp-scenarios" aria-label="Scenarios">
+          <ScenarioCard tag="A" label={runA.label ?? ""} run={runA} />
+          <ScenarioCard tag="B" label={runB.label ?? ""} run={runB} />
+        </section>
+      )}
+      {body}
+    </>
+  );
+}
+
+/** The instrument of a run's dataset, when the dataset's current version is the run's version. */
+function useInstrument(run: RunDetail | undefined): InstrumentMeta | null {
+  const id = run?.dataset.id ?? null;
+  const version = run?.dataset.version ?? null;
+  const data = useAsync(async (signal) => {
+    if (id === null) return null;
+    const d = await api.dataset(id, { signal });
+    // Ticks print as prices only with the instrument of the very version the run replayed.
+    return d.current_version !== null && d.current_version.version === version ? d.current_version.manifest.instrument : null;
+  }, [id, version]);
+  return data.data ?? null;
+}
+
+function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunDetail] }) {
+  const runA = runs.find((r) => r.run_id === cmp.run_a);
+  const runB = runs.find((r) => r.run_id === cmp.run_b);
+  const instA = useInstrument(runA);
+  const instB = useInstrument(runB);
+  const equity = useAsync(
+    (signal) =>
+      Promise.all([
+        api.equity(cmp.run_a, { max_points: EQUITY_POINTS }, { signal }),
+        api.equity(cmp.run_b, { max_points: EQUITY_POINTS }, { signal }),
+      ]),
+    [cmp.run_a, cmp.run_b],
+  );
+
+  const alignment = cmp.status === "aligned" ? cmp.alignment : null;
+  const first = alignment === null ? null : alignment.first_divergence;
+  const noAlignment = cmp.eligibility.reasons.filter((r) => r.effect === "no_alignment").map((r) => r.field);
+  const notAligned = (
+    <Notice tag="Metrics only" tone="info">
+      This comparison's status is <span className="mono">{cmp.status}</span>
+      {noAlignment.length > 0 ? (
+        <>
+          : the runs differ in <span className="mono">{noAlignment.join(", ")}</span>
+        </>
+      ) : null}
+      , so the same order id does not name the same decision in both runs and the server holds no per-order alignment.
+    </Notice>
+  );
+  const sameDataset =
+    runA !== undefined && runB !== undefined && runA.dataset.id === runB.dataset.id && runA.dataset.origin_ns === runB.dataset.origin_ns;
+
+  return (
+    <>
       <EvidenceLegend />
+      <p className="dim small">
+        Comparison <HashText hash={cmp.id} /> {cmp.label === "" ? null : <strong>{cmp.label}</strong>} · version{" "}
+        <span className="mono">{cmp.version}</span> · comparator version <span className="mono">{cmp.comparator_version}</span>{" "}
+        · created <span className="mono">{fmtNsUtc(cmp.created_at_ns, 0)}</span> UTC
+      </p>
 
       <section className="cmp-scenarios" aria-label="Scenarios">
-        <ScenarioCard tag="A" label={cmp.label_a} run={runA} />
-        <ScenarioCard tag="B" label={cmp.label_b} run={runB} />
+        {runA ? <ScenarioCard tag="A" label={cmp.label_a} run={runA} /> : null}
+        {runB ? <ScenarioCard tag="B" label={cmp.label_b} run={runB} /> : null}
       </section>
       <EligibilityNotice cmp={cmp} />
 
@@ -240,40 +441,30 @@ function CompareView({
           notAligned
         ) : first === null ? (
           <Empty>
-            No non-identical pair: every aligned decision is identical in both runs, timing, fees
-            and recorded lifecycle included.
+            No non-identical pair: every aligned decision is identical in both runs, timing, fees and recorded lifecycle
+            included.
           </Empty>
         ) : (
-          <FirstDivergence
-            pair={first}
-            outcomePair={alignment.first_outcome_divergence}
-            cmp={cmp}
-            instA={instA}
-            instB={instB}
-          />
+          <FirstDivergence pair={first} outcomePair={alignment.first_outcome_divergence} cmp={cmp} instA={instA} instB={instB} />
         )}
       </Panel>
 
-      <Panel title="Diverging decisions">
-        {alignment === null ? (
-          notAligned
-        ) : (
-          <PairsTable cmp={cmp} alignment={alignment} instA={instA} instB={instB} />
-        )}
+      <Panel title="Order pairs">
+        {alignment === null ? notAligned : <PairsTable cmp={cmp} alignment={alignment} instA={instA} instB={instB} />}
       </Panel>
 
       <Panel title="Equity, overlaid">
         {equity.error ? (
-          <ErrorBox error={equity.error} />
+          <ErrorBox error={equity.error} onRetry={equity.reload} />
         ) : equity.data ? (
           <EquityOverlay
             a={equity.data[0]}
             b={equity.data[1]}
             divergenceTs={first === null ? null : first.decision_ts}
-            sameDataset={!cmp.eligibility.reasons.some((r) => r.field === "dataset.sha256")}
+            sameDataset={sameDataset}
           />
         ) : (
-          <Spinner />
+          <Spinner label="Loading both equity curves" />
         )}
       </Panel>
 
@@ -295,9 +486,9 @@ function CompareView({
   );
 }
 
-function ScenarioCard({ tag, label, run }: { tag: "A" | "B"; label: string; run: RunSummary }) {
-  const { manifest } = run;
-  const execution = manifest.config.execution;
+function ScenarioCard({ tag, label, run }: { tag: "A" | "B"; label: string; run: RunDetail }) {
+  const { config } = run;
+  const execution = config.execution;
   const latency = execution.order_latency;
   return (
     <article className={`cmp-scenario cmp-scenario-${tag.toLowerCase()}`}>
@@ -308,42 +499,41 @@ function ScenarioCard({ tag, label, run }: { tag: "A" | "B"; label: string; run:
         <div>
           <dt>Run</dt>
           <dd>
-            <Link className="mono" to={`/runs/${manifest.run_id}`}>
-              {manifest.run_id}
+            <Link className="mono" to={paths.run(run.run_id)}>
+              {run.run_id}
             </Link>
           </dd>
         </div>
         <div>
           <dt>Strategy</dt>
           <dd className="mono">
-            {manifest.config.strategy.kind.type}, every{" "}
-            {fmtDuration(manifest.config.strategy.interval_ns)}
+            {run.strategy_kind}, every {fmtDuration(run.interval_ns)}
           </dd>
         </div>
         <div>
           <dt>Dataset</dt>
-          <dd className="mono" title={manifest.dataset.sha256}>
-            {manifest.dataset.id} <span className="dim">sha256 {manifest.dataset.sha256.slice(0, 12)}</span>
+          <dd className="mono" title={run.dataset.events_sha256}>
+            {run.dataset.id} v{run.dataset.version} <span className="dim">events sha256 {run.dataset.events_sha256.slice(0, 12)}</span>
           </dd>
         </div>
         <div>
           <dt>Execution assumptions</dt>
           <dd className="mono">
-            {execution.exchange_model}, {queueModelLabel(execution.queue_model)}, entry{" "}
-            {fmtDuration(latency.entry_ns)} / response {fmtDuration(latency.response_ns)}
+            {execution.exchange_model}, {queueModelLabel(execution.queue_model)}, entry {fmtDuration(latency.entry_ns)} / response{" "}
+            {fmtDuration(latency.response_ns)}
             {latency.type === "jitter" ? ` / jitter ${fmtDuration(latency.jitter_ns)}` : ""}
           </dd>
         </div>
         <div>
           <dt>Result hash</dt>
-          <dd className="mono" title={manifest.result_sha256}>
-            {manifest.result_sha256.slice(0, 16)}
+          <dd className="mono" title={run.result_sha256}>
+            {run.result_sha256.slice(0, 16)}
           </dd>
         </div>
         <div>
           <dt>Orders / simulated fills</dt>
           <dd className="mono">
-            {run.order_count} / {run.fill_count}
+            {fmtInt(run.counts.orders)} / {fmtInt(run.counts.fills)}
           </dd>
         </div>
       </dl>
@@ -357,9 +547,7 @@ function ConfigDiffTable({ cmp }: { cmp: Comparison }) {
   }
   return (
     <table className="table cmp-diffs">
-      <caption className="cmp-caption">
-        Every field of the serialized run configuration whose value differs.
-      </caption>
+      <caption className="cmp-caption">Every field of the serialized run configuration whose value differs.</caption>
       <thead>
         <tr>
           <th scope="col">Configuration path</th>
@@ -424,27 +612,24 @@ function fmtMetricDelta(value: number | null, unit: string): string {
   }
 }
 
+/** Rows exactly as served: A, B and the server's delta (B - A); each flagged like-for-like or not. */
 function MetricsTable({ rows, likeForLike }: { rows: MetricRow[]; likeForLike: boolean }) {
   if (rows.length === 0) return <Empty>The comparison returned no metric rows.</Empty>;
   // Net P&L is the only row coloured, and only by its sign; no other difference is marked as
   // better or worse.
   const signClass = (row: MetricRow, value: number | null) =>
-    row.key !== "net_pnl" || value === null || value === 0
-      ? ""
-      : value > 0
-        ? " cmp-pos"
-        : " cmp-neg";
+    row.key !== "net_pnl" || value === null || value === 0 ? "" : value > 0 ? " cmp-pos" : " cmp-neg";
   return (
     <table className="table cmp-metrics">
       <caption className="cmp-caption">
         {likeForLike ? null : (
           <>
-            <Badge kind="warn">not like-for-like</Badge> The runs differ in identity fields listed
-            above, so these deltas do not isolate the configuration change.{" "}
+            <Badge kind="warn">not like-for-like</Badge> The runs differ in the eligibility fields listed above, so these
+            deltas do not isolate the configuration change.{" "}
           </>
         )}
-        Delta is B minus A. A dash means the value is undefined for that run. Only net P&amp;L is
-        coloured, by sign.
+        Values and deltas as computed by the server; delta is B minus A. A dash means the value is undefined for that
+        run. Only net P&amp;L is coloured, by sign.
       </caption>
       <thead>
         <tr>
@@ -459,6 +644,7 @@ function MetricsTable({ rows, likeForLike }: { rows: MetricRow[]; likeForLike: b
             Delta (B - A)
           </th>
           <th scope="col">Unit</th>
+          <th scope="col">Like-for-like</th>
         </tr>
       </thead>
       <tbody>
@@ -469,10 +655,9 @@ function MetricsTable({ rows, likeForLike }: { rows: MetricRow[]; likeForLike: b
             </th>
             <td className={`mono cmp-num${signClass(row, row.a)}`}>{fmtMetric(row.a, row.unit)}</td>
             <td className={`mono cmp-num${signClass(row, row.b)}`}>{fmtMetric(row.b, row.unit)}</td>
-            <td className={`mono cmp-num${signClass(row, row.delta)}`}>
-              {fmtMetricDelta(row.delta, row.unit)}
-            </td>
+            <td className={`mono cmp-num${signClass(row, row.delta)}`}>{fmtMetricDelta(row.delta, row.unit)}</td>
             <td className="dim">{UNIT_LABEL[row.unit] ?? row.unit}</td>
+            <td>{likeForLike ? <span className="dim">yes</span> : <Badge kind="warn">no</Badge>}</td>
           </tr>
         ))}
       </tbody>
@@ -690,7 +875,7 @@ function OutcomeCard({
               </dd>
             </div>
           </dl>
-          <Link className="cmp-btn" to={`/runs/${runId}/orders/${orderId}`}>
+          <Link className="cmp-btn" to={paths.order(runId, orderId)}>
             Open this order's forensics in {tag}
           </Link>
         </>
@@ -794,7 +979,7 @@ function PairSide({
     <>
       <td className="mono cmp-side-start">
         <Link
-          to={`/runs/${runId}/orders/${orderId}`}
+          to={paths.order(runId, orderId)}
           aria-label={`Order ${orderId} forensics in scenario ${tag}`}
         >
           {outcome.side} {quantity(outcome.qty, inst)} @ {price(outcome.price_tick, inst)}
@@ -820,26 +1005,7 @@ function PairsTable({
   instB: InstrumentMeta | null;
 }) {
   const [filter, setFilter] = useState<PairClass | "all">("all");
-  const [limit, setLimit] = useState(PAGE_ROWS);
-
-  const nonIdentical = PAIR_CLASSES.filter((cls) => cls !== "identical").reduce(
-    (sum, cls) => sum + alignment[cls],
-    0,
-  );
-  if (alignment.pairs.length === 0) {
-    return (
-      <Empty>
-        {nonIdentical === 0
-          ? "No decision diverges between the two runs."
-          : "The comparison returned no pair rows."}
-      </Empty>
-    );
-  }
-
-  const matching =
-    filter === "all" ? alignment.pairs : alignment.pairs.filter((p) => p.class === filter);
-  const shown = matching.slice(0, limit);
-
+  const total = PAIR_CLASSES.reduce((sum, cls) => sum + alignment[cls], 0);
   return (
     <div className="cmp-pairs">
       <div className="cmp-pairs-bar">
@@ -851,121 +1017,164 @@ function PairsTable({
             onChange={(e) => {
               const value = e.target.value;
               setFilter(PAIR_CLASSES.find((cls) => cls === value) ?? "all");
-              setLimit(PAGE_ROWS);
             }}
           >
-            <option value="all">All non-identical ({alignment.pairs.length} listed)</option>
-            {PAIR_CLASSES.filter((cls) => cls !== "identical").map((cls) => (
+            <option value="all">All classes, identical included ({fmtInt(total)})</option>
+            {PAIR_CLASSES.map((cls) => (
               <option key={cls} value={cls}>
-                {CLASS_LABEL[cls]} ({alignment.pairs.filter((p) => p.class === cls).length} listed)
+                {CLASS_LABEL[cls]} ({fmtInt(alignment[cls])})
               </option>
             ))}
           </select>
         </label>
         <span className="dim">
-          Non-identical pairs in decision order. Each side links to that order's forensics in its
-          own run.
+          Pairs in decision order, read from the server {fmtInt(PAIRS_PAGE)} at a time; the counts are the comparison's
+          own. Each side links to that order's forensics in its own run.
         </span>
       </div>
-      {alignment.pairs_truncated ? (
-        <p className="cmp-warning" role="note">
-          <Badge kind="warn">truncated</Badge> The list is capped at {alignment.pairs_cap} pairs:{" "}
-          {alignment.pairs.length} of {nonIdentical} non-identical pairs are listed, earliest
-          first. The counts under "Order alignment" cover all of them.
-        </p>
-      ) : null}
-      {matching.length === 0 ? (
-        <Empty>No listed pair is in this class.</Empty>
-      ) : (
-        <div className="cmp-scroll">
-          <table className="table cmp-pairs-table">
-            <thead>
-              <tr>
-                <th scope="col" rowSpan={2}>
-                  Order
-                </th>
-                <th scope="col" rowSpan={2} className="cmp-num">
-                  Tick
-                </th>
-                <th scope="col" rowSpan={2}>
-                  Decision time
-                </th>
-                <th scope="col" rowSpan={2}>
-                  Class
-                </th>
-                <th scope="col" rowSpan={2}>
-                  Differs in
-                </th>
-                <th scope="colgroup" colSpan={3} className="cmp-side-start">
-                  <span className="cmp-tag">A</span> {cmp.label_a}
-                </th>
-                <th scope="colgroup" colSpan={3} className="cmp-side-start">
-                  <span className="cmp-tag">B</span> {cmp.label_b}
-                </th>
-              </tr>
-              <tr>
-                <th scope="col" className="cmp-side-start">
-                  Decision
-                </th>
-                <th scope="col">Outcome</th>
-                <th scope="col" className="cmp-num">
-                  Filled
-                </th>
-                <th scope="col" className="cmp-side-start">
-                  Decision
-                </th>
-                <th scope="col">Outcome</th>
-                <th scope="col" className="cmp-num">
-                  Filled
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((pair) => (
-                <tr key={pair.order_id}>
-                  <th scope="row" className="mono">
-                    {pair.order_id}
-                  </th>
-                  <td className="mono cmp-num">{pair.tick_no}</td>
-                  <td>
-                    <ClockText ns={pair.decision_ts} />
-                  </td>
-                  <td>
-                    <span className={`cmp-class cmp-seg-${pair.class}`}>
-                      {CLASS_LABEL[pair.class]}
-                    </span>
-                  </td>
-                  <td className="mono small">{pair.differences.join(", ")}</td>
-                  <PairSide
-                    tag="A"
-                    runId={cmp.run_a}
-                    orderId={pair.order_id}
-                    outcome={pair.a}
-                    inst={instA}
-                  />
-                  <PairSide
-                    tag="B"
-                    runId={cmp.run_b}
-                    orderId={pair.order_id}
-                    outcome={pair.b}
-                    inst={instB}
-                  />
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {matching.length > shown.length ? (
-        <div className="cmp-more">
-          <span className="dim">
-            Showing {shown.length} of {matching.length} listed pairs.
-          </span>
-          <button type="button" className="cmp-btn" onClick={() => setLimit(limit + PAGE_ROWS)}>
-            Show {Math.min(PAGE_ROWS, matching.length - shown.length)} more
-          </button>
-        </div>
-      ) : null}
+      <PairPages
+        key={`${cmp.id}|${filter}`}
+        cmp={cmp}
+        cls={filter}
+        expected={filter === "all" ? total : alignment[filter]}
+        instA={instA}
+        instB={instB}
+      />
     </div>
+  );
+}
+
+/** `GET /comparisons/{id}/pairs` for one class filter, page by page as the user asks for more. */
+function PairPages({
+  cmp,
+  cls,
+  expected,
+  instA,
+  instB,
+}: {
+  cmp: Comparison;
+  cls: PairClass | "all";
+  expected: number;
+  instA: InstrumentMeta | null;
+  instB: InstrumentMeta | null;
+}) {
+  const pairClass = cls === "all" ? undefined : cls;
+  const first = useAsync(
+    (signal) => api.comparisonPairs(cmp.id, { class: pairClass, limit: PAIRS_PAGE }, { signal }),
+    [cmp.id, pairClass],
+  );
+  const [more, setMore] = useState<CursorPage<OrderPair>[]>([]);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreError, setMoreError] = useState<unknown>(null);
+  const pending = useRef<AbortController | null>(null);
+  useEffect(() => () => pending.current?.abort(), []);
+
+  if (first.error) return <ErrorBox error={first.error} onRetry={first.reload} />;
+  if (!first.data) return <Spinner label="Loading pairs" />;
+  const pages = [first.data, ...more];
+  const last = pages[pages.length - 1] as CursorPage<OrderPair>;
+  const rows = pages.flatMap((p) => p.items);
+
+  const loadMore = async () => {
+    if (last.next_cursor === null || loadingMore) return;
+    const ctl = new AbortController();
+    pending.current = ctl;
+    setLoadingMore(true);
+    setMoreError(null);
+    try {
+      const page = await api.comparisonPairs(cmp.id, { class: pairClass, cursor: last.next_cursor, limit: PAIRS_PAGE }, { signal: ctl.signal });
+      if (!ctl.signal.aborted) setMore((m) => [...m, page]);
+    } catch (e) {
+      if (!ctl.signal.aborted) setMoreError(e);
+    } finally {
+      if (!ctl.signal.aborted) setLoadingMore(false);
+    }
+  };
+
+  if (rows.length === 0 && last.next_cursor === null) {
+    return <Empty>{expected === 0 ? "No pair is in this class." : "The server returned no pair rows for this class."}</Empty>;
+  }
+
+  return (
+    <>
+      <div className="cmp-scroll">
+        <table className="table cmp-pairs-table">
+          <thead>
+            <tr>
+              <th scope="col" rowSpan={2}>
+                Order
+              </th>
+              <th scope="col" rowSpan={2} className="cmp-num">
+                Tick
+              </th>
+              <th scope="col" rowSpan={2}>
+                Decision time
+              </th>
+              <th scope="col" rowSpan={2}>
+                Class
+              </th>
+              <th scope="col" rowSpan={2}>
+                Differs in
+              </th>
+              <th scope="colgroup" colSpan={3} className="cmp-side-start">
+                <span className="cmp-tag">A</span> {cmp.label_a}
+              </th>
+              <th scope="colgroup" colSpan={3} className="cmp-side-start">
+                <span className="cmp-tag">B</span> {cmp.label_b}
+              </th>
+            </tr>
+            <tr>
+              <th scope="col" className="cmp-side-start">
+                Decision
+              </th>
+              <th scope="col">Outcome</th>
+              <th scope="col" className="cmp-num">
+                Filled
+              </th>
+              <th scope="col" className="cmp-side-start">
+                Decision
+              </th>
+              <th scope="col">Outcome</th>
+              <th scope="col" className="cmp-num">
+                Filled
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((pair) => (
+              <tr key={`${pair.order_id}|${pair.class}`}>
+                <th scope="row" className="mono">
+                  {pair.order_id}
+                </th>
+                <td className="mono cmp-num">{pair.tick_no}</td>
+                <td>
+                  <ClockText ns={pair.decision_ts} />
+                </td>
+                <td>
+                  <span className={`cmp-class cmp-seg-${pair.class}`}>{CLASS_LABEL[pair.class]}</span>
+                </td>
+                <td className="mono small">{pair.differences.join(", ")}</td>
+                <PairSide tag="A" runId={cmp.run_a} orderId={pair.order_id} outcome={pair.a} inst={instA} />
+                <PairSide tag="B" runId={cmp.run_b} orderId={pair.order_id} outcome={pair.b} inst={instB} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="cmp-more">
+        <span className="dim">
+          {fmtInt(rows.length)} of {fmtInt(expected)} pairs loaded in {pages.length} page{pages.length === 1 ? "" : "s"}.
+          {last.truncated_by === "bytes"
+            ? " The last page ended early at the server's response size cap; Load more continues exactly where it stopped."
+            : ""}
+        </span>
+        {last.next_cursor !== null ? (
+          <button type="button" className="cmp-btn" onClick={() => void loadMore()} disabled={loadingMore}>
+            {loadingMore ? "Loading\u2026" : `Load more (up to ${fmtInt(PAIRS_PAGE)})`}
+          </button>
+        ) : null}
+      </div>
+      {moreError ? <ErrorBox error={moreError} onRetry={() => void loadMore()} /> : null}
+    </>
   );
 }

@@ -25,7 +25,7 @@ export interface Neighbours {
   total: number;
 }
 
-export async function findNeighbours(runId: string, orderId: number): Promise<Neighbours> {
+export async function findNeighbours(runId: string, orderId: number, signal?: AbortSignal): Promise<Neighbours> {
   let scan = scans.get(runId);
   if (!scan) {
     scan = { ids: [], total: null, ascending: true };
@@ -40,11 +40,11 @@ export async function findNeighbours(runId: string, orderId: number): Promise<Ne
     if (complete || passed) break;
 
     const offset = scan.ids.length;
-    const page = await api.orders(runId, { offset, limit: PAGE_SIZE });
+    const page = await api.orders(runId, { offset, limit: PAGE_SIZE }, { signal });
     // Another call for the same run appended this page while we were waiting.
     if (scan.ids.length !== offset) continue;
-    scan.total = page.orders.length === 0 ? scan.ids.length : page.total;
-    for (const order of page.orders) {
+    scan.total = page.items.length === 0 ? scan.ids.length : page.total;
+    for (const order of page.items) {
       const before = scan.ids.length > 0 ? (scan.ids[scan.ids.length - 1] as number) : null;
       if (before !== null && order.order_id <= before) scan.ascending = false;
       scan.ids.push(order.order_id);

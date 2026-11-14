@@ -73,14 +73,18 @@ export default function OrderForensicsPage() {
 }
 
 function OrderForensics({ runId, orderId }: { runId: string; orderId: number }) {
-  const detail = useAsync(() => api.orderDetail(runId, orderId), [runId, orderId]);
-  const neighbours = useAsync(() => findNeighbours(runId, orderId), [runId, orderId]);
-  const run = useAsync(() => api.run(runId), [runId]);
-  const datasetId = run.data ? run.data.manifest.dataset.id : null;
+  const detail = useAsync((signal) => api.orderDetail(runId, orderId, { signal }), [runId, orderId]);
+  const neighbours = useAsync((signal) => findNeighbours(runId, orderId, signal), [runId, orderId]);
+  const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
+  const runDataset = run.data ? run.data.dataset : null;
   // Timestamp provenance labels feed latency as measured or not; the unit sets clock precision.
+  // Both come from the exact dataset version the run used.
   const dataset = useAsync<DatasetManifest | null>(
-    () => (datasetId === null ? Promise.resolve(null) : api.dataset(datasetId)),
-    [datasetId],
+    (signal) =>
+      runDataset === null
+        ? Promise.resolve(null)
+        : api.datasetVersion(runDataset.id, runDataset.version, { signal }).then((v) => v.manifest),
+    [runDataset?.id, runDataset?.version],
   );
 
   const data = detail.data && detail.data.order.order_id === orderId ? detail.data : null;
@@ -111,7 +115,7 @@ function OrderForensics({ runId, orderId }: { runId: string; orderId: number }) 
           <OrderView
             runId={runId}
             detail={data}
-            execution={run.data ? run.data.manifest.config.execution : null}
+            execution={run.data ? run.data.config.execution : null}
             runError={run.error}
             dataset={dataset.data}
           />

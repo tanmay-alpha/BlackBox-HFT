@@ -5,13 +5,19 @@ import BookIndexPage from './features/book/BookIndexPage';
 import DatasetsPage from './features/datasets/DatasetsPage';
 import PairWorkspace from './features/experiments/PairWorkspace';
 import OrderForensicsPage from './features/forensics/OrderForensicsPage';
-import GridPage from './features/grid/GridPage';
+import SweepFormPage from './features/grid/SweepFormPage';
+import SweepPage from './features/grid/SweepPage';
+import SweepsPage from './features/grid/SweepsPage';
 import LabPage from './features/lab/LabPage';
 import LatencyLabPage from './features/latency/LatencyLabPage';
 import MissionControlPage from './features/mission/MissionControlPage';
 import ReplayPage from './features/replay/ReplayPage';
+import ReportsPage from './features/reports/ReportsPage';
+import RiskPage from './features/risk/RiskPage';
 import RunOverviewPage from './features/runs/RunOverviewPage';
 import RunsPage from './features/runs/RunsPage';
+import WorkbenchPage from './features/sim/WorkbenchPage';
+import SystemPage from './features/system/SystemPage';
 import ReplayTerminalPage from './features/terminal/ReplayTerminalPage';
 import { paths } from './shell/paths';
 import { Shell } from './shell/Shell';
@@ -53,8 +59,11 @@ const LEGACY: [string, (p: Record<string, string | undefined>) => string][] = [
   ['runs/:runId/replay', (p) => paths.bookRun(r(p.runId))],
   ['runs/:runId/orders/:orderId', (p) => paths.order(r(p.runId), r(p.orderId))],
   ['latency', () => paths.compareSet()],
-  ['grid', () => paths.sweep()],
+  ['grid', () => paths.sweepForm()],
+  ['compare/sweep', () => paths.sweeps()],
   ['compare', () => paths.comparePair()],
+  ['sim/runs', () => paths.runs()],
+  ['sim/runs/:runId', (p) => paths.run(r(p.runId))],
 ];
 
 export default function App() {
@@ -72,9 +81,19 @@ export default function App() {
           <Route path="forensics" element={<RunsPage />} />
           <Route path="forensics/:runId" element={<RunOverviewPage />} />
           <Route path="forensics/:runId/orders/:orderId" element={<OrderForensicsPage />} />
+          <Route path="sim" element={<WorkbenchPage />} />
+          <Route path="sim/jobs/:jobId" element={<WorkbenchPage />} />
+          <Route path="sim/sweep" element={<SweepFormPage />} />
+          <Route path="risk" element={<RiskPage />} />
+          <Route path="risk/:runId" element={<RiskPage />} />
+          <Route path="reports" element={<ReportsPage />} />
+          <Route path="reports/saved/:reportId" element={<ReportsPage />} />
+          <Route path="reports/:runId" element={<ReportsPage />} />
+          <Route path="system" element={<SystemPage />} />
           <Route path="compare/pair" element={<PairWorkspace />} />
           <Route path="compare/set" element={<LatencyLabPage />} />
-          <Route path="compare/sweep" element={<GridPage />} />
+          <Route path="compare/sweeps" element={<SweepsPage />} />
+          <Route path="compare/sweeps/:sweepId" element={<SweepPage />} />
           {LEGACY.map(([path, to]) => (
             <Route key={path} path={path} element={<Redirect to={to} />} />
           ))}

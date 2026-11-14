@@ -7,7 +7,7 @@ import type { KeyboardEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { api } from '../api/client';
-import type { DatasetManifest, RunSummary } from '../api/types';
+import type { DatasetSummary, Run } from '../api/model';
 import { Dialog } from './Dialog';
 import { paths } from './paths';
 import { WORKSPACES } from './workspaces';
@@ -43,8 +43,8 @@ export function CommandPalette({ open, onClose, commands }: { open: boolean; onC
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
-  const [datasets, setDatasets] = useState<DatasetManifest[]>([]);
-  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
   const listId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -52,14 +52,12 @@ export function CommandPalette({ open, onClose, commands }: { open: boolean; onC
     if (!open) return;
     setQuery('');
     setActive(0);
-    let live = true;
+    const ctl = new AbortController();
     // Lists are loaded when the palette opens; a failure leaves them out (the status bar reports the API).
-    api.datasets().then((d) => live && setDatasets(d), () => undefined);
-    api.runs().then((r) => live && setRuns(r), () => undefined);
+    api.datasets({ signal: ctl.signal }).then((d) => setDatasets(d.items), () => undefined);
+    api.runs({}, { signal: ctl.signal }).then((r) => setRuns(r.items), () => undefined);
     requestAnimationFrame(() => inputRef.current?.focus());
-    return () => {
-      live = false;
-    };
+    return () => ctl.abort();
   }, [open]);
 
   const go = (to: string) => () => navigate(to);
@@ -67,13 +65,13 @@ export function CommandPalette({ open, onClose, commands }: { open: boolean; onC
   const items = useMemo<Item[]>(() => {
     const all: Item[] = [
       ...WORKSPACES.map((w) => ({ id: `ws-${w.id}`, group: 'Workspaces', label: w.name, hint: `g ${w.chord}`, run: go(w.path) })),
-      ...datasets.map((d) => ({ id: `ds-${d.id}`, group: 'Datasets', label: d.id, hint: d.kind, run: go(paths.dataset(d.id)) })),
+      ...datasets.map((d) => ({ id: `ds-${d.id}`, group: 'Datasets', label: d.id, hint: `${d.kind} ${d.title}`, run: go(paths.dataset(d.id)) })),
       ...runs.map((r) => ({
-        id: `run-${r.manifest.run_id}`,
+        id: `run-${r.run_id}`,
         group: 'Runs',
-        label: `${r.manifest.run_id.slice(0, 12)} ${r.label}`,
-        hint: r.manifest.config.strategy.kind.type,
-        run: go(paths.run(r.manifest.run_id)),
+        label: `${r.run_id.slice(0, 12)} ${r.label ?? ''}`,
+        hint: r.strategy_kind,
+        run: go(paths.run(r.run_id)),
       })),
       ...commands.map((c) => ({ id: `cmd-${c.id}`, group: 'Commands', label: c.label, hint: c.hint, run: c.run })),
     ];

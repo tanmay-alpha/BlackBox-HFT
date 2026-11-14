@@ -4,14 +4,13 @@
 import type { ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { api } from '../../api/client';
-import type { DatasetManifest, RunSummary } from '../../api/types';
+import { api, type Collected } from '../../api/client';
+import type { DatasetSummary, Run } from '../../api/model';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
-import { strategyLabel } from '../../components/describe';
-import { fmtDuration, fmtInt } from '../../components/fmt';
+import { DASH, fmtDuration, fmtInt } from '../../components/fmt';
 import { SplitPane } from '../../components/SplitPane';
-import { Badge, ErrorBox, Panel, Spinner, useAsync } from '../../components/ui';
+import { Badge, ErrorBox, HashText, Notice, Panel, Spinner, useAsync } from '../../components/ui';
 import type { AsyncResult } from '../../components/ui';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
@@ -19,23 +18,34 @@ import { Workspace } from '../../shell/Workspace';
 function Listing<T>({
   result,
   loadingLabel,
+  noun,
   children,
 }: {
-  result: AsyncResult<T[]>;
+  result: AsyncResult<Collected<T>>;
   loadingLabel: string;
+  noun: string;
   children: (rows: T[]) => ReactNode;
 }) {
   if (result.error) return <ErrorBox error={result.error} onRetry={result.reload} />;
   if (!result.data) return <Spinner label={loadingLabel} />;
-  return <>{children(result.data)}</>;
+  return (
+    <>
+      {result.data.incomplete ? (
+        <Notice tag="List incomplete">
+          First {fmtInt(result.data.items.length)} {noun} shown.
+        </Notice>
+      ) : null}
+      {children(result.data.items)}
+    </>
+  );
 }
 
 export default function BookIndexPage() {
   const navigate = useNavigate();
-  const datasets = useAsync(() => api.datasets(), []);
-  const runs = useAsync(() => api.runs(), []);
+  const datasets = useAsync((signal) => api.datasets({ signal }), []);
+  const runs = useAsync((signal) => api.runs({}, { signal }), []);
 
-  const datasetColumns: Column<DatasetManifest>[] = [
+  const datasetColumns: Column<DatasetSummary>[] = [
     {
       id: 'id',
       header: 'Dataset',
@@ -64,67 +74,95 @@ export default function BookIndexPage() {
       sortValue: (d) => d.kind,
     },
     {
+      id: 'version',
+      header: 'Version',
+      cell: (d) =>
+        d.current_version ? (
+          <span className="mono">
+            v{d.current_version.version} <HashText hash={d.current_version.events_sha256} chars={10} />
+          </span>
+        ) : (
+          DASH
+        ),
+      sortValue: (d) => d.current_version?.version ?? null,
+      raw: (d) => (d.current_version ? `v${d.current_version.version} ${d.current_version.events_sha256}` : ''),
+    },
+    {
       id: 'span',
       header: 'Span',
       numeric: true,
-      cell: (d) => fmtDuration(d.end - d.start),
-      sortValue: (d) => d.end - d.start,
-      raw: (d) => String(d.end - d.start),
+      cell: (d) => (d.current_version ? fmtDuration(d.current_version.end_ns - d.current_version.start_ns) : DASH),
+      sortValue: (d) => (d.current_version ? d.current_version.end_ns - d.current_version.start_ns : null),
+      raw: (d) => (d.current_version ? String(d.current_version.end_ns - d.current_version.start_ns) : ''),
     },
     {
       id: 'events',
       header: 'Events',
       unit: 'count',
       numeric: true,
-      cell: (d) => fmtInt(d.counts.rows),
-      sortValue: (d) => d.counts.rows,
-      raw: (d) => String(d.counts.rows),
+      cell: (d) => fmtInt(d.current_version?.rows ?? null),
+      sortValue: (d) => d.current_version?.rows ?? null,
+      raw: (d) => (d.current_version ? String(d.current_version.rows) : ''),
     },
   ];
 
-  const runColumns: Column<RunSummary>[] = [
+  const runColumns: Column<Run>[] = [
     {
       id: 'run',
       header: 'Run',
       rowHeader: true,
       cell: (r) => (
-        <Link className="mono" to={paths.bookRun(r.manifest.run_id)}>
-          {r.manifest.run_id}
+        <Link className="mono" to={paths.bookRun(r.run_id)}>
+          {r.run_id}
         </Link>
       ),
-      sortValue: (r) => r.manifest.run_id,
-      raw: (r) => r.manifest.run_id,
+      sortValue: (r) => r.run_id,
+      raw: (r) => r.run_id,
     },
-    { id: 'label', header: 'Label', cell: (r) => r.label, sortValue: (r) => r.label },
+    {
+      id: 'label',
+      header: 'Label',
+      cell: (r) => r.label ?? <span className="dim">unlabelled</span>,
+      sortValue: (r) => r.label,
+      raw: (r) => r.label ?? '',
+    },
     {
       id: 'dataset',
       header: 'Dataset',
-      cell: (r) => <span className="mono">{r.manifest.dataset.id}</span>,
-      sortValue: (r) => r.manifest.dataset.id,
+      cell: (r) => (
+        <span className="mono">
+          {r.dataset.id} v{r.dataset.version}
+        </span>
+      ),
+      sortValue: (r) => r.dataset.id,
     },
     {
       id: 'strategy',
       header: 'Strategy',
-      cell: (r) => strategyLabel(r.manifest.config.strategy.kind),
-      sortValue: (r) => r.manifest.config.strategy.kind.type,
+      cell: (r) => (
+        <span className="mono">
+          {r.strategy_kind} every {fmtDuration(r.interval_ns)}
+        </span>
+      ),
+      sortValue: (r) => r.strategy_kind,
     },
     {
       id: 'orders',
       header: 'Orders',
       unit: 'count',
       numeric: true,
-      cell: (r) => fmtInt(r.order_count),
-      sortValue: (r) => r.order_count,
-      raw: (r) => String(r.order_count),
+      cell: (r) => fmtInt(r.counts.orders),
+      sortValue: (r) => r.counts.orders,
+      raw: (r) => String(r.counts.orders),
     },
     {
       id: 'fills',
       header: 'Fills',
       unit: 'count',
       numeric: true,
-      cell: (r) => fmtInt(r.fill_count),
-      sortValue: (r) => r.fill_count,
-      raw: (r) => String(r.fill_count),
+      cell: (r) => fmtInt(r.counts.fills),
+      sortValue: (r) => r.counts.fills,
+      raw: (r) => String(r.counts.fills),
     },
   ];
 
@@ -140,7 +178,7 @@ export default function BookIndexPage() {
             minSize: '25%',
             content: (
               <Panel title="Datasets" basis="observed" fill flush caption="Market only: the historical book as the data shows it.">
-                <Listing result={datasets} loadingLabel="Loading datasets">
+                <Listing result={datasets} loadingLabel="Loading datasets" noun="datasets">
                   {(rows) => (
                     <DataTable
                       label="Datasets"
@@ -169,15 +207,15 @@ export default function BookIndexPage() {
                 flush
                 caption="With run: the historical book with the run's simulated orders and fills replayed on top."
               >
-                <Listing result={runs} loadingLabel="Loading stored runs">
+                <Listing result={runs} loadingLabel="Loading stored runs" noun="runs">
                   {(rows) => (
                     <DataTable
                       label="Stored runs"
                       rows={rows}
-                      rowKey={(r) => r.manifest.run_id}
+                      rowKey={(r) => r.run_id}
                       columns={runColumns}
                       fill
-                      onActivate={(r) => navigate(paths.bookRun(r.manifest.run_id))}
+                      onActivate={(r) => navigate(paths.bookRun(r.run_id))}
                       empty="No stored runs. Run a simulation in the Strategy Lab first."
                     />
                   )}

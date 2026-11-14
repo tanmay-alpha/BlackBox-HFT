@@ -7,6 +7,7 @@ import type { ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { api } from '../../api/client';
+import type { DatasetSummary, DatasetVersion } from '../../api/model';
 import type {
   DataLevel,
   DatasetManifest,
@@ -137,24 +138,36 @@ function QualitySummaryBadge({ q }: { q: QualityReport }) {
   );
 }
 
-const DATASET_COLUMNS: Column<DatasetManifest>[] = [
+const DATASET_COLUMNS: Column<DatasetSummary>[] = [
   { id: 'id', header: 'Id', rowHeader: true, cell: (d) => <span className="mono">{d.id}</span>, sortValue: (d) => d.id },
   { id: 'kind', header: 'Kind', cell: (d) => d.kind, sortValue: (d) => d.kind },
-  { id: 'level', header: 'Level', cell: (d) => LEVEL_SHORT[d.level], sortValue: (d) => d.level },
+  {
+    id: 'level',
+    header: 'Level',
+    cell: (d) => (LEVEL_SHORT as Record<string, string | undefined>)[d.level] ?? d.level,
+    sortValue: (d) => d.level,
+  },
+  {
+    id: 'version',
+    header: 'Version',
+    numeric: true,
+    cell: (d) => (d.current_version ? `v${d.current_version.version}` : '\u2014'),
+    sortValue: (d) => d.current_version?.version ?? null,
+  },
   {
     id: 'span',
     header: 'Span',
     numeric: true,
-    cell: (d) => fmtDuration(d.end - d.start),
-    sortValue: (d) => d.end - d.start,
+    cell: (d) => (d.current_version ? fmtDuration(d.current_version.end_ns - d.current_version.start_ns) : '\u2014'),
+    sortValue: (d) => (d.current_version ? d.current_version.end_ns - d.current_version.start_ns : null),
   },
   {
     id: 'events',
     header: 'Events',
     unit: 'rows',
     numeric: true,
-    cell: (d) => fmtInt(d.counts.rows),
-    sortValue: (d) => d.counts.rows,
+    cell: (d) => fmtInt(d.current_version?.rows ?? null),
+    sortValue: (d) => d.current_version?.rows ?? null,
   },
 ];
 
@@ -238,7 +251,7 @@ function CheckInspector({ check }: { check: QualityCheck }) {
   return null;
 }
 
-function IdentityTab({ ds }: { ds: DatasetManifest }) {
+function IdentityTab({ ds, version }: { ds: DatasetManifest; version: DatasetVersion }) {
   const inst = ds.instrument;
   const ts = LOCAL_TS[ds.timestamps.local_ts];
   const digits = digitsForUnit(ds.timestamps.input_unit);
@@ -249,6 +262,10 @@ function IdentityTab({ ds }: { ds: DatasetManifest }) {
         <dl className="kv">
           <dt>Dataset id</dt>
           <dd className="mono">{ds.id}</dd>
+          <dt>Version</dt>
+          <dd className="mono">
+            v{version.version} <span className="dim">(normalization v{version.normalization_version}, contract v{version.contract_version})</span>
+          </dd>
           <dt>Data level</dt>
           <dd className="prose">{LEVEL_TEXT[ds.level]}</dd>
           <dt>Span</dt>
@@ -272,7 +289,15 @@ function IdentityTab({ ds }: { ds: DatasetManifest }) {
           </dd>
           <dt>Dataset hash</dt>
           <dd>
-            <HashText hash={ds.events_sha256} chars={16} /> <span className="dim">sha256</span>
+            <HashText hash={version.events_sha256} chars={16} /> <span className="dim">sha256 of the events</span>
+          </dd>
+          <dt>Source</dt>
+          <dd>
+            <span className="mono">{version.source.vendor}</span>{' '}
+            <span className="dim">
+              licence {version.source.licence}
+              {version.source.hostable ? '' : '; not hostable'}
+            </span>
           </dd>
         </dl>
       </section>
@@ -426,7 +451,7 @@ function FilesTab({ ds }: { ds: DatasetManifest }) {
 
 type DetailTab = 'identity' | 'quality' | 'files';
 
-function DatasetDetail({ ds }: { ds: DatasetManifest }) {
+function DatasetDetail({ ds, version }: { ds: DatasetManifest; version: DatasetVersion }) {
   const [tab, setTab] = useState<DetailTab>('identity');
   const failed = failedCount(ds.quality);
   return (
@@ -435,7 +460,7 @@ function DatasetDetail({ ds }: { ds: DatasetManifest }) {
         fill
         title={
           <>
-            <span className="dataset-title">{ds.id}</span> <KindBadge ds={ds} />
+            <span className="dataset-title">{ds.id}</span> <span className="mono dim">v{version.version}</span> <KindBadge ds={ds} />
           </>
         }
         caption={ds.title}
@@ -450,7 +475,7 @@ function DatasetDetail({ ds }: { ds: DatasetManifest }) {
             { id: 'files', label: 'Files', count: fmtInt(ds.source.inputs.length) },
           ]}
         >
-          {tab === 'identity' ? <IdentityTab ds={ds} /> : null}
+          {tab === 'identity' ? <IdentityTab ds={ds} version={version} /> : null}
           {tab === 'quality' ? <QualityTab key={ds.id} ds={ds} /> : null}
           {tab === 'files' ? <FilesTab ds={ds} /> : null}
         </Tabs>
@@ -482,11 +507,41 @@ function HowToCreate() {
   );
 }
 
+/** Loads the selected dataset's current version with its full manifest. */
+function SelectedDataset({ summary }: { summary: DatasetSummary }) {
+  const detail = useAsync((signal) => api.dataset(summary.id, { signal }), [summary.id]);
+  const current = detail.data?.current_version ?? null;
+  if (detail.error) {
+    return (
+      <Panel title="Dataset" fill>
+        <ErrorBox error={detail.error} onRetry={detail.reload} />
+      </Panel>
+    );
+  }
+  if (!detail.data) {
+    return (
+      <Panel title="Dataset" fill>
+        <Spinner label="Loading dataset manifest" />
+      </Panel>
+    );
+  }
+  if (!current) {
+    return (
+      <Panel title="Dataset" fill>
+        <Empty>
+          Dataset <span className="mono">{summary.id}</span> has no current version.
+        </Empty>
+      </Panel>
+    );
+  }
+  return <DatasetDetail key={`${summary.id}@${current.version}`} ds={current.manifest} version={current} />;
+}
+
 export default function DatasetsPage() {
   const { datasetId } = useParams<{ datasetId?: string }>();
   const navigate = useNavigate();
-  const datasets = useAsync(() => api.datasets(), []);
-  const list = datasets.data;
+  const datasets = useAsync((signal) => api.datasets({ signal }), []);
+  const list = datasets.data?.items ?? null;
   const selected = list && datasetId ? (list.find((d) => d.id === datasetId) ?? null) : null;
 
   // `/data` without an id opens the first installed dataset.
@@ -549,6 +604,9 @@ export default function DatasetsPage() {
             collapsible: true,
             content: (
               <Panel title="Datasets" fill flush>
+                {datasets.data?.incomplete ? (
+                  <Notice tag="List incomplete">First {fmtInt(datasets.data.items.length)} datasets shown.</Notice>
+                ) : null}
                 <DataTable
                   label="Datasets"
                   fill
@@ -568,7 +626,7 @@ export default function DatasetsPage() {
             label: 'Dataset detail',
             minSize: '40%',
             content: selected ? (
-              <DatasetDetail key={selected.id} ds={selected} />
+              <SelectedDataset key={selected.id} summary={selected} />
             ) : (
               <Panel title="Dataset" fill>
                 {state}

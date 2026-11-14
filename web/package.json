@@ -7,7 +7,6 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "build:static": "tsc -b && vite build --mode static && node scripts/copy-static-data.mjs",
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "test": "vitest run"

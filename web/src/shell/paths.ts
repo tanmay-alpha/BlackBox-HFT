@@ -33,5 +33,19 @@ export const paths = {
   comparePair: (a?: string, b?: string) => withQuery('/compare/pair', { a, b }),
   compareSet: (query?: { runs?: string[]; demo?: string }) =>
     withQuery('/compare/set', { runs: query?.runs?.join(','), demo: query?.demo }),
-  sweep: (base?: string) => withQuery('/compare/sweep', { base }),
+  /** Recent sweeps list. */
+  sweeps: () => '/compare/sweeps',
+  /** Result matrix of one sweep. */
+  sweep: (sweepId: string) => `/compare/sweeps/${enc(sweepId)}`,
+  /** Simulation Workbench job queue; `state` filters, `mine` = created by this key. */
+  sim: (query?: { state?: string; mine?: 1 }) => withQuery('/sim', query),
+  job: (jobId: string) => `/sim/jobs/${enc(jobId)}`,
+  /** Sweep submission (Simulation Workbench), optionally from a base run. */
+  sweepForm: (base?: string) => withQuery('/sim/sweep', { base }),
+  risk: () => '/risk',
+  riskRun: (runId: string) => `/risk/${enc(runId)}`,
+  reports: () => '/reports',
+  report: (runId: string) => `/reports/${enc(runId)}`,
+  savedReport: (reportId: string) => `/reports/saved/${enc(reportId)}`,
+  system: (tab?: 'health' | 'queue' | 'storage' | 'access' | 'about' | 'datasets' | 'events') => withQuery('/system', { tab }),
 };

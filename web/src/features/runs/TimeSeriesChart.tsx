@@ -8,7 +8,6 @@ import { useEffect, useRef, useState } from 'react';
 import { ColorType, LineSeries, LineStyle, LineType, createChart } from 'lightweight-charts';
 import type { Time, UTCTimestamp } from 'lightweight-charts';
 
-import type { EquitySample } from '../../api/types';
 import { cssVar } from '../../components/theme';
 import { ErrorBox } from '../../components/ui';
 
@@ -32,17 +31,19 @@ const NS_PER_S = 1_000_000_000;
 
 /**
  * Resamples account snapshots to at most one point per second: the last sample recorded in each
- * second. No averaging and no interpolation; seconds without a sample have no point.
+ * second. No averaging and no interpolation; seconds without a sample have no point. `ts` is the
+ * sample time in ns after the dataset origin (a downsampled bucket passes its end, `t1_ns`).
  */
-export function lastPerSecond(
-  samples: EquitySample[],
-  value: (s: EquitySample) => number,
+export function lastPerSecond<T>(
+  samples: readonly T[],
+  value: (s: T) => number,
+  ts: (s: T) => number,
 ): ChartPoint[] {
   const out: ChartPoint[] = [];
   for (const s of samples) {
     const v = value(s);
     if (!Number.isFinite(v)) continue;
-    const sec = Math.floor(s.ts / NS_PER_S);
+    const sec = Math.floor(ts(s) / NS_PER_S);
     const last = out.length > 0 ? out[out.length - 1] : null;
     if (last !== null && sec === last.time) {
       last.value = v;

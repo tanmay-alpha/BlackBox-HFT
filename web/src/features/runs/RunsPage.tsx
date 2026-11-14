@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { api, isStaticViewer, STATIC_VIEWER_MESSAGE } from '../../api/client';
-import type { RunSummary } from '../../api/types';
+import { api } from '../../api/client';
+import type { Run } from '../../api/model';
 import { DataTable, type Column } from '../../components/DataTable';
-import { assumptionsLabel, strategyLabel } from '../../components/describe';
-import { fmtDuration, fmtInt, fmtPnl, fmtUnixMs } from '../../components/fmt';
+import { fmtDuration, fmtInt, fmtPnl } from '../../components/fmt';
+import { fmtNsUtc } from '../../components/ns';
 import { ToolbarDivider } from '../../components/Toolbar';
-import { Badge, ErrorBox, HashText, Panel, Spinner, useAsync } from '../../components/ui';
+import { Badge, ErrorBox, HashText, Notice, Panel, Spinner, useAsync } from '../../components/ui';
+import { GatedButton } from '../../shell/access';
 import { useInspector } from '../../shell/inspector';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
@@ -23,53 +24,63 @@ function signClass(x: number | null): string | undefined {
   return x === null ? undefined : x > 0 ? 'up' : x < 0 ? 'down' : undefined;
 }
 
-function RunSummaryDetails({ run }: { run: RunSummary }) {
-  const m = run.manifest;
+function RunInspector({ run }: { run: Run }) {
   return (
     <div className="col">
       <dl className="kv">
         <dt>Label</dt>
-        <dd>{run.label || <span className="dim">unlabelled</span>}</dd>
+        <dd>{run.label ?? <span className="dim">unlabelled</span>}</dd>
         <dt>Run id</dt>
-        <dd className="mono wrap-anywhere">{m.run_id}</dd>
+        <dd className="mono wrap-anywhere">{run.run_id}</dd>
         <dt>Strategy</dt>
         <dd className="mono">
-          {strategyLabel(m.config.strategy.kind)} every {fmtDuration(m.config.strategy.interval_ns)}
+          {run.strategy_kind} every {fmtDuration(run.interval_ns)}
         </dd>
         <dt>Dataset</dt>
         <dd className="mono wrap-anywhere">
-          <Link to={paths.dataset(m.dataset.id)}>{m.dataset.id}</Link>
+          <Link to={paths.dataset(run.dataset.id)}>{run.dataset.id}</Link> v{run.dataset.version}
         </dd>
-        <dt>Execution assumptions</dt>
-        <dd className="mono">
-          {assumptionsLabel(m.config)} <Badge kind="modeled">modeled</Badge>
+        <dt>Config fingerprint</dt>
+        <dd className="mono wrap-anywhere">
+          {run.fingerprint} <Badge kind="modeled">modeled</Badge>
         </dd>
         <dt>Orders / fills</dt>
         <dd className="mono">
-          {fmtInt(run.order_count)} / {fmtInt(run.fill_count)}
+          {fmtInt(run.counts.orders)} / {fmtInt(run.counts.fills)}
         </dd>
         <dt>
           Net P&amp;L <span className="unit">quote</span>
         </dt>
         <dd className={`mono ${signClass(run.metrics.net_pnl) ?? ''}`}>{fmtPnl(run.metrics.net_pnl, 4)}</dd>
         <dt>Result hash</dt>
-        <dd className="mono wrap-anywhere">{m.result_sha256}</dd>
+        <dd className="mono wrap-anywhere">{run.result_sha256}</dd>
+        <dt>Platform</dt>
+        <dd className="mono">
+          {run.platform}
+          {run.canonical ? ' (canonical)' : ''}
+        </dd>
         <dt>Created</dt>
-        <dd className="mono">{fmtUnixMs(m.created_unix_ms)}</dd>
+        <dd className="mono">{fmtNsUtc(run.created_at_ns, 0)}</dd>
       </dl>
       <div className="row">
-        <Link className="btn" to={paths.run(m.run_id)}>
+        <Link className="btn" to={paths.run(run.run_id)}>
           Open run
         </Link>
+        <Link className="btn" to={paths.riskRun(run.run_id)}>
+          Risk &amp; Performance
+        </Link>
+        <Link className="btn" to={paths.report(run.run_id)}>
+          Research Report
+        </Link>
       </div>
-      <p className="note">{PNL_NOTE}</p>
+      <p className="note">The full execution assumptions are on the run page. {PNL_NOTE}</p>
     </div>
   );
 }
 
 export default function RunsPage() {
   const navigate = useNavigate();
-  const runs = useAsync(() => api.runs(), []);
+  const runs = useAsync((signal) => api.runs({}, { signal }), []);
   // In pick order: the first is scenario A, the second scenario B.
   const [picked, setPicked] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -77,20 +88,20 @@ export default function RunsPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<unknown>(null);
 
-  const list = runs.data;
-  // A picked run can disappear (deleted elsewhere); only offer comparison for runs still listed.
-  const live = picked.filter((id) => list?.some((r) => r.manifest.run_id === id));
-  const selectedRun = list?.find((r) => r.manifest.run_id === selected) ?? null;
+  const list = runs.data?.items ?? null;
+  // A picked run can disappear (its experiment deleted elsewhere); only offer comparison for runs still listed.
+  const live = picked.filter((id) => list?.some((r) => r.run_id === id));
+  const selectedRun = list?.find((r) => r.run_id === selected) ?? null;
 
   const toggle = (runId: string) =>
     setPicked((p) => (p.includes(runId) ? p.filter((id) => id !== runId) : [...p, runId]));
 
-  const confirmDelete = async (runId: string) => {
+  const confirmDelete = async (run: Run, experimentId: string) => {
     setDeleting(true);
     setDeleteError(null);
     try {
-      await api.deleteRun(runId);
-      setPicked((p) => p.filter((id) => id !== runId));
+      await api.deleteExperiment(experimentId);
+      setPicked((p) => p.filter((id) => id !== run.run_id));
       setSelected(null);
       setConfirming(false);
       runs.reload();
@@ -102,9 +113,9 @@ export default function RunsPage() {
   };
 
   useInspector(
-    selectedRun ? `Run ${selectedRun.label || selectedRun.manifest.run_id}` : 'Stored runs',
+    selectedRun ? `Run ${selectedRun.label ?? selectedRun.run_id}` : 'Stored runs',
     selectedRun ? (
-      <RunSummaryDetails run={selectedRun} />
+      <RunInspector run={selectedRun} />
     ) : (
       <div className="col">
         <p className="note">{LEAD}</p>
@@ -114,14 +125,14 @@ export default function RunsPage() {
     [selectedRun],
   );
 
-  const columns = useMemo<Column<RunSummary>[]>(
+  const columns = useMemo<Column<Run>[]>(
     () => [
       {
         id: 'pick',
         header: 'Pick',
         width: 56,
         cell: (r) => {
-          const id = r.manifest.run_id;
+          const id = r.run_id;
           const idx = live.indexOf(id);
           return (
             <label className="row runs-pick" onClick={(e) => e.stopPropagation()}>
@@ -129,41 +140,57 @@ export default function RunsPage() {
                 type="checkbox"
                 checked={idx >= 0}
                 onChange={() => toggle(id)}
-                aria-label={`Pick run ${r.label || id} for comparison`}
+                aria-label={`Pick run ${r.label ?? id} for comparison`}
               />
               {idx === 0 ? <Badge kind="neutral">A</Badge> : idx === 1 ? <Badge kind="neutral">B</Badge> : null}
             </label>
           );
         },
-        raw: (r) => (live.includes(r.manifest.run_id) ? 'picked' : ''),
+        raw: (r) => (live.includes(r.run_id) ? 'picked' : ''),
       },
       {
         id: 'run',
         header: 'Run id',
         rowHeader: true,
         cell: (r) => (
-          <Link to={paths.run(r.manifest.run_id)} tabIndex={-1}>
-            <HashText hash={r.manifest.run_id} />
+          <Link to={paths.run(r.run_id)} tabIndex={-1}>
+            <HashText hash={r.run_id} />
           </Link>
         ),
-        raw: (r) => r.manifest.run_id,
-        sortValue: (r) => r.manifest.run_id,
+        raw: (r) => r.run_id,
+        sortValue: (r) => r.run_id,
       },
       {
         id: 'label',
         header: 'Label',
-        cell: (r) => r.label || <span className="dim">unlabelled</span>,
+        cell: (r) => r.label ?? <span className="dim">unlabelled</span>,
         sortValue: (r) => r.label,
       },
-      { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.manifest.dataset.id}</span>, sortValue: (r) => r.manifest.dataset.id },
+      {
+        id: 'dataset',
+        header: 'Dataset',
+        cell: (r) => (
+          <span className="mono">
+            {r.dataset.id} v{r.dataset.version}
+          </span>
+        ),
+        sortValue: (r) => r.dataset.id,
+      },
       {
         id: 'strategy',
         header: 'Strategy',
-        cell: (r) => <span className="mono">{strategyLabel(r.manifest.config.strategy.kind)}</span>,
-        sortValue: (r) => r.manifest.config.strategy.kind.type,
+        cell: (r) => <span className="mono">{r.strategy_kind}</span>,
+        sortValue: (r) => r.strategy_kind,
       },
-      { id: 'orders', header: 'Orders', unit: 'count', numeric: true, cell: (r) => fmtInt(r.order_count), sortValue: (r) => r.order_count },
-      { id: 'fills', header: 'Fills', unit: 'count', numeric: true, cell: (r) => fmtInt(r.fill_count), sortValue: (r) => r.fill_count },
+      {
+        id: 'interval',
+        header: 'Interval',
+        numeric: true,
+        cell: (r) => fmtDuration(r.interval_ns),
+        sortValue: (r) => r.interval_ns,
+      },
+      { id: 'orders', header: 'Orders', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.orders), sortValue: (r) => r.counts.orders },
+      { id: 'fills', header: 'Fills', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.fills), sortValue: (r) => r.counts.fills },
       {
         id: 'pnl',
         header: 'Net P&L',
@@ -173,13 +200,29 @@ export default function RunsPage() {
         className: (r) => signClass(r.metrics.net_pnl),
         sortValue: (r) => r.metrics.net_pnl,
       },
-      { id: 'hash', header: 'Result hash', cell: (r) => <HashText hash={r.manifest.result_sha256} />, raw: (r) => r.manifest.result_sha256, sortValue: (r) => r.manifest.result_sha256 },
+      { id: 'hash', header: 'Result hash', cell: (r) => <HashText hash={r.result_sha256} />, raw: (r) => r.result_sha256, sortValue: (r) => r.result_sha256 },
       {
         id: 'created',
         header: 'Created',
         unit: 'UTC',
-        cell: (r) => <span className="mono">{fmtUnixMs(r.manifest.created_unix_ms)}</span>,
-        sortValue: (r) => r.manifest.created_unix_ms,
+        cell: (r) => <span className="mono">{fmtNsUtc(r.created_at_ns, 0)}</span>,
+        raw: (r) => fmtNsUtc(r.created_at_ns, 0),
+        sortValue: (r) => BigInt(r.created_at_ns),
+      },
+      {
+        id: 'views',
+        header: 'Views',
+        cell: (r) => (
+          <span className="row" onClick={(e) => e.stopPropagation()}>
+            <Link to={paths.riskRun(r.run_id)} tabIndex={-1}>
+              Risk
+            </Link>
+            <Link to={paths.report(r.run_id)} tabIndex={-1}>
+              Report
+            </Link>
+          </span>
+        ),
+        raw: () => '',
       },
     ],
     // `toggle` only closes over the state setter.
@@ -231,42 +274,45 @@ export default function RunsPage() {
             </button>
           )}
           <ToolbarDivider />
-          {confirming && selectedRun ? (
-            <span className="row" role="group" aria-label={`Confirm deleting ${selectedRun.manifest.run_id}`}>
-              <span>Delete this run and its tape?</span>
-              <button
-                type="button"
+          {selectedRun?.experiment_id ? (
+            confirming ? (
+              <span className="row" role="group" aria-label={`Confirm deleting the experiment of ${selectedRun.run_id}`}>
+                <span>Delete this run’s experiment from the workspace?</span>
+                <GatedButton
+                  scope="run"
+                  className="btn-danger"
+                  onClick={() => void confirmDelete(selectedRun, selectedRun.experiment_id as string)}
+                  disabled={deleting}
+                >
+                  {deleting ? 'Deleting' : 'Confirm delete'}
+                </GatedButton>
+                <button type="button" onClick={() => setConfirming(false)} disabled={deleting}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <GatedButton
+                scope="run"
                 className="btn-danger"
-                onClick={() => void confirmDelete(selectedRun.manifest.run_id)}
-                disabled={deleting}
+                onClick={() => {
+                  setConfirming(true);
+                  setDeleteError(null);
+                }}
+                aria-label={`Delete the experiment of run ${selectedRun.label ?? selectedRun.run_id}`}
               >
-                {deleting ? 'Deleting' : 'Confirm delete'}
-              </button>
-              <button type="button" onClick={() => setConfirming(false)} disabled={deleting}>
-                Cancel
-              </button>
-            </span>
-          ) : (
-            <button
-              type="button"
-              className="btn-danger"
-              onClick={() => {
-                setConfirming(true);
-                setDeleteError(null);
-              }}
-              disabled={isStaticViewer() || selectedRun === null}
-              title={isStaticViewer() ? STATIC_VIEWER_MESSAGE : selectedRun === null ? 'Select a run row first' : undefined}
-              aria-label={selectedRun ? `Delete run ${selectedRun.label || selectedRun.manifest.run_id}` : 'Delete run'}
-            >
-              Delete
-            </button>
-          )}
+                Delete experiment
+              </GatedButton>
+            )
+          ) : null}
         </>
       }
     >
       {runs.error ? <ErrorBox error={runs.error} onRetry={runs.reload} /> : null}
       {deleteError !== null ? <ErrorBox error={deleteError} /> : null}
       {runs.loading && !list ? <Spinner label="Loading runs" /> : null}
+      {runs.data?.incomplete ? (
+        <Notice tag="List incomplete">First {fmtInt(runs.data.items.length)} runs shown; older runs are not listed here.</Notice>
+      ) : null}
       {list ? (
         <Panel
           title={
@@ -281,21 +327,21 @@ export default function RunsPage() {
           <DataTable
             label="Stored runs"
             rows={list}
-            rowKey={(r) => r.manifest.run_id}
+            rowKey={(r) => r.run_id}
             columns={columns}
             selectedKey={selected}
             onSelect={(r) => {
-              setSelected(r.manifest.run_id);
+              setSelected(r.run_id);
               setConfirming(false);
             }}
-            onActivate={(r) => navigate(paths.run(r.manifest.run_id))}
+            onActivate={(r) => navigate(paths.run(r.run_id))}
             empty={
               <>
                 No runs are stored yet. Configure and simulate one in the{' '}
                 <Link to={paths.strategy()}>Strategy Lab</Link>.
               </>
             }
-            footer={<p className="note">{PNL_NOTE} Enter or double-click opens a run; Space selects it for the inspector and Delete.</p>}
+            footer={<p className="note">{PNL_NOTE} Enter or double-click opens a run; Space selects it for the inspector.</p>}
             fill
           />
         </Panel>

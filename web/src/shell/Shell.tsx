@@ -9,11 +9,11 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-do
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { ChevronDown, CircleHelp, PanelRightClose, PanelRightOpen, Search } from 'lucide-react';
 
-import { isStaticViewer } from '../api/client';
-import { STATIC_VIEWER_BANNER } from '../components/staticViewer';
 import { BasisLegend, ErrorBox } from '../components/ui';
 import { GLOSSARY } from '../components/glossary';
 import { fmtClock } from '../components/fmt';
+import { AccessProvider, useAccess } from './access';
+import { AnnounceContext } from './announce';
 import { CommandPalette, type PaletteCommand } from './CommandPalette';
 import { HelpDialog } from './HelpDialog';
 import { HealthProvider } from './health';
@@ -162,10 +162,43 @@ function WorkspaceSwitcher() {
   );
 }
 
+function AccessBadge() {
+  const access = useAccess();
+  const w = access.whoami;
+  if (access.mode === 'research' && w) {
+    return (
+      <span className="row access-badge">
+        <button
+          type="button"
+          className="badge badge-ok"
+          data-testid="access-badge"
+          title={`Research access: workspace ${w.workspace.name} (${w.workspace.slug}), scopes ${w.key?.scopes.join(', ') ?? ''}. Activate to change the key.`}
+          onClick={access.openKeyDialog}
+        >
+          RESEARCH {'\u00b7'} key {w.key?.display_prefix}
+        </button>
+        <button type="button" className="btn-link small" onClick={access.signOut}>
+          Sign out
+        </button>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="badge badge-neutral"
+      data-testid="access-badge"
+      title={access.mode === 'demo' ? 'Public demo workspace, read-only. Activate to enter an API key.' : 'Access not known yet. Activate to enter an API key.'}
+      onClick={access.openKeyDialog}
+    >
+      {access.mode === 'demo' ? 'DEMO \u00b7 read-only' : 'ACCESS \u2026'}
+    </button>
+  );
+}
+
 function TopBar({ onPalette, onHelp }: { onPalette: () => void; onHelp: () => void }) {
   const crumbs = useBreadcrumb();
   const { settings, update } = useSettings();
-  const staticViewer = isStaticViewer();
   return (
     <header className="topbar">
       <Link to="/" className="brand" aria-label="BlackBox HFT, Overview">
@@ -192,12 +225,7 @@ function TopBar({ onPalette, onHelp }: { onPalette: () => void; onHelp: () => vo
         <span>Search or run a command</span>
         <kbd>Ctrl K</kbd>
       </button>
-      <span
-        className="badge badge-neutral"
-        title={staticViewer ? STATIC_VIEWER_BANNER : 'Local server: no authentication; every action is available.'}
-      >
-        {staticViewer ? 'precomputed bundle' : 'local'}
-      </span>
+      <AccessBadge />
       <button
         type="button"
         className="btn-icon"
@@ -320,19 +348,32 @@ function focusRegion(step: 1 | -1) {
 // ----- shell ------------------------------------------------------------------------------
 
 function ShellLayout() {
-  const location = useLocation();
-  const navigate = useNavigate();
-  const { settings, update } = useSettings();
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
   const [message, setMessage] = useState('');
-  const chord = useRef(0);
-
   const announce = useCallback((text: string) => {
     // Re-announce identical text by clearing first.
     setMessage('');
     window.setTimeout(() => setMessage(text), 50);
   }, []);
+  return (
+    <AnnounceContext.Provider value={announce}>
+      <AccessProvider announce={announce}>
+        <ShellFrame announce={announce} />
+        <div className="visually-hidden" role="status" aria-live="polite">
+          {message}
+        </div>
+      </AccessProvider>
+    </AnnounceContext.Provider>
+  );
+}
+
+function ShellFrame({ announce }: { announce: (text: string) => void }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { settings, update } = useSettings();
+  const access = useAccess();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const chord = useRef(0);
 
   const copyLink = useCallback(() => {
     void navigator.clipboard?.writeText(window.location.href).then(() => announce('Link to this view copied'));
@@ -353,6 +394,9 @@ function ShellLayout() {
     },
     { id: 'link', label: 'Copy link to this view', hint: 'y', run: copyLink },
     { id: 'help', label: 'Keyboard shortcuts, glossary and settings', hint: '?', run: () => setHelpOpen(true) },
+    access.mode === 'research'
+      ? { id: 'signout', label: 'Sign out (remove the API key from this tab)', run: access.signOut }
+      : { id: 'key', label: 'Enter API key (research access)', run: access.openKeyDialog },
   ];
 
   useEffect(() => {
@@ -439,9 +483,6 @@ function ShellLayout() {
         ) : null}
       </Group>
       <StatusBar announce={announce} />
-      <div className="visually-hidden" role="status" aria-live="polite">
-        {message}
-      </div>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
       <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>

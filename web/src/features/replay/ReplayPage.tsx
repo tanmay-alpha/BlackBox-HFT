@@ -17,6 +17,7 @@ import {
   ClockText,
   Empty,
   ErrorBox,
+  HashText,
   Notice,
   Panel,
   Spinner,
@@ -268,9 +269,10 @@ export default function ReplayPage() {
   const { datasetId = '' } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const dataset = useAsync(() => api.dataset(datasetId), [datasetId]);
-  const runs = useAsync(() => api.runs(), []);
-  const ds = dataset.data;
+  const dataset = useAsync((signal) => api.dataset(datasetId, { signal }), [datasetId]);
+  const runs = useAsync((signal) => api.runs({ dataset_id: datasetId }, { signal }), [datasetId]);
+  const version = dataset.data?.current_version ?? null;
+  const ds = version?.manifest ?? null;
 
   const query = useMemo(() => (ds ? resolveQuery(ds, searchParams) : null), [ds, searchParams]);
   const t0 = query?.t0 ?? null;
@@ -278,10 +280,10 @@ export default function ReplayPage() {
   const levels = query?.levels ?? null;
 
   const replay = useAsync<ReplayWindow | null>(
-    () =>
+    (signal) =>
       t0 === null || t1 === null || levels === null
         ? Promise.resolve(null)
-        : api.replay(datasetId, { t0, t1, levels, max_trades: MAX_TRADES }),
+        : api.replay(datasetId, { t0, t1, levels, max_trades: MAX_TRADES }, { signal }),
     [datasetId, t0, t1, levels],
   );
 
@@ -408,7 +410,13 @@ export default function ReplayPage() {
         <ErrorBox error={dataset.error} onRetry={dataset.reload} />
       </div>
     );
-  } else if (!ds || !inst) {
+  } else if (dataset.data && !version) {
+    body = (
+      <div className="book-state">
+        <Empty>Dataset {datasetId} has no current version to replay.</Empty>
+      </div>
+    );
+  } else if (!ds || !inst || !version) {
     body = (
       <div className="book-state">
         <Spinner label="Loading dataset manifest" />
@@ -437,7 +445,7 @@ export default function ReplayPage() {
           ) : (
             <Badge kind="observed">recorded market data</Badge>
           )}{' '}
-          {ds.title} · window <ClockText ns={win.t0} /> {'\u2192'} <ClockText ns={win.t1} /> · {fmtInt(win.depth.length)}{' '}
+          {ds.title} · v{version.version} · sha256 <HashText hash={version.events_sha256} chars={10} /> · window <ClockText ns={win.t0} /> {'\u2192'} <ClockText ns={win.t1} /> · {fmtInt(win.depth.length)}{' '}
           depth frames · {fmtInt(win.bbo.ts.length)} top-of-book entries · {fmtInt(win.trades.ts.length)} trades · top{' '}
           {win.levels} levels per side
         </p>

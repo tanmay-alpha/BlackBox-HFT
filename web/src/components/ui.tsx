@@ -4,9 +4,10 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
-import { ApiError } from '../api/client';
+import { describeError, isAbort } from '../api/client';
 import type { Basis, Side } from '../api/types';
 import { DASH, fmtClock, shortHash } from './fmt';
+import { useApiPhase } from '../shell/health';
 import { relParts, type NsDigits, type NsInput } from './ns';
 
 // ----- Panel ------------------------------------------------------------------------------
@@ -177,35 +178,47 @@ export function useElapsedSeconds(): number {
   return elapsed;
 }
 
-/** Static loading line with an elapsed-time counter; no animation (§4.5, §6.9). */
+/**
+ * Static loading line with an elapsed-time counter; no animation (§4.5, §6.9). While the API is
+ * waking it says so (§10.1).
+ */
 export function Spinner({ label = 'Loading' }: { label?: string }) {
   const elapsed = useElapsedSeconds();
+  const waking = useApiPhase() === 'waking';
   return (
     <span className="spinner" role="status">
       {label}
       {'\u2026'}
       {elapsed > 0 ? <span className="mono">{` ${elapsed} s`}</span> : null}
+      {waking ? ' \u2014 the API is waking up (free host; first response can take about a minute)' : null}
     </span>
   );
 }
 
 /**
- * Shows a failure exactly as reported. For API errors the server's code and message are
- * printed verbatim (an `invalid_config` message lists every problem, one per line).
+ * Shows a failure exactly as reported. For API errors the server's code, message and request id
+ * are printed verbatim, with the envelope's `details` (limits, quotas, problems) as facts
+ * (API_CONTRACT §2). An `invalid_config` lists every problem, one per line.
  */
 export function ErrorBox({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   const [copied, setCopied] = useState(false);
   if (error === null || error === undefined) return null;
-  const message = error instanceof Error ? error.message : String(error);
-  const api = error instanceof ApiError ? error : null;
-  const head = api ? `ERROR ${api.status > 0 ? `${api.status} ` : ''}${api.code}` : 'ERROR unexpected failure';
+  const view = describeError(error);
   const copy = () => {
-    void navigator.clipboard?.writeText(`${head}\n${message}`).then(() => setCopied(true));
+    void navigator.clipboard?.writeText([view.head, view.message, ...view.facts].join('\n')).then(() => setCopied(true));
   };
   return (
-    <div className="error-box" role="alert">
-      <div className="error-box-head">{head}</div>
-      <div className="error-box-message">{message}</div>
+    <div className="error-box" role="alert" data-error-state={view.state}>
+      <div className="error-box-head">{view.head}</div>
+      <div className="error-box-message">{view.message}</div>
+      {view.facts.length > 0 ? (
+        <ul className="error-box-facts mono">
+          {view.facts.map((f) => (
+            <li key={f}>{f}</li>
+          ))}
+        </ul>
+      ) : null}
+      {view.action ? <div className="error-box-action">{view.action}</div> : null}
       <div className="error-box-actions">
         {onRetry ? (
           <button type="button" onClick={onRetry}>
@@ -310,10 +323,10 @@ function sameDeps(a: unknown[], b: unknown[]): boolean {
 
 /**
  * Runs `fn` whenever `deps` change and exposes its result. A call that has been superseded
- * (newer deps, a reload, or unmount) never writes its result, and data loaded for old deps is
- * never returned for new ones.
+ * (newer deps, a reload, or unmount) is aborted through `signal` and never writes its result,
+ * and data loaded for old deps is never returned for new ones.
  */
-export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): AsyncResult<T> {
+export function useAsync<T>(fn: (signal: AbortSignal) => Promise<T>, deps: unknown[]): AsyncResult<T> {
   const [state, setState] = useState<AsyncState<T>>({
     data: null,
     error: null,
@@ -324,7 +337,7 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): AsyncResult<
   const lastNonce = useRef(0);
 
   useEffect(() => {
-    let superseded = false;
+    const ctl = new AbortController();
     const isReload = lastNonce.current !== nonce;
     lastNonce.current = nonce;
     setState((prev) => ({
@@ -336,23 +349,21 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): AsyncResult<
 
     let pending: Promise<T>;
     try {
-      pending = fn();
+      pending = fn(ctl.signal);
     } catch (e) {
       pending = Promise.reject(e);
     }
     pending.then(
       (data) => {
-        if (!superseded) setState({ data, error: null, loading: false, deps });
+        if (!ctl.signal.aborted) setState({ data, error: null, loading: false, deps });
       },
       (e: unknown) => {
-        if (superseded) return;
+        if (ctl.signal.aborted || isAbort(e)) return;
         const error = e instanceof Error ? e : new Error(String(e));
         setState({ data: null, error, loading: false, deps });
       },
     );
-    return () => {
-      superseded = true;
-    };
+    return () => ctl.abort();
     // `fn` is intentionally not a dependency: callers pass an inline closure and list what it
     // reads in `deps`, exactly like `useEffect`.
     // eslint-disable-next-line react-hooks/exhaustive-deps

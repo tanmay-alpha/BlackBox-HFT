@@ -195,6 +195,17 @@
   line-height: 1.5;
 }
 
+.cmp-eligible {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-0);
+  background: var(--bg-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 /* ---- Tables ---- */
 
 .cmp-caption {
