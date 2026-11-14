@@ -713,20 +713,42 @@ fn check_raw_replay(m: &Mkt, cfg: &RunConfig, out: &SimOutput) {
         }
     }
     assert_eq!(next, sent.len(), "all requests replayed");
-    let state = raw.state_values(0);
     let last = out.equity.last().unwrap();
-    close(
-        state.position,
-        last.position,
-        "raw position vs exchange ledger",
-    );
-    close(state.balance, last.cash, "raw balance vs ledger");
-    close(state.fee, last.fees, "raw fees vs ledger");
-    assert_eq!(
-        state.num_trades,
-        out.fills.len() as i64,
-        "raw trades vs recorded fills"
-    );
+    // Engine defect 6 (docs/EXECUTION_MODEL.md): a cancel sent for an order the local side
+    // already holds as filled comes back rejected, still carrying that local copy's `Filled`
+    // status, and the engine's local account applies the copy's execution a second time. Each
+    // such echo is visible on the tape as a rejected local response with status `filled`; the
+    // raw account must equal the ledger plus exactly those duplicates.
+    let (mut position, mut cash, mut fees, mut trades) =
+        (last.position, last.cash, last.fees, out.fills.len() as i64);
+    for e in &out.tape {
+        if let FlightBody::LocalResponse {
+            status: OrderStatus::Filled,
+            request_rejected: true,
+            ..
+        } = e.body
+        {
+            let id = e.order_id.unwrap();
+            // Without partial fills an order has exactly one execution.
+            let [fill] = out
+                .fills
+                .iter()
+                .filter(|f| f.order_id == id)
+                .collect::<Vec<_>>()[..]
+            else {
+                panic!("order {id}: echoed filled rejection without exactly one fill");
+            };
+            position += fill.side.sign() * fill.qty;
+            cash -= fill.side.sign() * fill.value;
+            fees += fill.fee;
+            trades += 1;
+        }
+    }
+    let state = raw.state_values(0);
+    close(state.position, position, "raw position vs exchange ledger");
+    close(state.balance, cash, "raw balance vs ledger");
+    close(state.fee, fees, "raw fees vs ledger");
+    assert_eq!(state.num_trades, trades, "raw trades vs recorded fills");
 }
 
 /// Count runs, not events: a single busy replay cannot conceal an otherwise idle corpus.

@@ -290,3 +290,90 @@ fn adapter_blocks_market_orders_before_the_engine() {
     );
     assert!(out.fills.is_empty());
 }
+
+/// Defect 6: `Local::cancel` accepts a cancel for an order the local side already holds as
+/// `Filled` (it checks only that no request is pending) and sends a copy of that local order. The
+/// exchange no longer holds the order, so `ack_cancel` rejects it by echoing the copy back,
+/// still `Filled`. `Local::process_recv_order_` applies every received order whose status is
+/// `Filled` to the account before looking at `req`, so the echo books the execution a second
+/// time.
+#[test]
+fn upstream_rejected_cancel_of_a_filled_order_double_counts_the_fill() {
+    let mut m = Mkt::standard();
+    m.trade(20 * MS, Side::Sell, 100.0, 1.0)
+        .bid(20 * MS, 100.0, 4.0)
+        .keepalive(80 * MS);
+    let mut hbt = raw_engine(&m, ExchangeKind::NoPartialFillExchange);
+    hbt.elapse(INTERVAL).unwrap();
+    // Inside the spread: nothing ahead, so the sell print at 100.0 fills it.
+    hbt.submit_buy_order(0, 1, 100.5, 1.0, TimeInForce::GTC, OrdType::Limit, false)
+        .unwrap();
+    hbt.elapse(INTERVAL).unwrap();
+    hbt.elapse(INTERVAL).unwrap();
+    assert_eq!(hbt.orders(0)[&1].status, Status::Filled);
+    assert_eq!(hbt.orders(0)[&1].req, Status::None);
+    assert_eq!(hbt.position(0), 1.0);
+    assert_eq!(hbt.state_values(0).num_trades, 1);
+
+    // The order is filled, yet the cancel is accepted locally ...
+    hbt.cancel(0, 1, false).unwrap();
+    drain(&mut hbt).unwrap();
+    // ... and its rejection books the one execution again.
+    assert_eq!(hbt.orders(0)[&1].status, Status::Filled);
+    assert_eq!(hbt.position(0), 2.0);
+    assert_eq!(hbt.state_values(0).num_trades, 2);
+    assert_eq!(hbt.state_values(0).balance, -201.0);
+}
+
+/// The adapter's ledger is fed by the exchange-side fill hook and counts the execution once. It
+/// can only reach the defect when a strategy cancels an order it already knows is filled, which
+/// requires the engine to still hold the order: clearing is deferred while an earlier cancel is in
+/// flight. The bundled strategies never do this (they cancel only `cancellable()` orders); a
+/// custom script can, and then the engine cross-check reports the engine's doubled figure.
+#[test]
+fn adapter_ledger_counts_the_fill_once_when_a_filled_order_is_cancelled() {
+    let mut m = Mkt::standard();
+    m.trade(35 * MS, Side::Sell, 100.0, 1.0)
+        .bid(35 * MS, 100.0, 4.0)
+        .keepalive(120 * MS);
+    let mut cfg = config();
+    // Long entry latency, instant responses: the first cancel is still in flight when the fill
+    // response arrives, so the filled order is kept and the second cancel reaches the engine.
+    cfg.execution.order_latency = bb_core::config::OrderLatencyConfig::Constant {
+        entry_ns: 15 * MS,
+        response_ns: 0,
+    };
+    let id = order_id(0, 0);
+    let out = run(
+        &m,
+        &cfg,
+        vec![
+            (0, buy(0, 100.5, 1.0, Tif::Gtc)),
+            (2, Act::Cancel { order_id: id }),
+            (3, Act::Cancel { order_id: id }),
+        ],
+    );
+    assert_eq!(out.fills.len(), 1);
+    let last = out.equity.last().unwrap();
+    assert_eq!((last.position, last.known_position), (1.0, 1.0));
+    // The echo is on the tape: a rejected cancel answered with status `filled`.
+    let echoes = of(&out, id)
+        .into_iter()
+        .filter(|e| {
+            matches!(
+                e.body,
+                bb_core::flight::FlightBody::LocalResponse {
+                    status: bb_core::OrderStatus::Filled,
+                    request_rejected: true,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(echoes, 1);
+    let check = &out.engine_check;
+    assert_eq!(check.ledger_position, 1.0);
+    assert_eq!(check.engine_position, 2.0);
+    assert_eq!((check.ledger_fills, check.engine_num_trades), (1, 2));
+    assert!(!check.agrees);
+}
