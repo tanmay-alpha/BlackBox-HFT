@@ -19,6 +19,8 @@ import RunsPage from './features/runs/RunsPage';
 import WorkbenchPage from './features/sim/WorkbenchPage';
 import SystemPage from './features/system/SystemPage';
 import ReplayTerminalPage from './features/terminal/ReplayTerminalPage';
+import ChartFirstPrototype from './features/explore/protoA/ChartFirstPage';
+import WorkspacePrototype from './features/explore/protoB/WorkspacePage';
 import { paths } from './shell/paths';
 import { Shell } from './shell/Shell';
 import { Workspace } from './shell/Workspace';
@@ -70,6 +72,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* UI prototype competition (docs/rebuild/UI_PROTOTYPE_COMPARISON.md); outside the console shell. */}
+        <Route path="explore/a" element={<ChartFirstPrototype />} />
+        <Route path="explore/b" element={<WorkspacePrototype />} />
         <Route element={<Shell />}>
           <Route index element={<MissionControlPage />} />
           <Route path="data" element={<DatasetsPage />} />
