@@ -2,9 +2,15 @@
 //!
 //! `execute` is a pure function of the dataset and the configuration apart from the wall-clock
 //! fields of the manifest, which are informational and excluded from both hashes.
+//!
+//! Every entry point takes (or defaults to) an [`ExecutionLimits`] profile and a [`RunControl`].
+//! A configuration whose predicted work exceeds the profile is refused before anything runs
+//! ([`admit`]); a run that crosses the profile's tape, sample or output bound while running is
+//! aborted and nothing is stored. Both are `budget_exceeded` errors.
 
 use std::{
     any::Any,
+    io,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::atomic::{AtomicUsize, Ordering},
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -15,9 +21,11 @@ use bb_core::{
     compare::{GridCell, GridResult, GridSpec},
     config::RunConfig,
     dataset::DatasetManifest,
+    limits::{ExecutionLimits, WorkEstimate},
+    platform::platform_class,
     result::{DatasetRef, EngineInfo, RunManifest, RunResult, RunSummary},
 };
-use bb_sim::SimInput;
+use bb_sim::{NoControl, RunBudget, RunControl, SimInput};
 
 use crate::{
     api::OrderDetail,
@@ -97,27 +105,82 @@ fn check_dataset(manifest: &DatasetManifest, config: &RunConfig) -> Result<(), A
             config.dataset_id, manifest.id
         )]));
     }
-    // Work budget: the number of strategy evaluations is fixed by the dataset span and the
-    // interval, so it can be bounded before anything runs.
-    let span = manifest.end.saturating_sub(manifest.start).max(0);
-    let ticks = span / config.strategy.interval_ns.max(1);
-    if ticks > bb_core::config::MAX_TICKS_PER_RUN {
-        return Err(AppError::InvalidConfig(vec![format!(
-            "this dataset spans {:.3} s, so an interval of {} ns means {ticks} strategy \
-             evaluations; the limit per run is {}. Use a longer interval",
-            span as f64 / 1e9,
-            config.strategy.interval_ns,
-            bb_core::config::MAX_TICKS_PER_RUN
-        )]));
-    }
     Ok(())
 }
 
-/// Simulates `config` on the dataset and assembles the complete result.
+/// Predicts the work `config` would do on the dataset and refuses it, before anything runs, when
+/// the prediction exceeds `limits`. Returns the prediction.
+pub fn admit(
+    manifest: &DatasetManifest,
+    config: &RunConfig,
+    limits: &ExecutionLimits,
+) -> Result<WorkEstimate, AppError> {
+    let estimate = config.estimate_work(manifest);
+    limits.admit(&estimate).map_err(|violation| {
+        AppError::BudgetExceeded(format!(
+            "{violation} (the dataset spans {:.3} s; the strategy interval is {} ns)",
+            manifest.end.saturating_sub(manifest.start).max(0) as f64 / 1e9,
+            config.strategy.interval_ns
+        ))
+    })?;
+    Ok(estimate)
+}
+
+/// Counts serialized bytes and stops the serializer once they exceed `limit`.
+struct BoundedCount {
+    bytes: u64,
+    limit: u64,
+}
+
+impl io::Write for BoundedCount {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.bytes += buf.len() as u64;
+        if self.bytes > self.limit {
+            return Err(io::Error::other("output byte limit exceeded"));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Refuses a result whose serialized form exceeds `limit` bytes.
+fn check_output_bytes(result: &RunResult, limit: u64) -> Result<(), AppError> {
+    if limit == u64::MAX {
+        return Ok(());
+    }
+    let mut count = BoundedCount { bytes: 0, limit };
+    match serde_json::to_writer(&mut count, result) {
+        Ok(()) => Ok(()),
+        Err(_) if count.bytes > limit => Err(AppError::BudgetExceeded(format!(
+            "the result exceeds the limit of {limit} output_bytes for this server, so it was \
+             not stored; use a longer strategy interval, a shorter dataset or a less active \
+             strategy"
+        ))),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Simulates `config` on the dataset under the local profile with no run control, and assembles
+/// the complete result.
 pub fn execute(ctx: &DatasetCtx, config: &RunConfig) -> Result<RunResult, AppError> {
+    execute_with(ctx, config, &ExecutionLimits::local(), &NoControl)
+}
+
+/// Simulates `config` on the dataset and assembles the complete result: admitted against
+/// `limits`, run under their budget, with progress and cancellation through `control`.
+pub fn execute_with(
+    ctx: &DatasetCtx,
+    config: &RunConfig,
+    limits: &ExecutionLimits,
+    control: &dyn RunControl,
+) -> Result<RunResult, AppError> {
     check_config(config)?;
     let dataset = ctx.manifest();
     check_dataset(dataset, config)?;
+    admit(dataset, config, limits)?;
 
     // Wall-clock facts are informational only; neither hash covers them.
     let started = Instant::now();
@@ -134,7 +197,7 @@ pub fn execute(ctx: &DatasetCtx, config: &RunConfig) -> Result<RunResult, AppErr
         origin_ns: ctx.dataset.origin_ns,
         config,
     };
-    let out = bb_sim::simulate(&input, strategy)?;
+    let out = bb_sim::simulate_with(&input, strategy, &RunBudget::from_limits(limits), control)?;
 
     let tape = out.tape;
     let mut fills = out.fills;
@@ -151,7 +214,7 @@ pub fn execute(ctx: &DatasetCtx, config: &RunConfig) -> Result<RunResult, AppErr
         blackbox_version: env!("CARGO_PKG_VERSION").to_string(),
         simulation_revision: bb_core::SIMULATION_REVISION,
         engine: engine_info(),
-        platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        platform: platform_class(),
         profile: PROFILE.to_string(),
         dataset: DatasetRef {
             id: dataset.id.clone(),
@@ -166,7 +229,7 @@ pub fn execute(ctx: &DatasetCtx, config: &RunConfig) -> Result<RunResult, AppErr
         wall_time_ms: started.elapsed().as_millis() as u64,
     };
 
-    Ok(RunResult {
+    let result = RunResult {
         manifest,
         metrics,
         engine_check: out.engine_check,
@@ -175,7 +238,9 @@ pub fn execute(ctx: &DatasetCtx, config: &RunConfig) -> Result<RunResult, AppErr
         fills,
         equity,
         tape,
-    })
+    };
+    check_output_bytes(&result, limits.max_output_bytes)?;
+    Ok(result)
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> String {
@@ -188,16 +253,45 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-/// Returns the stored run for `config` if this exact experiment was already simulated, otherwise
-/// simulates it and stores it under `label`.
-///
-/// A panic inside the simulation is reported as `simulation_failed` instead of unwinding into
-/// the caller: one broken scenario must not take down a grid or the server's worker.
+/// Returns the stored run for `config` if this exact experiment was already simulated on this
+/// platform class, otherwise simulates it under the local profile and stores it under `label`.
+/// See [`find_or_execute_with`].
 pub fn find_or_execute(
     ctx: &DatasetCtx,
     config: &RunConfig,
     store: &dyn RunStore,
     label: &str,
+) -> Result<RunSummary, AppError> {
+    find_or_execute_with(
+        ctx,
+        config,
+        store,
+        label,
+        &ExecutionLimits::local(),
+        &NoControl,
+    )
+}
+
+/// Returns the stored run for `config` if this exact experiment was already simulated on this
+/// platform class, otherwise simulates it under `limits` and `control` and stores it under
+/// `label`.
+///
+/// Platform policy: results of the probability queue models and of Avellaneda-Stoikov depend on
+/// the platform's math library, so a run id names one result *per platform class*. A stored run
+/// whose manifest records another platform class is never returned as this platform's result:
+/// the request fails with `platform_mismatch` and the stored run is left untouched (delete it to
+/// recompute it here). See `docs/EXPERIMENT_REPRODUCIBILITY.md`.
+///
+/// A panic inside the simulation is reported as `simulation_failed` instead of unwinding into
+/// the caller: one broken scenario must not take down a grid or the server's worker. A run that
+/// is refused, cancelled or over budget stores nothing.
+pub fn find_or_execute_with(
+    ctx: &DatasetCtx,
+    config: &RunConfig,
+    store: &dyn RunStore,
+    label: &str,
+    limits: &ExecutionLimits,
+    control: &dyn RunControl,
 ) -> Result<RunSummary, AppError> {
     check_config(config)?;
     check_dataset(ctx.manifest(), config)?;
@@ -206,11 +300,23 @@ pub fn find_or_execute(
         // The id is a 64-bit prefix; only the full hash proves it is the same experiment.
         && existing.manifest.config_sha256 == identity.config_sha256
     {
+        let here = platform_class();
+        if existing.manifest.platform != here {
+            return Err(AppError::PlatformMismatch(format!(
+                "run {} is stored with a result computed on platform '{}', and this server \
+                 runs on '{here}'. Results can differ between platforms (math-library rounding \
+                 in the queue models and strategies), so it is not reused as this platform's \
+                 result; delete the stored run to recompute it here",
+                identity.run_id, existing.manifest.platform
+            )));
+        }
         return Ok(existing);
     }
-    // `execute` only reads shared state and owns everything it builds, so nothing observable is
-    // left half-modified if it unwinds.
-    let result = match catch_unwind(AssertUnwindSafe(|| execute(ctx, config))) {
+    // `execute_with` admits the configuration, only reads shared state and owns everything it
+    // builds, so nothing observable is left half-modified if it fails or unwinds.
+    let result = match catch_unwind(AssertUnwindSafe(|| {
+        execute_with(ctx, config, limits, control)
+    })) {
         Ok(result) => result?,
         Err(payload) => {
             return Err(AppError::SimulationFailed(format!(
@@ -269,6 +375,9 @@ pub fn run_grid(
 ) -> Result<GridResult, AppError> {
     check_grid(spec)?;
     check_dataset(ctx.manifest(), &spec.base)?;
+    // Cells are admitted one by one; refusing an over-budget base up front avoids a grid of
+    // identical refusals.
+    admit(ctx.manifest(), &spec.base, &ExecutionLimits::local())?;
 
     let started = Instant::now();
     let x_len = spec.x.len();

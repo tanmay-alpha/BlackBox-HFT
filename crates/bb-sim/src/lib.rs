@@ -15,6 +15,7 @@
 //! * Only `submit_buy_order` / `submit_sell_order` are used. `Bot::submit_order` in 0.9.4 ignores
 //!   the side and always sells.
 
+mod control;
 mod engine;
 mod ledger;
 mod procs;
@@ -41,6 +42,7 @@ use hftbacktest::{
     },
 };
 
+pub use crate::control::{NoControl, Progress, RunBudget, RunControl};
 pub use crate::ledger::Book;
 use crate::{
     engine::Depth,
@@ -78,18 +80,38 @@ pub enum SimError {
     InvalidInput(String),
     #[error("engine error: {0}")]
     Engine(String),
+    /// The run's [`RunControl`] asked it to stop.
+    #[error("the run was cancelled")]
+    Cancelled,
+    /// The run crossed a limit of its [`RunBudget`]. `what` is `tape_events` or
+    /// `equity_samples`.
+    #[error("the run exceeded its budget of {limit} {what}")]
+    BudgetExceeded { what: &'static str, limit: u64 },
 }
 
 const ASSET: usize = 0;
 
-/// Runs one simulation to completion.
+/// Runs one simulation to completion with no progress reporting, no cancellation and the local
+/// budget ([`RunBudget::local`]). See [`simulate_with`].
+pub fn simulate(input: &SimInput<'_>, strategy: Box<dyn Strategy>) -> Result<SimOutput, SimError> {
+    simulate_with(input, strategy, &RunBudget::local(), &NoControl)
+}
+
+/// Runs one simulation to completion, reporting progress to `control`, honouring its
+/// cancellation and enforcing `budget`.
 ///
 /// The run ends at the first strategy tick that falls after the last feed event's local receipt
 /// time. Requests still in flight at that point are left unresolved and appear on the tape as
 /// sent but never processed; nothing is assumed about what would have happened to them.
-pub fn simulate(
+///
+/// Progress, cancellation and budget are checked every `budget.progress_every_ticks` ticks and
+/// once after the last tick. They never alter the simulation, so a completed run is
+/// bit-identical whatever the control and budget.
+pub fn simulate_with(
     input: &SimInput<'_>,
     mut strategy: Box<dyn Strategy>,
+    budget: &RunBudget,
+    control: &dyn RunControl,
 ) -> Result<SimOutput, SimError> {
     let cfg = input.config;
     let problems = cfg.validate();
@@ -109,12 +131,15 @@ pub fn simulate(
         }
     }
     let offset = cfg.execution.feed_latency_offset_ns;
-    let Some(last_local_ts) = input
+    let Some((first_local_ts, last_local_ts)) = input
         .events
         .iter()
         .filter(|e| e.ev & LOCAL_EVENT != 0)
-        .map(|e| e.local_ts)
-        .max()
+        .fold(None, |acc: Option<(i64, i64)>, e| {
+            Some(acc.map_or((e.local_ts, e.local_ts), |(lo, hi)| {
+                (lo.min(e.local_ts), hi.max(e.local_ts))
+            }))
+        })
     else {
         return Err(SimError::InvalidInput(
             "dataset has no locally visible events".into(),
@@ -140,6 +165,10 @@ pub fn simulate(
 
     let interval = cfg.strategy.interval_ns;
     let sample_every = cfg.record.sample_every_ticks as u64;
+    let check_every = budget.progress_every_ticks.max(1);
+    // Predicted for progress reports only; the loop's own end condition decides.
+    let ticks_predicted = ((data_end - first_local_ts).max(0) / interval) as u64 + 1;
+    let mut next_check = check_every;
     let mut tick_no: u64 = 0;
     // Local time of the most recent evaluated tick.
     let mut last_tick_abs: Option<i64> = None;
@@ -157,6 +186,10 @@ pub fn simulate(
         }
         last_tick_abs = Some(now_abs);
         tick_no += 1;
+        if tick_no == next_check {
+            next_check += check_every;
+            run.checkpoint(budget, control, tick_no, ticks_predicted.max(tick_no))?;
+        }
     }
     // The final `elapse` processed whatever data and order events followed the last tick, which
     // can include fills. Close the series one interval after the last tick so the last sample
@@ -165,6 +198,9 @@ pub fn simulate(
     if let Some(last) = last_tick_abs {
         run.sample(&hbt, tick_no, last + interval);
     }
+    // The final check: the outcome never depends on the cadence, because the tape and the
+    // equity series only grow.
+    run.checkpoint(budget, control, tick_no, tick_no)?;
 
     let engine_check = run.engine_check(&hbt);
     let equity = std::mem::take(&mut run.equity);
@@ -563,6 +599,38 @@ impl Harness<'_> {
             ));
         }
         None
+    }
+
+    /// Budget, progress and cancellation check. Reads only; never changes simulation state.
+    fn checkpoint(
+        &self,
+        budget: &RunBudget,
+        control: &dyn RunControl,
+        ticks_done: u64,
+        ticks_total: u64,
+    ) -> Result<(), SimError> {
+        let tape_events = self.tape.event_count() as u64;
+        if tape_events > budget.max_tape_events {
+            return Err(SimError::BudgetExceeded {
+                what: "tape_events",
+                limit: budget.max_tape_events,
+            });
+        }
+        if self.equity.len() as u64 > budget.max_equity_samples {
+            return Err(SimError::BudgetExceeded {
+                what: "equity_samples",
+                limit: budget.max_equity_samples,
+            });
+        }
+        control.on_progress(&Progress {
+            ticks_done,
+            ticks_total,
+            tape_events,
+        });
+        if control.should_cancel() {
+            return Err(SimError::Cancelled);
+        }
+        Ok(())
     }
 
     fn sample(&mut self, hbt: &Backtest<Depth>, tick_no: u64, now_abs: i64) {

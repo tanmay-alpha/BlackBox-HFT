@@ -17,7 +17,8 @@ use hftbacktest::backtest::data::{read_npz_file, write_npy};
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    BuiltDataset, DataError, Event, LoadedDataset, is_valid_id, normalize::validate_event_order,
+    BuiltDataset, DataError, Event, LoadedDataset, check_span, is_valid_id,
+    normalize::validate_event_order,
 };
 
 pub const MANIFEST_FILE: &str = "dataset.json";
@@ -39,8 +40,15 @@ fn dataset_dir(root: &Path, id: &str) -> Result<PathBuf, DataError> {
 /// last, so a dataset directory never holds a manifest for a half-written event file.
 pub fn save(root: &Path, ds: &BuiltDataset) -> Result<DatasetManifest, DataError> {
     let dir = dataset_dir(root, &ds.manifest.id)?;
-    fs::create_dir_all(&dir).map_err(|e| DataError::io(&dir, e))?;
     validate_event_order(&ds.events)?;
+    let origin = ds.manifest.origin().ok_or_else(|| {
+        DataError::Invalid(format!(
+            "dataset `{}` has an unparseable origin_ns",
+            ds.manifest.id
+        ))
+    })?;
+    check_span(&ds.events, origin)?;
+    fs::create_dir_all(&dir).map_err(|e| DataError::io(&dir, e))?;
 
     let events_path = dir.join(EVENTS_FILE);
     let tmp_events = dir.join(format!("{EVENTS_FILE}.tmp"));

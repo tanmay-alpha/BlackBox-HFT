@@ -42,8 +42,8 @@ separately. The engine cross-check is excluded on purpose: the engine's own acco
 non-reproducible order, so its floating-point totals can differ in the last bit between runs
 ([EXECUTION_MODEL.md](EXECUTION_MODEL.md#1-simultaneous-fills-are-emitted-in-a-non-reproducible-order)).
 
-Contract: two runs with equal `config_sha256` on the same platform must have equal `result_sha256`
-(`RunManifest` doc comment, `crates/bb-core/src/result.rs`).
+Contract: two runs with equal `config_sha256` on the same platform class must have equal
+`result_sha256` (`RunManifest` doc comment, `crates/bb-core/src/result.rs`).
 
 ## The run manifest
 
@@ -55,20 +55,69 @@ Stored with every run (`RunManifest`) and printed in its report:
 | `run_id`, `config_sha256`, `config` | the experiment, in full, including the seed |
 | `dataset {id, sha256, rows, origin_ns}` | the exact input bytes |
 | `result_sha256` | the outcome |
-| `blackbox_version`, `platform` (`<os>-<arch>`), `profile` (`debug`/`release`) | provenance for the caveats below |
+| `blackbox_version`, `platform` (platform class, see [Platform policy](#platform-policy)), `profile` (`debug`/`release`) | provenance for the caveats below |
 | `created_unix_ms`, `wall_time_ms` | informational; in neither hash |
 
 ## Idempotent runs
 
 `find_or_execute` computes the identity first. If the store holds a run with that `run_id` **and**
-the same full `config_sha256` (the 64-bit id prefix alone is not trusted), the stored run is returned
-without simulating. Otherwise the run is simulated and stored. The same applies to `POST /api/runs`,
+the same full `config_sha256` (the 64-bit id prefix alone is not trusted) **and** the same platform
+class, the stored run is returned without simulating. If the stored run was computed on another
+platform class, the request fails with `platform_mismatch` (HTTP 409) and the stored run is left
+untouched. Otherwise the run is simulated and stored. The same applies to `POST /api/runs`,
 `blackbox run`, every grid cell and every demo run, so repeating any experiment returns the same run
 id and result hash instantly. The CLI says so: "This configuration was already simulated on this
 dataset; showing the stored run."
 
 Stored runs are read back with `serde_json`'s `float_roundtrip` feature, so a reloaded run still
 hashes to its own `result_sha256` (`crates/bb-app/Cargo.toml`).
+
+## Platform policy
+
+The platform class is `<os>-<arch>`, followed by `-<target_env>` unless that is the OS default
+(glibc on Linux) or empty: `linux-x86_64`, `linux-x86_64-musl`, `windows-x86_64-gnu` (MinGW),
+`windows-x86_64-msvc`, `macos-aarch64` (`crates/bb-core/src/platform.rs`). It names the C runtime
+because `powf`/`ln` come from it (see Caveats).
+
+- **Canonical:** `linux-x86_64` (glibc), the hosted worker and the CI `rust` job. Published and
+  hosted results are canonical results.
+- **Recorded:** every run manifest records the class of the binary that simulated it. Runs stored
+  before classes existed record `<os>-<arch>` (e.g. `windows-x86_64`); they are treated as a
+  different class and are not reused.
+- **Never substituted:** the run store is keyed by `run_id` only, and a stored result whose class
+  differs from the running binary's is refused with `platform_mismatch` rather than returned as this
+  platform's result (`pipeline::find_or_execute_with`). Delete the stored run to recompute it on this
+  platform. Reading a stored run by id still returns it with its recorded class.
+- **Pins:** `golden.rs` pins `linux-x86_64` and `windows-x86_64-gnu` separately for entries that call
+  the math library; the CI `golden-windows` job runs it with the GNU toolchain and the runner's
+  MinGW-w64. Classes with no pins (macOS, MSVC, musl) check only the portable entries.
+
+## Execution budgets
+
+Every run is admitted against an `ExecutionLimits` profile (`crates/bb-core/src/limits.rs`) before
+anything runs, and enforced while it runs:
+
+| Limit | `local()` | `hosted()` | Checked |
+|---|---:|---:|---|
+| dataset rows | none | 500,000 | admission |
+| strategy ticks | 2,000,000 | 150,000 | admission (`estimate_work`) |
+| equity samples | none | 150,000 | admission and in the simulation loop |
+| tape events | none | 150,000 | admission (per-strategy prediction) and in the simulation loop |
+| stored result bytes | none | 128 MiB | admission (prediction) and on the finished result |
+
+A prediction over a limit is refused with `budget_exceeded` (HTTP 422) naming the limit. A run that
+crosses a limit while running (or is cancelled through its `RunControl`) is aborted and nothing is
+stored. Budget checks and progress reports run every `progress_every_ticks` (1,000) ticks and once at
+the end; they only read state, so a completed run is bit-identical under any profile (the golden
+test runs through them), and because the tape and equity series only grow, whether a run breaches
+its budget does not depend on the cadence (`crates/bb-sim/tests/run_control.rs`). The hosted sizing
+is in [PERFORMANCE.md](PERFORMANCE.md#execution-budgets).
+
+**Precision guards.** `seed` must be at most 2^53 − 1 (larger values are refused with
+`invalid_config`; a browser would round them). Generation, ingest and saving refuse a dataset any
+of whose timestamps lies 2^53 ns (about 104 days) or more from its origin. Absolute nanoseconds in
+the dataset manifest (`origin_ns`, `generator.origin_ns`) are decimal strings; older manifests with a
+numeric `generator.origin_ns` still load.
 
 ## Evidence
 
@@ -81,7 +130,8 @@ hashes to its own `result_sha256` (`crates/bb-app/Cargo.toml`).
 | Seed changes jittered latency and nothing else | different seed → different jitter; same seed → identical | `determinism.rs::seed_changes_jittered_latency_and_nothing_else_is_hidden` |
 | Benchmark sessions 1 and 2, separate processes on the same day | the four `no_partial_fill` result hashes identical across processes | [PERFORMANCE.md](PERFORMANCE.md#determinism-under-load) |
 | CI "Determinism across processes" step (Linux) | `maker_baseline` on a freshly generated synthetic dataset, simulated in two separate processes, must print the same result hash | `.github/workflows/ci.yml` |
-| Golden runs | seven fixed preset runs on a fixed synthetic dataset must reproduce pinned `result_sha256` values | `crates/bb-app/tests/golden.rs` |
+| Golden runs | eleven fixed runs on a fixed synthetic dataset must reproduce pinned `result_sha256` values per platform class | `crates/bb-app/tests/golden.rs` |
+| Unwrapped engine, same request stream | the stock engine replaying an adapter run's requests reports as many trades as the adapter recorded fills (touch maker and Avellaneda-Stoikov) | `crates/bb-sim/tests/raw_engine_parity.rs` |
 | Fresh processes on the Tardis sample (measured for this page on 2026-11-14) | see below | release binary `target/release/blackbox.exe` |
 
 **Fresh-process check.** The dataset `binance-futures-btcusdt-2020-02-01-10m` was copied into an
@@ -106,9 +156,11 @@ Because the identity covers the simulation revision, code and stored results can
 disagree:
 
 1. `crates/bb-app/tests/golden.rs` pins the synthetic dataset's hash and the `result_sha256` of
-   seven runs on it: `maker_baseline` under both exchange models, `maker_slow`,
-   `maker_conservative_queue`, `maker_rebate`, `imbalance_taker` and `forensics_probe`, plus the
-   revision they were pinned at. Any code change that alters those results makes it fail.
+   eleven runs on it: `maker_baseline` under both exchange models, `maker_slow`,
+   `maker_conservative_queue`, `maker_rebate`, `imbalance_taker`, `forensics_probe`,
+   `avellaneda_stoikov`, and the risk-adverse maker with jittered latency, with a 5 ms feed offset
+   and with a drawdown halt (each asserted to record a fill or a `risk_halt`), plus the revision
+   they were pinned at. Any code change that alters those results makes it fail.
 2. If the change is intended, the same commit bumps `SIMULATION_REVISION` and updates the pinned
    hash. Every configuration then has a new run id, so `find_or_execute` simulates it afresh instead
    of returning a run produced by the old code.
@@ -132,18 +184,14 @@ mechanism now catches.
   matters, but it was observed: in the first Linux CI run (43503383714) the `maker_slow` preset
   (`power_prob3`, 50 ms latency) produced a different result hash than on Windows, while the other
   six pinned configurations, including four that also use `power_prob3`, matched exactly. The
-  golden test therefore pins `maker_slow` per operating system and requires the libm-free
-  `maker_conservative_queue` (risk-adverse queue model) to be identical everywhere. The PRNG uses
-  only integer and IEEE `+ − × ÷` operations (`crates/bb-core/src/rng.rs`).
+  golden test therefore pins per platform class and requires the libm-free entries (risk-adverse
+  queue model) to be identical everywhere. The PRNG uses only integer and IEEE `+ − × ÷`
+  operations (`crates/bb-core/src/rng.rs`).
 - **Build profile.** Recorded in the manifest. The golden test passes unchanged in both the debug
   and the release profile on Windows (2026-11-14), so the pinned configurations are
   profile-independent there. The one known profile-dependent engine behaviour (integer overflow in
   the partial-fill market-order sweep) is unreachable because the harness blocks market orders
   ([EXECUTION_MODEL.md](EXECUTION_MODEL.md#5-market-orders)).
-- **The revision is only as good as the golden coverage.** A change that alters results only on
-  paths the golden runs do not exercise (Avellaneda-Stoikov, jittered latency, a feed offset, a
-  drawdown halt) would not fail it. The determinism, invariants and property suites still run, but
-  they check consistency, not equality with earlier results.
 - **Dataset bytes.** Re-ingesting the same vendor files with a different BlackBox version can
   produce different `events.npz` bytes, and therefore a different experiment. The dataset manifest
   records each input file's SHA-256, so it is always possible to tell whether the inputs were the

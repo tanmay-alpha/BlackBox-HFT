@@ -139,6 +139,28 @@ pub(crate) fn is_valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
+/// Refuses events whose timestamps relative to `origin_ns` would leave `±(2^53 − 1)` ns (about
+/// 104 days): every serialized timestamp is relative to the origin, and beyond that span a JSON
+/// client reading numbers as doubles (every browser) would round them.
+pub(crate) fn check_span(events: &[Event], origin_ns: i64) -> Result<(), DataError> {
+    let max_span = i128::from(bb_core::time::MAX_SPAN_NS);
+    let origin = i128::from(origin_ns);
+    let outside = events.iter().find(|e| {
+        [e.exch_ts, e.local_ts]
+            .iter()
+            .any(|&ts| (i128::from(ts) - origin).abs() > max_span)
+    });
+    match outside {
+        None => Ok(()),
+        Some(e) => Err(DataError::Invalid(format!(
+            "the dataset spans too long: a row at exchange time {} / local time {} is more than \
+             2^53 - 1 ns (about 104 days) from the origin {origin_ns}, so its relative timestamps \
+             would not be exact in JSON; split it into shorter datasets",
+            e.exch_ts, e.local_ts
+        ))),
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod testutil {
     use std::path::PathBuf;

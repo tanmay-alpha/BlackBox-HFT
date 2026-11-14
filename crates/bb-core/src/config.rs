@@ -362,6 +362,16 @@ impl RunConfig {
         if self.record.sample_every_ticks == 0 {
             e.push("record.sample_every_ticks must be at least 1".into());
         }
+        // JSON clients that read numbers as IEEE-754 doubles (every browser) silently round
+        // larger integers, so a displayed seed would not reproduce the run.
+        if self.seed > crate::time::MAX_SAFE_INTEGER as u64 {
+            e.push(format!(
+                "seed must be at most {} (2^53 - 1) so that JSON clients reading numbers as \
+                 doubles keep it exact; got {}",
+                crate::time::MAX_SAFE_INTEGER,
+                self.seed
+            ));
+        }
         // A strategy whose order size can never pass its own position limit or the order-size
         // rule would produce a run with no orders at all; that is a configuration error.
         let sizes = match &self.strategy.kind {

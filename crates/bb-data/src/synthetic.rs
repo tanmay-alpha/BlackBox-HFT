@@ -72,7 +72,9 @@ pub struct SyntheticConfig {
     pub id: String,
     pub title: String,
     pub seed: u64,
-    /// Exchange timestamp of the initial snapshot, absolute epoch nanoseconds.
+    /// Exchange timestamp of the initial snapshot, absolute epoch nanoseconds. Serialized as a
+    /// decimal string (it exceeds 2^53); a JSON number is accepted on input.
+    #[serde(with = "bb_core::time::int_string")]
     pub origin_ns: i64,
     /// Exchange-clock length of the generated session.
     pub duration_ns: i64,
@@ -136,6 +138,23 @@ fn validate(cfg: &SyntheticConfig) -> Result<(), DataError> {
     }
     if cfg.duration_ns < 1 {
         problems.push("duration_ns must be at least 1".to_string());
+    }
+    // Every serialized timestamp is relative to the origin and must stay exact in JSON.
+    let span = i128::from(cfg.duration_ns)
+        + i128::from(cfg.feed_latency_ns.max(0))
+        + i128::from(cfg.feed_jitter_ns.max(0));
+    if span > i128::from(bb_core::time::MAX_SPAN_NS) {
+        problems.push(
+            "duration_ns + feed_latency_ns + feed_jitter_ns must stay below 2^53 ns (about 104 \
+             days) so that every relative timestamp is exact in JSON"
+                .to_string(),
+        );
+    }
+    if cfg.seed > bb_core::time::MAX_SAFE_INTEGER as u64 {
+        problems.push(format!(
+            "seed must be at most {} (2^53 - 1) so that JSON clients keep it exact",
+            bb_core::time::MAX_SAFE_INTEGER
+        ));
     }
     if !(1..=3_600_000_000_000).contains(&cfg.mean_event_gap_ns) {
         problems.push("mean_event_gap_ns must be between 1 ns and 1 hour".to_string());
@@ -618,6 +637,7 @@ pub fn generate(cfg: &SyntheticConfig) -> Result<BuiltDataset, DataError> {
     })?;
     let config_bytes = generator_json.to_string().into_bytes();
     let origin_ns = analysis.first_exch_ts;
+    crate::check_span(&normalized.events, origin_ns)?;
 
     let manifest = DatasetManifest {
         contract_version: CONTRACT_VERSION,
@@ -910,5 +930,117 @@ mod tests {
         let ds = generate(&cfg).unwrap();
         assert_eq!(ds.manifest.timestamps.local_ts_shift_ns, 1);
         assert!(ds.events.iter().all(|e| e.local_ts > e.exch_ts));
+    }
+
+    #[test]
+    fn spans_reaching_2_53_ns_and_unsafe_seeds_are_refused() {
+        let too_long = SyntheticConfig {
+            duration_ns: 1 << 53,
+            mean_event_gap_ns: 3_600_000_000_000,
+            ..SyntheticConfig::default()
+        };
+        let Err(DataError::Invalid(message)) = generate(&too_long) else {
+            panic!("a 2^53 ns span must be refused");
+        };
+        assert!(message.contains("2^53"), "{message}");
+        // The feed latency counts: local timestamps extend past the exchange span.
+        let with_latency = SyntheticConfig {
+            duration_ns: (1 << 53) - 1_000,
+            feed_latency_ns: 1_000,
+            ..too_long.clone()
+        };
+        assert!(validate(&with_latency).is_err());
+        assert!(
+            validate(&SyntheticConfig {
+                feed_latency_ns: 0,
+                feed_jitter_ns: 0,
+                ..with_latency
+            })
+            .is_ok()
+        );
+
+        let unsafe_seed = SyntheticConfig {
+            seed: 1 << 53,
+            ..short(0)
+        };
+        let Err(DataError::Invalid(message)) = generate(&unsafe_seed) else {
+            panic!("a seed above 2^53 - 1 must be refused");
+        };
+        assert!(message.contains("seed"), "{message}");
+        assert!(
+            validate(&SyntheticConfig {
+                seed: (1 << 53) - 1,
+                ..short(0)
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn rows_outside_the_json_safe_span_are_refused() {
+        let origin = 1_700_000_000_000_000_000;
+        let ok = [make_event(0, origin, origin + 5, 1.0, 1.0)];
+        assert!(crate::check_span(&ok, origin).is_ok());
+        let far = origin + (1 << 53);
+        let late = [make_event(0, origin, far, 1.0, 1.0)];
+        assert!(matches!(
+            crate::check_span(&late, origin),
+            Err(DataError::Invalid(_))
+        ));
+    }
+
+    /// Audit AT-9: no number in the stored manifest exceeds 2^53 - 1, so every JSON client reads
+    /// it exactly. Absolute nanoseconds are decimal strings.
+    #[test]
+    fn stored_manifest_has_no_json_number_beyond_2_53() {
+        fn unsafe_numbers(v: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Number(n) => {
+                    let exact = n
+                        .as_i64()
+                        .map(|i| i.unsigned_abs() <= bb_core::time::MAX_SAFE_INTEGER as u64)
+                        .or_else(|| n.as_u64().map(|_| false));
+                    let ok = match exact {
+                        Some(ok) => ok,
+                        None => n
+                            .as_f64()
+                            .is_some_and(|f| f.abs() <= bb_core::time::MAX_SAFE_INTEGER as f64),
+                    };
+                    if !ok {
+                        out.push(format!("{path} = {n}"));
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (i, item) in items.iter().enumerate() {
+                        unsafe_numbers(item, &format!("{path}[{i}]"), out);
+                    }
+                }
+                serde_json::Value::Object(map) => {
+                    for (k, item) in map {
+                        unsafe_numbers(item, &format!("{path}.{k}"), out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let tmp = crate::testutil::TempDir::new("manifest-precision");
+        let saved = crate::store::save(tmp.path(), &generate(&short(7)).unwrap()).unwrap();
+        let raw = std::fs::read(tmp.path().join(&saved.id).join("dataset.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let mut found = Vec::new();
+        unsafe_numbers(&json, "$", &mut found);
+        assert!(found.is_empty(), "unsafe JSON numbers: {found:?}");
+        assert_eq!(
+            json["generator"]["origin_ns"],
+            serde_json::json!("1700000000000000000")
+        );
+        assert_eq!(json["origin_ns"], serde_json::json!("1700000000000000000"));
+
+        // Manifests written before origin_ns became a string still read back.
+        let mut legacy = json["generator"].clone();
+        legacy["origin_ns"] = serde_json::json!(1_700_000_000_000_000_000i64);
+        let cfg: SyntheticConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(cfg, short(7));
     }
 }

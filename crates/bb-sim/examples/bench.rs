@@ -31,6 +31,9 @@
 // Compile the production reader here too, so the micro-benchmark cannot drift from the tap.
 #[path = "../src/queue_probe.rs"]
 mod queue_probe;
+// The raw-engine baseline is shared with `tests/raw_engine_parity.rs`, which checks it in CI.
+#[path = "../tests/support/raw_engine.rs"]
+mod raw_engine;
 
 use std::{
     collections::BTreeSet,
@@ -54,20 +57,13 @@ use bb_core::{
 use bb_data::synthetic::{SyntheticConfig, generate};
 use bb_sim::{Event, SimInput, SimOutput, simulate};
 use hftbacktest::{
-    backtest::{
-        Backtest, ExchangeKind, L2AssetBuilder,
-        assettype::LinearAsset,
-        data::{Data, DataSource},
-        models::{
-            CommonFees, ConstantLatency, PowerProbQueueFunc3, ProbQueueModel, QueueModel, QueuePos,
-            RiskAdverseQueueModel, TradingValueFeeModel,
-        },
+    backtest::models::{
+        PowerProbQueueFunc3, ProbQueueModel, QueueModel, QueuePos, RiskAdverseQueueModel,
     },
-    depth::{HashMapMarketDepth, L2MarketDepth},
-    types::{Bot, ElapseResult, LOCAL_EVENT, OrdType, Order, Side as HSide, TimeInForce},
+    depth::L2MarketDepth,
+    types::{Bot, ElapseResult, OrdType, Order, Side as HSide, TimeInForce},
 };
-
-type Depth = HashMapMarketDepth;
+use raw_engine::{Action, Depth, RawSetup, actions_of, data_end, raw_engine_with};
 
 const MS: i64 = 1_000_000;
 /// Order latency each way, as in the bb-app presets.
@@ -262,34 +258,20 @@ fn span_s(events: &[Event]) -> f64 {
 // Workloads
 // ------------------------------------------------------------------------------------------------
 
-/// The stock engine, assembled exactly as in `tests/engine_defects.rs` (no BlackBox wrapper).
-fn raw_engine_with<QM>(ds: &Dataset, queue_model: QM) -> Backtest<Depth>
-where
-    QM: QueueModel<Depth> + 'static,
-{
-    let inst = ds.instrument;
-    let asset = L2AssetBuilder::new()
-        .data(vec![DataSource::Data(Data::from_data(&ds.events))])
-        .latency_model(ConstantLatency::new(LATENCY_NS, LATENCY_NS))
-        .asset_type(LinearAsset::new(inst.contract_size))
-        .fee_model(TradingValueFeeModel::new(CommonFees::new(
-            MAKER_FEE, TAKER_FEE,
-        )))
-        .exchange(ExchangeKind::NoPartialFillExchange)
-        .queue_model(queue_model)
-        .depth(move || Depth::new(inst.tick_size, inst.lot_size))
-        .build()
-        .expect("asset builds");
-    Backtest::builder()
-        .add_asset(asset)
-        .build()
-        .expect("backtest builds")
+fn setup(ds: &Dataset) -> RawSetup<'_> {
+    RawSetup {
+        events: &ds.events,
+        instrument: ds.instrument,
+        latency_ns: LATENCY_NS,
+        maker_fee: MAKER_FEE,
+        taker_fee: TAKER_FEE,
+    }
 }
 
 /// Elapses the raw engine (`RiskAdverseQueueModel`) to the end of data with no orders; returns
 /// the number of `elapse` calls.
 fn raw_replay(ds: &Dataset, interval_ns: i64) -> u64 {
-    let mut hbt = raw_engine_with(ds, RiskAdverseQueueModel::<Depth>::new());
+    let mut hbt = raw_engine_with(&setup(ds), RiskAdverseQueueModel::<Depth>::new());
     let mut steps = 0u64;
     loop {
         steps += 1;
@@ -297,143 +279,6 @@ fn raw_replay(ds: &Dataset, interval_ns: i64) -> u64 {
             return steps;
         }
     }
-}
-
-/// One request the adapter actually issued, keyed by the strategy tick it was issued at.
-#[derive(Clone, Copy)]
-enum Action {
-    Place {
-        tick: u64,
-        id: u64,
-        side: bb_core::Side,
-        price: f64,
-        qty: f64,
-        tif: TimeInForce,
-        ord_type: OrdType,
-    },
-    Cancel {
-        tick: u64,
-        id: u64,
-    },
-}
-
-impl Action {
-    fn tick(&self) -> u64 {
-        match self {
-            Action::Place { tick, .. } | Action::Cancel { tick, .. } => *tick,
-        }
-    }
-}
-
-/// The adapter's request stream, read back from its tape: every order intent that passed the
-/// risk checks and every cancel intent, in tape (= issue) order.
-fn actions_of(out: &SimOutput, inst: InstrumentMeta) -> Vec<Action> {
-    let mut actions = Vec::new();
-    for (i, e) in out.tape.iter().enumerate() {
-        let id = e.order_id.unwrap_or(0);
-        match &e.body {
-            FlightBody::OrderIntent {
-                tick_no,
-                side,
-                price_tick,
-                qty,
-                tif,
-                ord_type,
-                ..
-            } => {
-                let blocked = matches!(
-                    out.tape.get(i + 1).map(|n| &n.body),
-                    Some(FlightBody::RiskBlocked { .. })
-                );
-                if blocked {
-                    continue;
-                }
-                actions.push(Action::Place {
-                    tick: *tick_no,
-                    id,
-                    side: *side,
-                    price: inst.price(*price_tick),
-                    qty: *qty,
-                    tif: match tif {
-                        bb_core::Tif::Gtc => TimeInForce::GTC,
-                        bb_core::Tif::Gtx => TimeInForce::GTX,
-                        bb_core::Tif::Ioc => TimeInForce::IOC,
-                        bb_core::Tif::Fok => TimeInForce::FOK,
-                    },
-                    ord_type: match ord_type {
-                        bb_core::OrdType::Limit => OrdType::Limit,
-                        bb_core::OrdType::Market => OrdType::Market,
-                    },
-                });
-            }
-            FlightBody::CancelIntent { tick_no, .. } => {
-                actions.push(Action::Cancel { tick: *tick_no, id })
-            }
-            _ => {}
-        }
-    }
-    // Tape order is already issue order; a stable sort by tick only guards that assumption.
-    actions.sort_by_key(Action::tick);
-    actions
-}
-
-/// Absolute local time after which the adapter stops evaluating ticks (its `data_end`).
-fn data_end(ds: &Dataset) -> i64 {
-    ds.events
-        .iter()
-        .filter(|e| e.ev & LOCAL_EVENT != 0)
-        .map(|e| e.local_ts)
-        .max()
-        .expect("dataset has local events")
-}
-
-/// The stock engine (`NoPartialFillExchange`, `ProbQueueModel<PowerProbQueueFunc3(3)>`) driven
-/// open-loop by a minimal loop that issues exactly the adapter's recorded request stream at the
-/// same ticks, calling `clear_inactive_orders` each tick as any hftbacktest strategy loop does.
-/// This is the engine's own cost for the same order flow, with no views, recording or risk
-/// checks. Returns (ticks, engine-reported trade count).
-fn raw_order_replay(ds: &Dataset, interval_ns: i64, end: i64, actions: &[Action]) -> (u64, i64) {
-    let mut hbt = raw_engine_with(
-        ds,
-        ProbQueueModel::<_, Depth>::new(PowerProbQueueFunc3::new(3.0)),
-    );
-    let mut tick = 0u64;
-    let mut next = 0usize;
-    loop {
-        if hbt.elapse(interval_ns).expect("raw elapse") == ElapseResult::EndOfData {
-            break;
-        }
-        if hbt.current_timestamp() > end {
-            break;
-        }
-        hbt.clear_inactive_orders(Some(0));
-        while let Some(a) = actions.get(next).filter(|a| a.tick() == tick) {
-            // Errors (e.g. cancelling an order that just filled) are what the adapter records as
-            // refusals; the request stream is replayed regardless.
-            let _ = match *a {
-                Action::Place {
-                    id,
-                    side,
-                    price,
-                    qty,
-                    tif,
-                    ord_type,
-                    ..
-                } => match side {
-                    bb_core::Side::Buy => {
-                        hbt.submit_buy_order(0, id, price, qty, tif, ord_type, false)
-                    }
-                    bb_core::Side::Sell => {
-                        hbt.submit_sell_order(0, id, price, qty, tif, ord_type, false)
-                    }
-                },
-                Action::Cancel { id, .. } => hbt.cancel(0, id, false),
-            };
-            next += 1;
-        }
-        tick += 1;
-    }
-    (tick, hbt.state_values(0).num_trades)
 }
 
 /// Never places or cancels anything.
@@ -733,16 +578,16 @@ fn bench_dataset(ds: &Dataset, args: &Args, probe_ns: f64, sweep: bool) {
         ("TouchMaker", touch_maker(ds)),
         ("AvellanedaStoikov", avellaneda_stoikov(ds)),
     ];
-    let end = data_end(ds);
-    // `simulate` scans every row once for the last local timestamp before it starts.
+    let end = data_end(&ds.events);
+    // `simulate` scans every row once for the first and last local timestamps before it starts.
     let prescan = measure(
         args.reps,
-        || data_end(black_box(ds)),
+        || data_end(black_box(&ds.events)),
         |_, e| assert_eq!(*e, end),
     );
     println!(
-        "Adapter pre-scan for the last local timestamp (same scan as `simulate`): median {:.2} ms \
-         ({:.2} ns/row)\n",
+        "Adapter pre-scan for the last local timestamp (`simulate` does one such scan, also \
+         taking the first): median {:.2} ms ({:.2} ns/row)\n",
         ms(prescan.median),
         prescan.median.as_nanos() as f64 / n
     );
@@ -803,7 +648,7 @@ fn bench_dataset(ds: &Dataset, args: &Args, probe_ns: f64, sweep: bool) {
                 let mut raw = (0, 0);
                 let raw_stats = measure(
                     args.reps,
-                    || raw_order_replay(ds, interval_ns, end, &actions),
+                    || raw_engine::raw_order_replay(&setup(ds), 3.0, interval_ns, end, &actions),
                     |_, r| raw = *r,
                 );
                 same_flow.push(SameFlow {
