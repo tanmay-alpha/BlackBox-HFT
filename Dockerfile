@@ -4,14 +4,15 @@
 #           console is served by Vercel. Built and pushed by .github/workflows/publish.yml:
 #             docker build --target hosted -t blackbox-hft:hosted .
 #
-#   local   (default, last stage) The complete simulator, API and web console in one image, for
-#           your own machine. CI's `docker` job builds and smoke-tests this target:
-#             docker build -t blackbox-hft .
-#             docker run --rm -p 127.0.0.1:8787:8787 -v blackbox-data:/data blackbox-hft
-#           The default command generates the synthetic demo dataset on first start (if the data
-#           volume has none yet) and serves the console on port 8787. To ingest Tardis sample
-#           files you downloaded yourself, mount them read-only and run the CLI, e.g.
-#             docker run --rm -v blackbox-data:/data -v "$PWD/data/raw:/raw:ro" blackbox-hft \
+#   local   (default, last stage) The complete simulator, `/api/v1` with its worker and the web
+#           console in one image, for your own machine, next to a Postgres. Run it with
+#           docker-compose.yml (README "Quick start"), which CI's `docker` job also smoke-tests:
+#             docker compose up --build
+#           The default command (scripts/docker/local-start.sh) migrates, seeds the demo workspace
+#           (runs, curated comparisons, saved reports), mints and prints one research API key on
+#           the first start, and serves the console on port 8787. To ingest Tardis sample files
+#           you downloaded yourself, mount them read-only and run the CLI, e.g.
+#             docker compose run --rm -v "$PWD/data/raw:/raw:ro" app \
 #               blackbox --data-dir /data ingest-tardis --trades /raw/.../trades.csv.gz --book ... --id ...
 #
 # Base images are pinned to the multi-arch index digest of an exact tag. The digests were read on
@@ -97,12 +98,14 @@ CMD ["blackbox", "--data-dir", "/var/lib/blackbox", "serve"]
 # ---------------------------------------------------------------------------------------------
 # Local all-in-one image (default target). Inside the container the server must listen on all
 # interfaces so the published port reaches it. Publish it to the host's loopback only
-# (-p 127.0.0.1:8787:8787) unless you intend to share it.
+# (127.0.0.1:8787:8787, as docker-compose.yml does) unless you intend to share it. Needs
+# DATABASE_URL (a Postgres; docker-compose.yml provides one).
 FROM runtime AS local
 COPY --from=web-build /web/dist /app/web
+COPY scripts/docker/local-start.sh /usr/local/bin/blackbox-local-start
 RUN mkdir -p /data && chown 10001:10001 /data
 WORKDIR /data
 USER 10001:10001
 VOLUME ["/data"]
 EXPOSE 8787
-CMD ["blackbox", "--data-dir", "/data", "demo", "--addr", "0.0.0.0:8787", "--web-dir", "/app/web"]
+CMD ["/bin/sh", "/usr/local/bin/blackbox-local-start"]

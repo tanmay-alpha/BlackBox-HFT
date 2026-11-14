@@ -4,7 +4,7 @@ Two shapes, same code:
 
 | | Hosted research system | Local |
 |---|---|---|
-| What runs | Vercel SPA → Render web service (`blackbox serve`: `/api/v1` + in-process worker) → Neon Postgres + Vercel Blob | `blackbox serve` against a local Postgres and a filesystem artefact store (or the legacy all-in-one `blackbox demo`) |
+| What runs | Vercel SPA → Render web service (`blackbox serve`: `/api/v1` + in-process worker) → Neon Postgres + Vercel Blob | `blackbox serve` (console + `/api/v1` + worker) against a local Postgres and a filesystem artefact store; `docker compose up` runs both |
 | URLs | https://blackbox-hft.vercel.app (console), https://blackbox-hft-api.onrender.com (API) | http://127.0.0.1:8787 |
 | Access | anonymous visitors: read-only demo workspace; research: `Authorization: Bearer bbk_…` keys | same model; keys minted with `blackbox keys mint` |
 | Data | synthetic only (vendor terms forbid hosting Tardis data, [OPEN_SOURCE_RESEARCH.md](OPEN_SOURCE_RESEARCH.md)) | synthetic, and vendor files you downloaded yourself |
@@ -17,21 +17,32 @@ are in [engineering/PROJECT_STATE.md](engineering/PROJECT_STATE.md).
 
 ## Local
 
-Build requirements are in [BUILDING.md](BUILDING.md).
+Quickest: `docker compose up --build` ([docker-compose.yml](../docker-compose.yml)). It starts `postgres:18` and the
+Dockerfile's `local` image, whose start command ([scripts/docker/local-start.sh](../scripts/docker/local-start.sh))
+runs `migrate`, `demo seed --wait` (synthetic dataset, demo runs computed in that process, curated comparisons and
+saved reports; idempotent), mints one research key for workspace `lab` on the first start only (printed once in
+`docker compose logs app`) and then `serve` with the built console on http://127.0.0.1:8787 (host loopback only).
+`docker compose down -v` deletes the data. CI's `docker` job runs exactly this file and checks the console, the
+five curated comparisons, the three saved reports and the printed key.
+
+Without Docker (build requirements in [BUILDING.md](BUILDING.md)):
 
 ```
 cargo build --release
 cd web && npm ci && npm run build && cd ..
 export DATABASE_URL=postgres://user:password@127.0.0.1:5432/blackbox
 target/release/blackbox --data-dir data migrate
-target/release/blackbox --data-dir data demo seed          # synthetic dataset + demo experiments
+target/release/blackbox --data-dir data demo seed --wait    # dataset, demo runs, curated comparisons + reports
 target/release/blackbox --data-dir data keys mint --workspace lab --scopes read,run --label me
 target/release/blackbox --data-dir data serve --web-dir web/dist
 ```
 
-`blackbox demo` still starts the deprecated file-based server without Postgres for a quick look.
-Docker: `docker build --target local -t blackbox-hft .` builds the all-in-one image; the `hosted`
-target is the API image that CI publishes to `ghcr.io/tanmay-alpha/blackbox-hft`.
+`demo seed` without `--wait` only queues the demo runs; the worker of `serve` computes them, and a second
+`demo seed` then stores the curated comparisons and reports (it prints what is still pending).
+
+`blackbox demo` still starts the deprecated file-based `/api` server without Postgres. The bundled console talks to
+`/api/v1` and does not work with it; the command says so when it starts. The `hosted` Docker target is the API image
+that CI publishes to `ghcr.io/tanmay-alpha/blackbox-hft`.
 
 ## Free-tier limits that can affect the hosted demo
 

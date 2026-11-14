@@ -115,19 +115,27 @@ jobs:
           ignore: RUSTSEC-2026-0367,RUSTSEC-2026-0368,RUSTSEC-2026-0369,RUSTSEC-2026-0429,RUSTSEC-2025-0141,RUSTSEC-2026-0459
 
   docker:
-    # The image must build: it is the documented way to run the full simulator.
+    # The documented local quick start must work: docker-compose.yml builds the `local` image and
+    # runs it next to Postgres (migrate, demo seed --wait, key, serve).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate compose file
+        run: docker compose config --quiet
       - name: Build image
-        run: docker build -t blackbox-hft:ci .
+        run: docker compose build app
       - name: Serve and answer
         run: |
           set -euo pipefail
-          docker run -d --name bb -p 127.0.0.1:8787:8787 blackbox-hft:ci
-          for i in $(seq 60); do curl -sf http://127.0.0.1:8787/api/health && break; sleep 2; done
-          curl -sf http://127.0.0.1:8787/api/datasets | grep -q synthetic-demo
-          docker logs bb | tail -5
+          docker compose up -d
+          trap 'docker compose logs app | tail -40' EXIT
+          for i in $(seq 300); do curl -sf http://127.0.0.1:8787/api/v1/status > /dev/null && break; sleep 2; done
+          curl -sf http://127.0.0.1:8787/api/v1/status | jq -e '.worker.state'
+          curl -sf http://127.0.0.1:8787/api/v1/datasets | grep synthetic-demo > /dev/null
+          test "$(curl -sf 'http://127.0.0.1:8787/api/v1/comparisons?limit=20' | jq '.items | length')" = 5
+          test "$(curl -sf 'http://127.0.0.1:8787/api/v1/reports?limit=20' | jq '.items | length')" = 3
+          curl -sf http://127.0.0.1:8787/ | grep -i '<!doctype html' > /dev/null
+          docker compose logs app | grep 'bbk_' > /dev/null
 
   e2e:
     runs-on: ubuntu-24.04

@@ -1,0 +1,45 @@
+# Local quick start (README "Quick start"): Postgres 18 and the all-in-one `local` image.
+#
+#   docker compose up --build
+#
+# The app container migrates, seeds the demo workspace (synthetic dataset, demo runs, curated
+# comparisons and saved reports), prints one research API key on its first start (look for
+# `bbk_` in `docker compose logs app`) and serves the console and /api/v1 on
+# http://127.0.0.1:8787 (host loopback only). Data lives in the two named volumes; remove them
+# with `docker compose down -v`. The database password is a local-only default.
+name: blackbox-hft
+
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: blackbox
+      POSTGRES_PASSWORD: blackbox-local
+      POSTGRES_DB: blackbox
+    volumes:
+      # postgres:18 keeps its data under /var/lib/postgresql/18/docker.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blackbox -d blackbox"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  app:
+    build:
+      context: .
+      target: local
+    image: blackbox-hft:local
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://blackbox:blackbox-local@db:5432/blackbox
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - blackbox-data:/data
+
+volumes:
+  pgdata:
+  blackbox-data:

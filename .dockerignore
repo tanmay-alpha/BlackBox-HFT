@@ -7,6 +7,7 @@
 !crates/
 !docs/LIMITATIONS.md
 !web/
+!scripts/docker/
 
 # Re-excluded inside allowed directories.
 **/target

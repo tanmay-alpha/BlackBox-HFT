@@ -86,16 +86,31 @@ Details and evidence: [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md).
 
 Prerequisites and platform notes are in [docs/BUILDING.md](docs/BUILDING.md).
 
+With Docker (Postgres 18 and the all-in-one image, [docker-compose.yml](docker-compose.yml)):
+
+```
+docker compose up --build
+```
+
+The first start migrates the database, computes the demo runs, stores the curated demo comparisons and saved
+reports, prints one research API key (`docker compose logs app | grep bbk_`; it is shown only once) and serves the
+console and `/api/v1` on http://127.0.0.1:8787. Paste the key into the console to run your own experiments.
+
+Without Docker, against a Postgres you run yourself
+([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#local) has the details):
+
 ```
 cargo build --release
 cd web && npm ci && npm run build && cd ..
-
-# Quickest look, no database: generates a synthetic dataset and serves the legacy file-based UI/API.
-target/release/blackbox demo
+export DATABASE_URL=postgres://user:password@127.0.0.1:5432/blackbox
+target/release/blackbox --data-dir data migrate
+target/release/blackbox --data-dir data demo seed --wait
+target/release/blackbox --data-dir data keys mint --workspace lab --scopes read,run --label me
+target/release/blackbox --data-dir data serve --web-dir web/dist
 ```
 
-The full research stack (Postgres job queue, `/api/v1`, API keys, worker) is described in
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#local): `migrate`, `demo seed`, `keys mint`, `serve`.
+`blackbox demo` (no database) still starts the deprecated file-based `/api` server; the bundled console does not
+work with it, because it talks to `/api/v1` (`blackbox serve`).
 
 ### Command line
 
@@ -103,7 +118,8 @@ The full research stack (Postgres job queue, `/api/v1`, API keys, worker) is des
 blackbox serve | worker             API with in-process worker, or a worker only
 blackbox migrate                    apply database migrations
 blackbox keys mint|revoke|list      API keys (only their hash is stored)
-blackbox demo seed                  register the synthetic dataset and queue the demo experiments
+blackbox demo seed [--wait]         register the synthetic dataset, queue (or with --wait compute) the demo
+                                    experiments, then store the curated comparisons and saved reports
 blackbox openapi --out spec.json    write the OpenAPI document
 blackbox synth                      generate the deterministic synthetic dataset
 blackbox ingest-tardis ...          convert Tardis.dev CSV files into a dataset (local use only)
