@@ -5,12 +5,11 @@ import { Link } from "react-router-dom";
 
 import type { RunDetail } from "../../api/model";
 import { baseEntryNs, baseResponseNs, type RunConfig } from "../../api/types";
-import { fractionToBps, latencyLabel } from "../../components/describe";
+import { exchangeModelLabel, fractionToBps, latencyLabel, queueModelLabel } from "../../components/describe";
 import { fmtDurationExact } from "../../components/fmt";
 import { Term } from "../../components/Tooltip";
 import { BasisBadge, HashText } from "../../components/ui";
 import { paths } from "../../shell/paths";
-import { queueModelLabel } from "../forensics/labels";
 import { AXIS_PARAMS, QUEUE_VARIANTS, axisInfo, isPowerVariant } from "./gridModel";
 import type { AxisDraft, AxisParam, ParsedAxis } from "./gridModel";
 
@@ -34,7 +33,7 @@ export function BaseSummary({ run }: { run: RunDetail }) {
         {run.dataset.id} v{run.dataset.version}
       </dd>
       <dt>Exchange model</dt>
-      <dd>{config.execution.exchange_model}</dd>
+      <dd>{exchangeModelLabel(config.execution.exchange_model)}</dd>
       <dt>
         <Term term="latency">Order latency</Term>
       </dt>

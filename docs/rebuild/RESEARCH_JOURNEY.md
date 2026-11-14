@@ -19,10 +19,10 @@ Walked in Chromium against the Vite dev server (http://localhost:5173) and the l
 
 Re-walk after fixes: signed in, Guided mode with Touch maker baseline + entry 5 ms, maker −0.5 bp, taker 3.5 bp → Advanced showed the same values → submitted → run `2a998e66a4bdea7d` → comparison with `253bbc23b342f373` created via the picker → reload kept RESEARCH → sign out showed 404 instead of the run.
 
-## Remaining gaps (not fixed)
+## Fixed (follow-up)
 
-- Jobs & Sweeps: the "SUBMITTED … queued, position #1" banner stays after the job completes; queue header can read "worker idle" while a job runs (status poll lag); completed progress shows "tape events 0".
-- Run context and compare cards print model ids (`no_partial_fill`, `power_prob3(n=3)`, `touch_maker`) instead of plain names; sweep caveats contain server text `net_pnl`.
-- The 404 after sign out says "run not found" without explaining that the run is private to a workspace.
+- Jobs & Sweeps: the "SUBMITTED" banner is replaced by "Job … is completed/failed/…" once the job reaches a terminal state; a completed job no longer shows "tape events 0"; the queue caption uses the plain worker wording ("Idle — waiting for jobs (in-process worker)", "Busy — N of M job slots in use", "Not responding …").
+- Run, run list, compare, sweep, grid and forensics pages show plain model names ("No partial fills", "Power probability 3 (n = 3)", "Touch maker") from the single describer in `web/src/components/describe.ts` (the duplicate in `features/forensics/labels.ts` is removed). Sweep caveat text from the server is unchanged.
+- A 404 on a run without research access says the run may be private to a workspace and offers "Enter API key".
 
 Checks: `cd web && npx tsc --noEmit -p tsconfig.app.json` (pass), `npx vitest run` (10 files, 110 tests pass). `web/e2e/research.spec.ts` updated for the keyed journey (Guided mode, comparison with the demo run, sign-out visibility); not run here.

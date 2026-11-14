@@ -24,11 +24,6 @@ export const SOURCE_MEANING: Record<Source, string> = {
   derived: "Computed after the run from recorded events and market data.",
 };
 
-/** Same text as `QueueModelConfig::label` in bb-core. */
-export function queueModelLabel(q: QueueModelConfig): string {
-  return "n" in q ? `${q.type}(n=${q.n})` : q.type;
-}
-
 /** What moves the estimate under each queue model, from the bb-core documentation. */
 export function queueModelMeaning(q: QueueModelConfig): string {
   switch (q.type) {

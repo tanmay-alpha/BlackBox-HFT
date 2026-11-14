@@ -176,7 +176,7 @@ export function JobDetail({ job, nowMs, onChanged }: { job: Job; nowMs: number; 
         <dt>Progress</dt>
         <dd>
           <JobProgress job={job} />
-          {job.progress?.tape_events !== null && job.progress?.tape_events !== undefined ? (
+          {job.progress?.tape_events !== null && job.progress?.tape_events !== undefined && !(job.state === 'completed' && job.progress.tape_events === 0) ? (
             <span className="note"> tape events {fmtInt(job.progress.tape_events)}</span>
           ) : null}
         </dd>

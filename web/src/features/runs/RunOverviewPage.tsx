@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
-import { api, saveDownload, saveText } from '../../api/client';
+import { api, ApiError, saveDownload, saveText } from '../../api/client';
 import { isBucketed, type DatasetVersion, type RunDetail } from '../../api/model';
 import type {
   DatasetManifest, EngineStateCheck, EquitySample, FillRecord, InstrumentMeta, Metrics, OrderOutcome, OrderRecord, Side,
@@ -23,6 +23,7 @@ import {
   TimeDigitsContext, useAsync,
 } from '../../components/ui';
 import type { AsyncResult } from '../../components/ui';
+import { useAccess } from '../../shell/access';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { outcomeTone } from '../forensics/labels';
@@ -79,6 +80,7 @@ export default function RunOverviewPage() {
 
 function RunOverview({ runId }: { runId: string }) {
   const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
+  const access = useAccess();
   const label = run.data?.label ?? '';
   return (
     <Workspace
@@ -100,7 +102,15 @@ function RunOverview({ runId }: { runId: string }) {
         </>
       }
     >
-      <LoadState result={run} label="Loading run manifest and metrics" />
+      {run.error instanceof ApiError && run.error.status === 404 && access.mode !== 'research' ? (
+        <Empty>
+          Run <span className="mono">{runId}</span> was not found. It may be private to a workspace: runs created with
+          an API key are visible only with that workspace&apos;s key.{' '}
+          <button type="button" onClick={access.openKeyDialog}>Enter API key</button>
+        </Empty>
+      ) : (
+        <LoadState result={run} label="Loading run manifest and metrics" />
+      )}
       {run.data ? <RunContents run={run.data} /> : null}
     </Workspace>
   );

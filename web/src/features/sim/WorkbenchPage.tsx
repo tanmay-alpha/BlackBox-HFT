@@ -19,7 +19,7 @@ import { paths } from '../../shell/paths';
 import { useNow, workerHealth } from '../../shell/StatusBar';
 import { Workspace } from '../../shell/Workspace';
 import { heartbeatText, JobDetail, JobProgress, JobStatePill, queueText, utc } from './JobViews';
-import { usePolledJob, usePolledJobs } from './jobs';
+import { isTerminal, usePolledJob, usePolledJobs } from './jobs';
 import './sim.css';
 
 const ALL_STATES: JobState[] = ['created', 'queued', 'running', 'cancelling', 'completed', 'failed', 'cancelled', 'expired'];
@@ -134,7 +134,11 @@ export default function WorkbenchPage() {
 
   return (
     <Workspace context={jobId ? `job ${jobId.slice(0, 12)}` : null} toolbar={toolbar} layout>
-      {submitted ? (
+      {submitted && job && job.id === jobId && isTerminal(job.state) ? (
+        <Notice tag={job.state.toUpperCase()} tone="info">
+          Job {job.id.slice(0, 12)} is {job.state}.
+        </Notice>
+      ) : submitted ? (
         <Notice tag="SUBMITTED" tone="info">
           {submitted}
         </Notice>
@@ -158,8 +162,8 @@ export default function WorkbenchPage() {
                 caption={
                   <>
                     {worker
-                      ? `${worker.text} \u00b7 queued ${fmtInt(worker.queueDepth)} \u00b7 running ${fmtInt(worker.running)}${worker.heartbeatAgeS !== null ? ` \u00b7 hb ${worker.heartbeatAgeS} s` : ''}`
-                      : 'worker status not reported yet'}
+                      ? `${worker.label} \u00b7 ${fmtInt(worker.queueDepth)} queued \u00b7 ${fmtInt(worker.running)} running`
+                      : 'Worker status not reported yet'}
                     {stale ? ' \u00b7 STALE (last refresh failed)' : ''}
                     {truncated.current ? ` \u00b7 first ${PAGE} jobs shown` : ''}
                   </>

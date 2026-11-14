@@ -16,6 +16,7 @@ import type { Sweep, SweepCell, SweepCellRun, SweepReport, SweepRunState } from 
 import type { Segment } from "../../api/v1";
 import { DataTable, type Column } from "../../components/DataTable";
 import { DASH, fmtDurationExact, fmtInt, fmtStat } from "../../components/fmt";
+import { strategyLabel } from "../../components/describe";
 import { fmtNsUtc } from "../../components/ns";
 import { SplitPane } from "../../components/SplitPane";
 import { ToolbarDivider } from "../../components/Toolbar";
@@ -193,7 +194,7 @@ function SweepView({ id }: { id: string }) {
           <>
             <dt>Base configuration</dt>
             <dd>
-              strategy <span className="mono">{sweep.spec.base.strategy.kind.type}</span> on dataset{" "}
+              strategy <span>{strategyLabel(sweep.spec.base.strategy.kind)}</span> on dataset{" "}
               <span className="mono">{sweep.spec.base.dataset_id}</span>
             </dd>
           </>

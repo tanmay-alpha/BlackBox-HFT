@@ -18,7 +18,7 @@ import type {
   PairClass,
 } from "../../api/types";
 import { ConfigValue, metricLabel } from "../../components/configValue";
-import { latencyLabel } from "../../components/describe";
+import { exchangeModelLabel, latencyLabel, queueModelLabel, strategyName } from "../../components/describe";
 import { DataTable, type Column } from "../../components/DataTable";
 import { fmtDuration, fmtInt, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
 import { fmtNsUtc } from "../../components/ns";
@@ -30,7 +30,6 @@ import {
   EM_DASH,
   fmtSignedDuration,
   outcomeKind,
-  queueModelLabel,
   words,
 } from "../forensics/labels";
 import { CLASS_LABEL, CLASS_MEANING, EligibilityNotice, PAIR_CLASSES } from "./classes";
@@ -519,7 +518,7 @@ function ScenarioCard({ tag, label, run }: { tag: "A" | "B"; label: string; run:
         <div>
           <dt>Strategy</dt>
           <dd className="mono">
-            {run.strategy_kind}, every {fmtDuration(run.interval_ns)}
+            {strategyName(run.strategy_kind)}, every {fmtDuration(run.interval_ns)}
           </dd>
         </div>
         <div>
@@ -531,7 +530,7 @@ function ScenarioCard({ tag, label, run }: { tag: "A" | "B"; label: string; run:
         <div>
           <dt>Execution assumptions</dt>
           <dd className="mono">
-            {execution.exchange_model}, {queueModelLabel(execution.queue_model)},{" "}
+            {exchangeModelLabel(execution.exchange_model)}, {queueModelLabel(execution.queue_model)},{" "}
             {latency.type === "constant" || latency.type === "jitter"
               ? `entry ${fmtDuration(latency.entry_ns)} / response ${fmtDuration(latency.response_ns)}${
                   latency.type === "jitter" ? ` / jitter ${fmtDuration(latency.jitter_ns)}` : ""

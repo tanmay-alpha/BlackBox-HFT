@@ -9,7 +9,7 @@ import type {
   OrderDetail,
   Question,
 } from "../../api/types";
-import { latencyLabel } from "../../components/describe";
+import { exchangeModelLabel, latencyLabel, queueModelLabel } from "../../components/describe";
 import { SplitPane } from "../../components/SplitPane";
 import { Tabs } from "../../components/Tabs";
 import { Term } from "../../components/Tooltip";
@@ -36,7 +36,6 @@ import {
   OUTCOME_MEANING,
   fmtSince,
   outcomeTone,
-  queueModelLabel,
   queueModelMeaning,
   words,
 } from "./labels";
@@ -182,7 +181,7 @@ function ExecutionAssumptions({ execution }: { execution: ExecutionConfig }) {
   return (
     <dl className="kv">
       <dt>Exchange model</dt>
-      <dd className="mono">{execution.exchange_model}</dd>
+      <dd className="mono">{exchangeModelLabel(execution.exchange_model)}</dd>
       <dt>Queue model</dt>
       <dd className="mono">{queueModelLabel(execution.queue_model)}</dd>
       <dt>

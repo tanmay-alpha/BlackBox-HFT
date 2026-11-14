@@ -18,7 +18,7 @@ import { bpsToFraction, fractionToBps } from "../../components/describe";
 import { fmtDurationExact, fmtInt, fmtMoney, fmtPnl } from "../../components/fmt";
 import type { GlossaryKey } from "../../components/glossary";
 import { NsError, nsFromDecimal, nsToSafeNumber } from "../../components/ns";
-import { queueModelLabel } from "../forensics/labels";
+import { queueModelLabel } from "../../components/describe";
 
 export type AxisParam = GridAxis["type"];
 export type QueueVariant = QueueModelConfig["type"];

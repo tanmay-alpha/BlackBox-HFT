@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import type { Run } from '../../api/model';
 import { DataTable, type Column } from '../../components/DataTable';
+import { strategyName } from '../../components/describe';
 import { fmtDuration, fmtInt, fmtPnl } from '../../components/fmt';
 import { fmtNsUtc } from '../../components/ns';
 import { ToolbarDivider } from '../../components/Toolbar';
@@ -34,7 +35,7 @@ function RunInspector({ run }: { run: Run }) {
         <dd className="mono wrap-anywhere">{run.run_id}</dd>
         <dt>Strategy</dt>
         <dd className="mono">
-          {run.strategy_kind} every {fmtDuration(run.interval_ns)}
+          {strategyName(run.strategy_kind)} every {fmtDuration(run.interval_ns)}
         </dd>
         <dt>Dataset</dt>
         <dd className="mono wrap-anywhere">
@@ -179,7 +180,7 @@ export default function RunsPage() {
       {
         id: 'strategy',
         header: 'Strategy',
-        cell: (r) => <span className="mono">{r.strategy_kind}</span>,
+        cell: (r) => <span>{strategyName(r.strategy_kind)}</span>,
         sortValue: (r) => r.strategy_kind,
       },
       {

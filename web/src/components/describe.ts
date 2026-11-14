@@ -82,14 +82,26 @@ export function queueModelHasExponent(
   return q.type === 'power_prob' || q.type === 'power_prob2' || q.type === 'power_prob3';
 }
 
-/** Mirrors `QueueModelConfig::label`. */
+/** Plain name of a queue model, e.g. "Power probability 3 (n = 3)". */
 export function queueModelLabel(q: QueueModelConfig): string {
-  return queueModelHasExponent(q) ? `${q.type}(n=${q.n})` : q.type;
+  const name = QUEUE_MODEL_INFO[q.type].label;
+  return queueModelHasExponent(q) ? `${name} (n = ${q.n})` : name;
 }
 
-/** Mirrors `StrategyKind::label`. */
+/** Plain name of an exchange model, e.g. "No partial fills". */
+export function exchangeModelLabel(m: ExchangeModel): string {
+  return EXCHANGE_MODEL_INFO[m].label;
+}
+
+/** Plain name of a strategy, e.g. "Touch maker". */
 export function strategyLabel(kind: StrategyKind): string {
-  return kind.type;
+  return strategyName(kind.type);
+}
+
+/** Plain name for a strategy kind id as the run list reports it; unknown ids pass through. */
+export function strategyName(type: string | null): string {
+  if (type === null) return '\u2014';
+  return (STRATEGY_INFO as Record<string, OptionInfo | undefined>)[type]?.label ?? type;
 }
 
 export const STRATEGY_INFO: Record<StrategyKind['type'], OptionInfo> = {
@@ -182,7 +194,7 @@ export function feeLabel(f: FeeConfig): string {
 export function assumptionsLabel(c: RunConfig): string {
   const e = c.execution;
   const parts = [
-    e.exchange_model,
+    exchangeModelLabel(e.exchange_model),
     queueModelLabel(e.queue_model),
     `order latency ${latencyLabel(e.order_latency)}`,
     `fees ${feeLabel(e.fees)}`,
