@@ -2,7 +2,7 @@
 //
 // The library's time axis has one-second resolution, so callers resample with `lastPerSecond`
 // and say so beneath the chart. The library's attribution logo stays enabled, as its licence
-// asks; the app footer carries the text credit.
+// asks; the run workspace shows the text credit beneath its charts.
 
 import { useEffect, useRef, useState } from 'react';
 import { ColorType, LineSeries, LineStyle, LineType, createChart } from 'lightweight-charts';
@@ -79,14 +79,14 @@ export function TimeSeriesChart({ series, formatValue, ariaLabel }: TimeSeriesCh
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const border = cssVar('--border', '#2c3238');
+    const border = cssVar('--border-subtle');
     try {
       const chart = createChart(host, {
         autoSize: true,
         layout: {
-          background: { type: ColorType.Solid, color: cssVar('--surface', '#15181b') },
-          textColor: cssVar('--muted', '#929ba5'),
-          fontFamily: cssVar('--mono', 'monospace'),
+          background: { type: ColorType.Solid, color: cssVar('--bg-1') },
+          textColor: cssVar('--fg-2'),
+          fontFamily: cssVar('--font-mono'),
           fontSize: 11,
           attributionLogo: true,
         },

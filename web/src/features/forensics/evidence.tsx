@@ -1,6 +1,5 @@
 import { Badge } from "../../components/ui";
-import { fmtClock } from "../../components/fmt";
-import { BASES, BASIS_MEANING, EM_DASH, SOURCES, SOURCE_MEANING } from "./labels";
+import { BASES, BASIS_MEANING, SOURCES, SOURCE_MEANING } from "./labels";
 import "./forensics.css";
 
 /**
@@ -34,14 +33,5 @@ export function EvidenceLegend({ sources = false }: { sources?: boolean }) {
   );
 }
 
-/** A dataset-relative timestamp as `mm:ss.mmm` with the microseconds dimmed. */
-export function ClockText({ ns }: { ns: number | null }) {
-  if (ns === null) return <span className="mono dim">{EM_DASH}</span>;
-  const text = fmtClock(ns);
-  return (
-    <span className="mono">
-      {text.slice(0, -3)}
-      <span className="dim">{text.slice(-3)}</span>
-    </span>
-  );
-}
+// The comparison workspace imports the shared clock from here; one implementation lives in ui.tsx.
+export { ClockText } from "../../components/ui";

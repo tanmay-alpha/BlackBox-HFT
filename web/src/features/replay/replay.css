@@ -1,0 +1,308 @@
+/* Order Book Lab: market heatmap, depth ladder, legend and the workspace toolbar controls. */
+
+/* ----- workspace toolbar ----------------------------------------------------------------- */
+
+.book-mode {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-control);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-1);
+}
+
+.book-mode > a,
+.book-mode > .book-mode-current,
+.book-mode > label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 100%;
+  padding: 0 var(--sp-2);
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+}
+
+.book-mode > * + * {
+  border-left: 1px solid var(--border-control);
+}
+
+.book-mode > .book-mode-current {
+  background: var(--bg-3);
+  color: var(--fg-0);
+  font-weight: 500;
+}
+
+.book-mode > a:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+  text-decoration: none;
+}
+
+.book-mode select {
+  height: 20px;
+  border: 0;
+}
+
+.book-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--fg-1);
+  font-size: var(--text-xs);
+}
+
+.book-field input[type='text'] {
+  width: 96px;
+  font-family: var(--font-mono);
+}
+
+.book-field .field-error {
+  color: var(--error);
+}
+
+.book-scrub {
+  flex: 1 1 160px;
+  min-width: 120px;
+  max-width: 360px;
+}
+
+.book-cursor {
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.book-window {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-2xs);
+}
+
+/* A workspace body with a one-line window summary and notices above its panes. */
+.book-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.book-body > .notice {
+  flex: none;
+  margin: 0;
+  border-width: 0 0 1px;
+}
+
+.book-body > .book-panes {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.book-state {
+  padding: var(--sp-3);
+}
+
+/* ----- heatmap --------------------------------------------------------------------------- */
+
+/* The canvas fills its pane; the renderer reads its CSS size on every resize. */
+.heatmap {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  min-height: 0;
+}
+
+.heatmap-toolbar {
+  flex: none;
+}
+
+.heatmap > .notice {
+  flex: none;
+  margin: 0;
+}
+
+.heatmap-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 240px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-0);
+}
+
+.heatmap-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.heatmap-canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.heatmap-tooltip {
+  position: absolute;
+  z-index: 5;
+  max-width: min(420px, 85vw);
+  padding: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-2);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-float);
+  pointer-events: none;
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.heatmap-tooltip-flip {
+  translate: -100% 0;
+}
+
+/* ----- legend ---------------------------------------------------------------------------- */
+
+.heatmap-legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+}
+
+.heatmap-legend-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.heatmap-ramp {
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.heatmap-ramp th {
+  padding-right: var(--sp-2);
+  font-weight: 500;
+  text-align: left;
+}
+
+.heatmap-ramp td {
+  padding: 1px var(--sp-1);
+  text-align: right;
+}
+
+.heatmap-swatch {
+  display: block;
+  width: 28px;
+  height: 12px;
+  border: 1px solid var(--border);
+}
+
+.legend-line {
+  display: inline-block;
+  width: 16px;
+  margin-right: var(--sp-1);
+  border-top: 2px solid var(--fg-0);
+  vertical-align: middle;
+}
+
+.legend-line-bid {
+  border-color: var(--bid);
+}
+
+.legend-line-ask {
+  border-color: var(--ask);
+}
+
+.legend-line-cursor {
+  border-color: var(--accent);
+  border-top-style: dashed;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--sp-1);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.legend-dot-buy {
+  background: var(--bid);
+}
+
+.legend-dot-sell {
+  background: var(--ask);
+}
+
+.legend-dot-unknown {
+  background: var(--fg-2);
+}
+
+/* ----- depth ladder ---------------------------------------------------------------------- */
+
+.ladder {
+  table-layout: auto;
+}
+
+.ladder-side {
+  width: 40px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+}
+
+.ladder-bar-cell {
+  width: 28%;
+  min-width: 44px;
+}
+
+.ladder-bar {
+  display: block;
+  height: 8px;
+  min-width: 1px;
+}
+
+.ladder-bar-bid {
+  background: var(--bid-bar);
+}
+
+.ladder-bar-ask {
+  background: var(--ask-bar);
+}
+
+.ladder .ladder-best > * {
+  color: var(--fg-1);
+  font-weight: 600;
+}
+
+.ladder .ladder-best-bid > * {
+  background: var(--bid-weak);
+}
+
+.ladder .ladder-best-ask > * {
+  background: var(--ask-weak);
+}
+
+.ladder-spread > td {
+  padding-top: var(--sp-1);
+  padding-bottom: var(--sp-1);
+  white-space: normal;
+}
+
+.ladder-bbo {
+  flex: none;
+}

@@ -1,27 +1,37 @@
-// Latency Lab: several runs side by side, the first as baseline. Every number is a stored run
-// metric or a row of the server's comparison; every interpretive sentence is the server's own
-// interpretation note, rendered verbatim with its evidence basis.
+// Experiment Comparison -> Set (UI_DESIGN_SPEC.md §11.8): several runs side by side, the first as
+// baseline. Every number is a stored run metric or a row of the server's comparison; every
+// interpretive sentence is the server's own interpretation note, rendered verbatim with its
+// evidence basis.
 
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { api } from '../../api/client';
 import type {
   Comparison,
+  DatasetManifest,
   Demo,
+  InstrumentMeta,
   MetricRow,
   OrderPair,
   PairClass,
   RunSummary,
 } from '../../api/types';
 import { ConfigValue, metricLabel } from '../../components/configValue';
+import { DataTable, type Column } from '../../components/DataTable';
 import { assumptionsLabel, strategyLabel } from '../../components/describe';
-import { fmtDuration, fmtNum, fmtSigned, words } from '../../components/fmt';
-import { PageHeader, usePageTitle } from '../../components/page';
-import { Badge, BasisBadge, ClockText, Empty, ErrorBox, Panel, Spinner, useAsync } from '../../components/ui';
+import { DASH, fmtDuration, fmtInt, fmtMoney, fmtNum, fmtPct, fmtPnl, fmtPp, fmtPrice, fmtQty, fmtSigned, fmtTicks, words } from '../../components/fmt';
+import type { GlossaryKey } from '../../components/glossary';
+import { digitsForUnit } from '../../components/ns';
+import { SplitPane, type Pane } from '../../components/SplitPane';
+import { ToolbarDivider } from '../../components/Toolbar';
+import { Term } from '../../components/Tooltip';
+import { Badge, BasisBadge, ClockText, Empty, ErrorBox, HashText, Notice, Panel, SideBadge, Spinner, TimeDigitsContext, useAsync } from '../../components/ui';
+import { paths } from '../../shell/paths';
+import { Workspace } from '../../shell/Workspace';
+import { CompareTabs } from '../experiments/CompareTabs';
 import { fmtSignedDuration, outcomeKind } from '../forensics/labels';
-import { fmtQuoteSigned } from '../runs/format';
-import '../compare/compare.css';
 import './latency.css';
 
 /** Comparison metric keys shown, in display order. Rows the server does not return are skipped. */
@@ -46,6 +56,18 @@ const KEY_METRICS = [
   'max_drawdown',
 ];
 
+/** Signed money: P&L and fees carry an explicit sign (§7.1). */
+const SIGNED_QUOTE: Record<string, true> = { fees: true, realized_pnl: true, unrealized_pnl: true, net_pnl: true };
+
+const METRIC_TERM: Record<string, GlossaryKey> = {
+  fill_ratio_orders: 'fill_ratio',
+  round_trip_ns: 'round_trip',
+  fees: 'fees',
+  spread_capture: 'spread_capture',
+  spread_capture_ticks: 'spread_capture',
+  max_drawdown: 'drawdown',
+};
+
 const PAIR_CLASSES: PairClass[] = [
   'identical',
   'same_decision_different_outcome',
@@ -62,44 +84,42 @@ const CLASS_LABEL: Record<PairClass, string> = {
   only_b: 'Only in this run',
 };
 
-const UNIT_SUFFIX: Record<string, string> = {
+/** Unit column of the mixed-unit metrics table (§6.1). */
+const UNIT_LABEL: Record<string, string> = {
   quote: 'quote',
-  qty: 'base qty',
+  qty: 'base',
   count: 'count',
-  ratio: '%',
+  ratio: '% (delta pp)',
   ns: 'time',
   ticks: 'ticks',
 };
 
-/** Fixed decimals; a value that rounds to zero at this precision prints as an unsigned 0. */
-function fixed(v: number, digits: number): string {
-  return fmtNum(Number(v.toFixed(digits)) === 0 ? 0 : v, digits);
-}
-
-function fmtMetric(v: number | null, unit: string): string {
-  if (v === null) return '\u2014';
-  switch (unit) {
+function fmtMetric(v: number | null, row: MetricRow): string {
+  if (v === null) return DASH;
+  switch (row.unit) {
     case 'count':
-      return fixed(v, 0);
+      return fmtInt(v);
     case 'ratio':
-      return `${fixed(v * 100, 2)}%`;
+      return fmtPct(v);
     case 'ns':
       return fmtDuration(v);
     case 'ticks':
-      return fixed(v, 3);
+      return fmtTicks(v);
+    case 'quote':
+      return SIGNED_QUOTE[row.key] ? fmtPnl(v, 4) : fmtMoney(v, 4);
     default:
-      return fixed(v, 4);
+      return fmtNum(v, 4);
   }
 }
 
 function fmtDelta(v: number | null, unit: string): string {
-  if (v === null) return '\u2014';
+  if (v === null) return DASH;
   switch (unit) {
     case 'count':
       return fmtSigned(v, 0);
     case 'ratio':
       // A difference of two ratios is in percentage points, not percent.
-      return `${fmtSigned(v * 100, 2)} pp`;
+      return fmtPp(v);
     case 'ns':
       return fmtSignedDuration(v);
     case 'ticks':
@@ -107,6 +127,11 @@ function fmtDelta(v: number | null, unit: string): string {
     default:
       return fmtSigned(v, 4);
   }
+}
+
+function signClass(v: number | null): string | undefined {
+  if (v === null || v === 0) return undefined;
+  return v > 0 ? 'up' : 'down';
 }
 
 function parseRuns(raw: string | null): string[] {
@@ -128,8 +153,12 @@ function settle<T>(p: Promise<T>): Promise<Settled<T>> {
   );
 }
 
+function runLabel(runs: Settled<RunSummary>[], ids: string[], i: number): string {
+  const r = runs[i];
+  return r && r.ok && r.value.label ? r.value.label : ids[i];
+}
+
 export default function LatencyLabPage() {
-  usePageTitle('Latency Lab');
   const [params, setParams] = useSearchParams();
   const ids = parseRuns(params.get('runs'));
   const demoId = params.get('demo');
@@ -142,6 +171,7 @@ export default function LatencyLabPage() {
     setParams(p);
   };
 
+  const all = useAsync(() => api.runs(), []);
   const runs = useAsync(() => Promise.all(ids.map((id) => settle(api.run(id)))), [key]);
   const comparisons = useAsync(
     () =>
@@ -156,97 +186,301 @@ export default function LatencyLabPage() {
     () => (demoId === null || baseDataset === null ? Promise.resolve(null) : api.demos(baseDataset)),
     [demoId, baseDataset],
   );
-  const demo = demos.data?.find((d) => d.id === demoId) ?? null;
-
-  return (
-    <div className="col">
-      <PageHeader
-        title="Latency Lab"
-        lead="Runs side by side on the same historical replay, the first as baseline. Differences are between simulations under different assumptions; they are not forecasts and say nothing about how the market would have reacted."
-        actions={
-          <Link className="btn" to="/">
-            Mission Control
-          </Link>
-        }
-      />
-      <RunSetEditor ids={ids} onChange={setIds} />
-      {demoId !== null ? (
-        <DemoPanel demoId={demoId} demo={demo} loading={demos.loading} error={demos.error} />
-      ) : null}
-      {ids.length === 0 ? (
-        <Empty>
-          Choose at least two runs above, or run one of the canonical experiments from{' '}
-          <Link to="/">Mission Control</Link>.
-        </Empty>
-      ) : null}
-      {runs.loading ? <Spinner label="Loading runs" /> : null}
-      {runs.error ? <ErrorBox error={runs.error} /> : null}
-      {runs.data ? <RunCards ids={ids} runs={runs.data} /> : null}
-      {ids.length === 1 ? <Empty>Add a second run to compare against the baseline.</Empty> : null}
-      {comparisons.loading && ids.length >= 2 ? <Spinner label="Comparing each run with the baseline" /> : null}
-      {comparisons.error ? <ErrorBox error={comparisons.error} /> : null}
-      {comparisons.data && comparisons.data.length > 0 && runs.data ? (
-        <Pairs ids={ids} runs={runs.data} comparisons={comparisons.data} />
-      ) : null}
-      {demoId === 'gross_vs_net' && runs.data ? <GrossToNet ids={ids} runs={runs.data} /> : null}
-    </div>
+  const dataset = useAsync(
+    () => (baseDataset === null ? Promise.resolve(null) : api.dataset(baseDataset)),
+    [baseDataset],
   );
-}
+  const demo = demos.data?.find((d) => d.id === demoId) ?? null;
+  const manifest: DatasetManifest | null = dataset.data ?? null;
 
-function RunSetEditor({ ids, onChange }: { ids: string[]; onChange: (ids: string[]) => void }) {
-  const all = useAsync(() => api.runs(), []);
   const [pick, setPick] = useState('');
   const available = (all.data ?? []).filter((r) => !ids.includes(r.manifest.run_id));
+
+  const toolbar = (
+    <>
+      <CompareTabs />
+      <ToolbarDivider />
+      <form
+        className="row set-add"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (pick !== '') {
+            setIds([...ids, pick]);
+            setPick('');
+          }
+        }}
+      >
+        <label htmlFor="set-add">Add run</label>
+        <select id="set-add" value={pick} onChange={(e) => setPick(e.target.value)} className="set-select">
+          <option value="">{all.loading ? 'Loading runs\u2026' : 'Choose a stored run'}</option>
+          {available.map((r) => (
+            <option key={r.manifest.run_id} value={r.manifest.run_id}>
+              {r.label || 'unlabelled'} · {r.manifest.run_id} · {r.manifest.dataset.id}
+            </option>
+          ))}
+        </select>
+        <button type="submit" disabled={pick === ''}>
+          Add
+        </button>
+      </form>
+    </>
+  );
+
+  // Body of every pair panel until the comparisons are available.
+  let pairState: ReactNode = null;
+  if (ids.length === 0) {
+    pairState = (
+      <Empty>
+        Choose at least two runs with Add run, or run one of the canonical experiments from the{' '}
+        <Link to={paths.overview()}>Overview</Link>.
+      </Empty>
+    );
+  } else if (ids.length === 1) {
+    pairState = <Empty>Add a second run to compare against the baseline.</Empty>;
+  } else if (comparisons.loading) {
+    pairState = <Spinner label="Comparing each run with the baseline" />;
+  } else if (comparisons.error) {
+    pairState = <ErrorBox error={comparisons.error} onRetry={comparisons.reload} />;
+  }
+  const pair: PairPanelProps | null =
+    pairState === null && comparisons.data && runs.data
+      ? { ids, runs: runs.data, comparisons: comparisons.data, inst: manifest?.instrument ?? null }
+      : null;
+
+  const runSet = (
+    <RunSetPanel
+      ids={ids}
+      runs={runs.data}
+      loading={runs.loading}
+      error={runs.error}
+      onChange={setIds}
+      listError={all.error}
+    />
+  );
+
+  const top: ReactNode =
+    demoId !== null ? (
+      <SplitPane
+        id="compare.set.top"
+        panes={[
+          { id: 'runs', label: 'Run set', defaultSize: '55%', minSize: '25%', content: runSet },
+          {
+            id: 'experiment',
+            label: 'Experiment',
+            defaultSize: '45%',
+            minSize: '20%',
+            content: <DemoPanel demoId={demoId} demo={demo} loading={demos.loading} error={demos.error} />,
+          },
+        ]}
+      />
+    ) : (
+      runSet
+    );
+
+  const bottom: Pane[] = [
+    {
+      id: 'alignment',
+      label: 'Decision alignment',
+      defaultSize: demoId === 'gross_vs_net' ? '34%' : '50%',
+      minSize: '20%',
+      content: <AlignmentPanel pair={pair} state={pairState} />,
+    },
+    {
+      id: 'interpretation',
+      label: 'Interpretation notes',
+      defaultSize: demoId === 'gross_vs_net' ? '33%' : '50%',
+      minSize: '15%',
+      content: <InterpretationPanel pair={pair} state={pairState} />,
+    },
+  ];
+  if (demoId === 'gross_vs_net') {
+    bottom.push({
+      id: 'waterfall',
+      label: 'Gross to net',
+      defaultSize: '33%',
+      minSize: '15%',
+      content: <GrossToNet ids={ids} runs={runs.data} loading={runs.loading} />,
+    });
+  }
+
+  const context = demo ? demo.title : ids.length > 0 ? `${ids[0].slice(0, 12)} + ${ids.length - 1}` : null;
+
   return (
-    <details className="lat-editor" open={ids.length < 2}>
-      <summary>Run set ({ids.length} runs)</summary>
-      <div className="col">
-        {ids.length > 0 ? (
-          <ol className="lat-set">
-            {ids.map((id, i) => (
-              <li key={id} className="row">
-                <span className="mono">{id}</span>
-                {i === 0 ? <Badge kind="neutral">baseline</Badge> : null}
-                {i > 0 ? (
-                  <button type="button" onClick={() => onChange([id, ...ids.filter((x) => x !== id)])}>
-                    Make baseline
-                  </button>
-                ) : null}
-                <button type="button" onClick={() => onChange(ids.filter((x) => x !== id))}>
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ol>
-        ) : null}
-        {all.error ? <ErrorBox error={all.error} /> : null}
-        <form
-          className="row"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (pick !== '') {
-              onChange([...ids, pick]);
-              setPick('');
-            }
-          }}
-        >
-          <label htmlFor="lat-add">Add run</label>
-          <select id="lat-add" value={pick} onChange={(e) => setPick(e.target.value)} className="lat-select">
-            <option value="">{all.loading ? 'Loading runs\u2026' : 'Choose a stored run'}</option>
-            {available.map((r) => (
-              <option key={r.manifest.run_id} value={r.manifest.run_id}>
-                {r.label || 'unlabelled'} · {r.manifest.run_id} · {r.manifest.dataset.id}
-              </option>
-            ))}
-          </select>
-          <button type="submit" disabled={pick === ''}>
-            Add
-          </button>
-        </form>
-      </div>
-    </details>
+    <Workspace context={context} toolbar={toolbar} layout>
+      <TimeDigitsContext.Provider value={manifest ? digitsForUnit(manifest.timestamps.input_unit) : 9}>
+        <SplitPane
+          id="compare.set.main"
+          orientation="vertical"
+          panes={[
+            { id: 'top', label: 'Run set and experiment', defaultSize: '30%', minSize: '12%', content: top },
+            {
+              id: 'middle',
+              label: 'Configuration and metrics',
+              defaultSize: '38%',
+              minSize: '12%',
+              content: (
+                <SplitPane
+                  id="compare.set.middle"
+                  panes={[
+                    {
+                      id: 'variables',
+                      label: 'Varied versus controlled',
+                      defaultSize: '45%',
+                      minSize: '20%',
+                      content: <VariablesPanel pair={pair} state={pairState} />,
+                    },
+                    {
+                      id: 'metrics',
+                      label: 'Key metrics',
+                      defaultSize: '55%',
+                      minSize: '20%',
+                      content: <MetricsPanel pair={pair} state={pairState} />,
+                    },
+                  ]}
+                />
+              ),
+            },
+            {
+              id: 'bottom',
+              label: 'Alignment and interpretation',
+              defaultSize: '32%',
+              minSize: '12%',
+              content: <SplitPane id={demoId === 'gross_vs_net' ? 'compare.set.bottom3' : 'compare.set.bottom'} panes={bottom} />,
+            },
+          ]}
+        />
+      </TimeDigitsContext.Provider>
+    </Workspace>
   );
 }
+
+// ----- run set --------------------------------------------------------------------------------
+
+interface SetRow {
+  id: string;
+  index: number;
+  run: Settled<RunSummary> | undefined;
+}
+
+function RunSetPanel({
+  ids,
+  runs,
+  loading,
+  error,
+  onChange,
+  listError,
+}: {
+  ids: string[];
+  runs: Settled<RunSummary>[] | null;
+  loading: boolean;
+  error: Error | null;
+  onChange: (ids: string[]) => void;
+  listError: Error | null;
+}) {
+  const rows: SetRow[] = ids.map((id, index) => ({ id, index, run: runs?.[index] }));
+  const failed = rows.filter((r) => r.run && !r.run.ok);
+  const columns: Column<SetRow>[] = [
+    {
+      id: 'role',
+      header: 'Role',
+      cell: (r) => <Badge kind={r.index === 0 ? 'neutral' : 'modeled'}>{r.index === 0 ? 'baseline' : `run ${r.index + 1}`}</Badge>,
+      raw: (r) => (r.index === 0 ? 'baseline' : `run ${r.index + 1}`),
+    },
+    { id: 'run', header: 'Run', rowHeader: true, cell: (r) => <HashText hash={r.id} />, raw: (r) => r.id },
+    {
+      id: 'label',
+      header: 'Label',
+      cell: (r) =>
+        !r.run ? (
+          <span className="dim">{DASH}</span>
+        ) : r.run.ok ? (
+          r.run.value.label ? (
+            <span title={r.run.value.label}>{r.run.value.label}</span>
+          ) : (
+            <span className="dim">unlabelled</span>
+          )
+        ) : (
+          <span className="set-failed">ERROR not loaded</span>
+        ),
+    },
+    {
+      id: 'strategy',
+      header: 'Strategy',
+      cell: (r) => <span className="mono">{r.run?.ok ? strategyLabel(r.run.value.manifest.config.strategy.kind) : DASH}</span>,
+    },
+    { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.run?.ok ? r.run.value.manifest.dataset.id : DASH}</span> },
+    {
+      id: 'assumptions',
+      header: 'Execution assumptions',
+      cell: (r) => {
+        if (!r.run?.ok) return DASH;
+        const text = assumptionsLabel(r.run.value.manifest.config);
+        return <span title={text}>{text}</span>;
+      },
+    },
+    {
+      id: 'open',
+      header: 'Open',
+      cell: (r) => (
+        <span className="row set-actions">
+          <Link to={paths.run(r.id)}>Forensics</Link>
+          <Link to={paths.bookRun(r.id)}>Replay Terminal</Link>
+        </span>
+      ),
+      raw: () => '',
+    },
+    {
+      id: 'set',
+      header: 'Set',
+      cell: (r) => (
+        <span className="row set-actions">
+          {r.index > 0 ? (
+            <button type="button" onClick={() => onChange([r.id, ...ids.filter((x) => x !== r.id)])}>
+              Make baseline
+            </button>
+          ) : null}
+          <button type="button" onClick={() => onChange(ids.filter((x) => x !== r.id))}>
+            Remove
+          </button>
+        </span>
+      ),
+      raw: () => '',
+    },
+  ];
+  return (
+    <Panel
+      title="Run set"
+      caption="Runs side by side on the same historical replay, the first as baseline. Differences are between simulations under different assumptions; they are not forecasts and say nothing about how the market would have reacted."
+      flush
+    >
+      {loading || error || listError || failed.length > 0 ? (
+        <div className="set-status col">
+          {loading ? <Spinner label="Loading runs" /> : null}
+          {error ? <ErrorBox error={error} /> : null}
+          {listError ? <ErrorBox error={listError} /> : null}
+          {failed.map((r) => (
+            <div key={r.id} className="col">
+              <p className="note">
+                Run <span className="mono">{r.id}</span> could not be loaded:
+              </p>
+              <ErrorBox error={r.run && !r.run.ok ? r.run.error : null} />
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <DataTable
+        label="Run set"
+        rows={rows}
+        rowKey={(r) => r.id}
+        columns={columns}
+        empty="No runs in the set. Add stored runs with Add run in the toolbar."
+        fill
+      />
+    </Panel>
+  );
+}
+
+// ----- experiment -----------------------------------------------------------------------------
 
 function DemoPanel({
   demoId,
@@ -260,24 +494,33 @@ function DemoPanel({
   error: Error | null;
 }) {
   return (
-    <Panel title={<>Experiment {demo ? demo.title : <span className="mono">{demoId}</span>}</>}>
+    <Panel title={`Experiment ${demo ? demo.title : demoId}`}>
       {loading ? <Spinner label="Loading experiment description" /> : null}
       {error ? <ErrorBox error={error} /> : null}
       {!loading && !error && !demo ? (
         <p className="note">
-          The server lists no experiment <span className="mono">{demoId}</span> for the baseline
-          run's dataset.
+          The server lists no experiment <span className="mono">{demoId}</span> for the baseline run's dataset.
         </p>
       ) : null}
       {demo ? (
-        <div className="col">
-          <p className="lat-question">{demo.question}</p>
+        <>
+          <p className="prose">{demo.question}</p>
           <dl className="kv">
             <dt>Varied</dt>
-            <dd>{demo.varied.join(', ') || 'nothing'}</dd>
+            <dd>
+              {demo.varied.length === 0 ? (
+                'nothing'
+              ) : (
+                <ul className="set-list">
+                  {demo.varied.map((v) => (
+                    <li key={v}>{v}</li>
+                  ))}
+                </ul>
+              )}
+            </dd>
             <dt>Controlled</dt>
             <dd className="prose">
-              <ul className="lat-list">
+              <ul className="set-list">
                 {demo.controlled.map((c) => (
                   <li key={c}>{c}</li>
                 ))}
@@ -285,314 +528,285 @@ function DemoPanel({
             </dd>
           </dl>
           <p className="note">{demo.how_to_read}</p>
+        </>
+      ) : null}
+    </Panel>
+  );
+}
+
+// ----- pair panels ----------------------------------------------------------------------------
+
+interface PairPanelProps {
+  ids: string[];
+  runs: Settled<RunSummary>[];
+  comparisons: Settled<Comparison>[];
+  /** Instrument of the baseline's dataset, for prices and quantities. */
+  inst: InstrumentMeta | null;
+}
+
+function ok(pair: PairPanelProps): (Comparison | null)[] {
+  return pair.comparisons.map((c) => (c.ok ? c.value : null));
+}
+
+function VariablesPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
+  return (
+    <Panel title="Varied versus controlled">
+      {state}
+      {pair
+        ? pair.comparisons.map((c, i) => {
+            const other = pair.ids[i + 1];
+            const name = runLabel(pair.runs, pair.ids, i + 1);
+            if (!c.ok) {
+              return (
+                <section key={other} className="col set-pair">
+                  <p className="note">
+                    Comparison of the baseline with <span className="mono">{other}</span> failed:
+                  </p>
+                  <ErrorBox error={c.error} />
+                </section>
+              );
+            }
+            const cmp = c.value;
+            return (
+              <section key={other} className="col set-pair">
+                <h3 className="set-pair-title row">
+                  <span>Baseline vs {name}</span>
+                  <Badge kind={cmp.same_dataset ? 'ok' : 'warn'}>{cmp.same_dataset ? 'same dataset' : 'different dataset'}</Badge>
+                  <Badge kind={cmp.same_strategy ? 'ok' : 'warn'}>{cmp.same_strategy ? 'same strategy' : 'different strategy'}</Badge>
+                </h3>
+                {cmp.config_diffs.length === 0 ? (
+                  <p className="note">The configurations are identical.</p>
+                ) : (
+                  <div className="table-scroll">
+                    <table className="table">
+                      <caption>
+                        Varied: every configuration path that differs. Everything else in the run configuration is
+                        identical (controlled).
+                      </caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">Configuration path</th>
+                          <th scope="col">Baseline</th>
+                          <th scope="col">This run</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cmp.config_diffs.map((d) => (
+                          <tr key={d.path}>
+                            <th scope="row" className="mono">
+                              {d.path}
+                            </th>
+                            <ConfigValue path={d.path} value={d.a} />
+                            <ConfigValue path={d.path} value={d.b} />
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            );
+          })
+        : null}
+    </Panel>
+  );
+}
+
+function MetricLabel({ row }: { row: MetricRow }) {
+  const label = metricLabel(row);
+  const term: GlossaryKey | undefined = row.key.startsWith('markout_') ? 'markout' : METRIC_TERM[row.key];
+  return term ? <Term term={term}>{label}</Term> : <>{label}</>;
+}
+
+function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
+  const comparisons = pair ? ok(pair) : [];
+  const first = comparisons.find((c) => c !== null) ?? null;
+  const rowsByKey = comparisons.map((c) => new Map<string, MetricRow>((c?.metrics ?? []).map((r) => [r.key, r])));
+  const keys = KEY_METRICS.filter((k) => rowsByKey.some((m) => m.has(k)));
+  return (
+    <Panel
+      title="Key metrics"
+      basis="derived"
+      flush
+      caption="Values and deltas exactly as returned by the comparison of each run with the baseline. Delta is this run minus baseline. A dash means the value is undefined for that run."
+    >
+      {state ? <div className="set-status">{state}</div> : null}
+      {pair && !first ? <Empty>No comparison with the baseline succeeded.</Empty> : null}
+      {pair && first ? (
+        <div className="table-scroll set-fill">
+          <table className="table set-metrics">
+            <thead>
+              <tr>
+                <th scope="col">Metric</th>
+                <th scope="col">Unit</th>
+                <th scope="col" className="num">
+                  Baseline
+                </th>
+                {pair.ids.slice(1).map((id, i) => (
+                  <th key={id} scope="col" className="num" colSpan={2} title={id}>
+                    {runLabel(pair.runs, pair.ids, i + 1)}
+                    <span className="unit">value · delta</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((k) => {
+                const any = rowsByKey.map((m) => m.get(k)).find((r) => r !== undefined) as MetricRow;
+                return (
+                  <tr key={k}>
+                    <th scope="row" title={k}>
+                      <MetricLabel row={any} />
+                    </th>
+                    <td className="dim">{UNIT_LABEL[any.unit] ?? any.unit}</td>
+                    <td className="num">{fmtMetric(any.a, any)}</td>
+                    {rowsByKey.map((m, i) => {
+                      const r = m.get(k);
+                      return r ? (
+                        <MetricCells key={pair.ids[i + 1]} row={r} />
+                      ) : (
+                        <td key={pair.ids[i + 1]} colSpan={2} className="num dim">
+                          {DASH}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       ) : null}
     </Panel>
   );
 }
 
-function RunCards({ ids, runs }: { ids: string[]; runs: Settled<RunSummary>[] }) {
-  return (
-    <div className="lat-cards">
-      {ids.map((id, i) => {
-        const r = runs[i];
-        return (
-          <article key={id} className="lat-card">
-            <header className="row">
-              <Badge kind={i === 0 ? 'neutral' : 'modeled'}>{i === 0 ? 'baseline' : `run ${i + 1}`}</Badge>
-              <span className="mono small">{id}</span>
-            </header>
-            {r && !r.ok ? <ErrorBox error={r.error} /> : null}
-            {r && r.ok ? (
-              <>
-                <h3>{r.value.label || 'unlabelled'}</h3>
-                <p className="mono small">
-                  {strategyLabel(r.value.manifest.config.strategy.kind)} · {r.value.manifest.dataset.id}
-                </p>
-                <p className="small">{assumptionsLabel(r.value.manifest.config)}</p>
-                <div className="row small">
-                  <Link to={`/runs/${encodeURIComponent(id)}`}>Overview</Link>
-                  <Link to={`/runs/${encodeURIComponent(id)}/replay`}>Replay Terminal</Link>
-                </div>
-              </>
-            ) : null}
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function runLabel(runs: Settled<RunSummary>[], ids: string[], i: number): string {
-  const r = runs[i];
-  return r && r.ok && r.value.label ? r.value.label : ids[i];
-}
-
-function Pairs({
-  ids,
-  runs,
-  comparisons,
-}: {
-  ids: string[];
-  runs: Settled<RunSummary>[];
-  comparisons: Settled<Comparison>[];
-}) {
-  const ok = comparisons.map((c) => (c.ok ? c.value : null));
+function MetricCells({ row }: { row: MetricRow }) {
   return (
     <>
-      {comparisons.map((c, i) =>
-        c.ok ? null : (
-          <div key={ids[i + 1]} className="col">
-            <p className="note">
-              Comparison of the baseline with <span className="mono">{ids[i + 1]}</span> failed:
-            </p>
-            <ErrorBox error={c.error} />
-          </div>
-        ),
-      )}
-      <VariablesPanel ids={ids} runs={runs} comparisons={ok} />
-      <MetricsPanel ids={ids} runs={runs} comparisons={ok} />
-      <AlignmentPanel ids={ids} runs={runs} comparisons={ok} />
-      <InterpretationPanel ids={ids} runs={runs} comparisons={ok} />
+      <td className="num">{fmtMetric(row.b, row)}</td>
+      <td className={['num', signClass(row.delta)].filter(Boolean).join(' ')}>{fmtDelta(row.delta, row.unit)}</td>
     </>
   );
 }
 
-interface PairPanelProps {
-  ids: string[];
-  runs: Settled<RunSummary>[];
-  comparisons: (Comparison | null)[];
-}
-
-function VariablesPanel({ ids, runs, comparisons }: PairPanelProps) {
-  return (
-    <Panel title="Varied versus controlled">
-      <div className="col">
-        {comparisons.map((cmp, i) =>
-          cmp ? (
-            <section key={ids[i + 1]} className="col">
-              <h3>
-                Baseline vs {runLabel(runs, ids, i + 1)}{' '}
-                <Badge kind={cmp.same_dataset ? 'ok' : 'warn'}>
-                  {cmp.same_dataset ? 'same dataset' : 'different dataset'}
-                </Badge>{' '}
-                <Badge kind={cmp.same_strategy ? 'ok' : 'warn'}>
-                  {cmp.same_strategy ? 'same strategy' : 'different strategy'}
-                </Badge>
-              </h3>
-              {cmp.config_diffs.length === 0 ? (
-                <p className="note">The configurations are identical.</p>
-              ) : (
-                <div className="table-scroll">
-                  <table className="table">
-                    <caption>
-                      Varied: every configuration path that differs. Everything else in the run
-                      configuration is identical (controlled).
-                    </caption>
-                    <thead>
-                      <tr>
-                        <th scope="col">Configuration path</th>
-                        <th scope="col">Baseline</th>
-                        <th scope="col">This run</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {cmp.config_diffs.map((d) => (
-                        <tr key={d.path}>
-                          <th scope="row" className="mono">
-                            {d.path}
-                          </th>
-                          <ConfigValue path={d.path} value={d.a} />
-                          <ConfigValue path={d.path} value={d.b} />
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
-          ) : null,
-        )}
-      </div>
-    </Panel>
-  );
-}
-
-function MetricsPanel({ ids, runs, comparisons }: PairPanelProps) {
-  const first = comparisons.find((c) => c !== null) ?? null;
-  if (!first) return null;
-  const rowsByKey = comparisons.map((c) => new Map<string, MetricRow>((c?.metrics ?? []).map((r) => [r.key, r])));
-  const keys = KEY_METRICS.filter((k) => rowsByKey.some((m) => m.has(k)));
-  return (
-    <Panel title={<>Key metrics <BasisBadge basis="derived" /></>}>
-      <div className="table-scroll">
-        <table className="table lat-metrics">
-          <caption>
-            Values and deltas exactly as returned by the comparison of each run with the baseline.
-            Delta is this run minus baseline. A dash means the value is undefined for that run.
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">Metric</th>
-              <th scope="col" className="num">
-                Baseline
-              </th>
-              {ids.slice(1).map((id, i) => (
-                <th key={id} scope="col" className="num" colSpan={2}>
-                  {runLabel(runs, ids, i + 1)}
-                  <div className="dim small">value · delta</div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((k) => {
-              const any = rowsByKey.map((m) => m.get(k)).find((r) => r !== undefined) as MetricRow;
-              return (
-                <tr key={k}>
-                  <th scope="row" title={k}>
-                    {metricLabel(any)} <span className="dim small">({UNIT_SUFFIX[any.unit] ?? any.unit})</span>
-                  </th>
-                  <td className="num">{fmtMetric(any.a, any.unit)}</td>
-                  {rowsByKey.map((m, i) => {
-                    const r = m.get(k);
-                    return r ? (
-                      <FragmentCells key={ids[i + 1]} row={r} />
-                    ) : (
-                      <td key={ids[i + 1]} colSpan={2} className="num dim">
-                        {'\u2014'}
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </Panel>
-  );
-}
-
-function FragmentCells({ row }: { row: MetricRow }) {
-  return (
-    <>
-      <td className="num">{fmtMetric(row.b, row.unit)}</td>
-      <td className="num dim">{fmtDelta(row.delta, row.unit)}</td>
-    </>
-  );
-}
-
-function DivergenceSide({ label, pair, side }: { label: string; pair: OrderPair; side: 'a' | 'b' }) {
+function DivergenceSide({ label, pair, side, inst }: { label: string; pair: OrderPair; side: 'a' | 'b'; inst: InstrumentMeta | null }) {
   const o = pair[side];
   if (!o) return <p className="small">{label}: no such decision.</p>;
   return (
-    <p className="small">
-      {label}: {o.side} {o.qty} @ tick {o.price_tick} ·{' '}
-      <Badge kind={outcomeKind(o.outcome)}>{words(o.outcome)}</Badge> · filled {o.filled_qty} · arrival{' '}
-      <ClockText ns={o.exch_arrival_ts} /> · first fill <ClockText ns={o.first_fill_ts} />
+    <p className="small row set-side">
+      <span>{label}:</span>
+      <SideBadge side={o.side} />
+      <span className="mono">
+        {inst ? fmtQty(o.qty, inst) : o.qty} @ {inst ? fmtPrice(o.price_tick, inst) : `tick ${o.price_tick}`}
+      </span>
+      <Badge kind={outcomeKind(o.outcome)}>{words(o.outcome)}</Badge>
+      <span>
+        filled <span className="mono">{inst ? fmtQty(o.filled_qty, inst) : o.filled_qty}</span>
+      </span>
+      <span>
+        arrival <ClockText ns={o.exch_arrival_ts} />
+      </span>
+      <span>
+        first fill <ClockText ns={o.first_fill_ts} />
+      </span>
     </p>
   );
 }
 
-function AlignmentPanel({ ids, runs, comparisons }: PairPanelProps) {
+function AlignmentPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
   return (
-    <Panel title="Decision alignment and first divergence">
-      <div className="col">
-        <p className="note">
-          Orders are aligned by order id, which encodes the strategy tick and slot of the decision.
-        </p>
-        {comparisons.map((cmp, i) => {
-          if (!cmp) return null;
-          const al = cmp.alignment;
-          const other = ids[i + 1];
-          const total = PAIR_CLASSES.reduce((s, c) => s + al[c], 0);
-          const fd = al.first_divergence;
-          return (
-            <section key={other} className="col lat-pair">
-              <h3>Baseline vs {runLabel(runs, ids, i + 1)}</h3>
-              {total > 0 ? (
-                <div className="cmp-bar" aria-hidden="true">
-                  {PAIR_CLASSES.map((c) =>
-                    al[c] > 0 ? (
-                      <span key={c} className={`cmp-seg cmp-seg-${c}`} style={{ flexGrow: al[c] }} title={`${CLASS_LABEL[c]}: ${al[c]}`} />
-                    ) : null,
-                  )}
-                </div>
-              ) : null}
-              <ul className="row lat-classes small">
-                {PAIR_CLASSES.map((c) => (
-                  <li key={c}>
-                    <span className={`cmp-swatch cmp-seg-${c}`} aria-hidden="true" /> {CLASS_LABEL[c]}:{' '}
-                    <span className="mono">{al[c]}</span>
-                  </li>
-                ))}
-              </ul>
-              {fd ? (
-                <div className="lat-divergence col">
-                  <p>
-                    First divergence: order <span className="mono">{fd.order_id}</span> (tick{' '}
-                    {fd.tick_no}), decided at <ClockText ns={fd.decision_ts} /> ·{' '}
-                    <Badge kind="neutral">{CLASS_LABEL[fd.class]}</Badge>
-                  </p>
-                  <DivergenceSide label="Baseline" pair={fd} side="a" />
-                  <DivergenceSide label="This run" pair={fd} side="b" />
-                  <div className="row small">
-                    <Link to={`/runs/${encodeURIComponent(ids[0])}/replay?order=${fd.order_id}`}>
-                      Baseline in Replay Terminal
-                    </Link>
-                    <Link to={`/runs/${encodeURIComponent(other)}/replay?order=${fd.order_id}`}>
-                      This run in Replay Terminal
-                    </Link>
-                    {fd.a ? (
-                      <Link to={`/runs/${encodeURIComponent(ids[0])}/orders/${fd.order_id}`}>Baseline forensics</Link>
-                    ) : null}
-                    {fd.b ? (
-                      <Link to={`/runs/${encodeURIComponent(other)}/orders/${fd.order_id}`}>This run forensics</Link>
-                    ) : null}
-                    <Link to={`/compare?a=${encodeURIComponent(ids[0])}&b=${encodeURIComponent(other)}`}>
-                      Full comparison
-                    </Link>
+    <Panel
+      title="Decision alignment and first divergence"
+      caption="Orders are aligned by order id, which encodes the strategy tick and slot of the decision."
+    >
+      {state}
+      {pair
+        ? ok(pair).map((cmp, i) => {
+            if (!cmp) return null;
+            const ids = pair.ids;
+            const al = cmp.alignment;
+            const other = ids[i + 1];
+            const total = PAIR_CLASSES.reduce((s, c) => s + al[c], 0);
+            const fd = al.first_divergence;
+            return (
+              <section key={other} className="col set-pair">
+                <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, ids, i + 1)}</h3>
+                {total > 0 ? (
+                  <div className="set-bar" aria-hidden="true">
+                    {PAIR_CLASSES.map((c) =>
+                      al[c] > 0 ? (
+                        <span key={c} className={`set-seg set-seg-${c}`} style={{ flexGrow: al[c] }} title={`${CLASS_LABEL[c]}: ${fmtInt(al[c])}`} />
+                      ) : null,
+                    )}
                   </div>
-                </div>
-              ) : (
-                <p className="note">No divergence: every aligned decision and outcome is identical.</p>
-              )}
-            </section>
-          );
-        })}
-      </div>
+                ) : null}
+                <ul className="row set-classes small">
+                  {PAIR_CLASSES.map((c) => (
+                    <li key={c}>
+                      <span className={`set-swatch set-seg-${c}`} aria-hidden="true" /> {CLASS_LABEL[c]}:{' '}
+                      <span className="mono">{fmtInt(al[c])}</span>
+                    </li>
+                  ))}
+                </ul>
+                {fd ? (
+                  <div className="set-divergence col">
+                    <p>
+                      First divergence: order <span className="mono">{fd.order_id}</span> (tick{' '}
+                      <span className="mono">{fd.tick_no}</span>), decided at <ClockText ns={fd.decision_ts} /> ·{' '}
+                      <Badge kind="neutral">{CLASS_LABEL[fd.class]}</Badge>
+                    </p>
+                    <DivergenceSide label="Baseline" pair={fd} side="a" inst={pair.inst} />
+                    <DivergenceSide label="This run" pair={fd} side="b" inst={pair.inst} />
+                    <div className="row small">
+                      <Link to={paths.bookRun(ids[0], { t: fd.decision_ts, order: fd.order_id })}>Baseline in Replay Terminal</Link>
+                      <Link to={paths.bookRun(other, { t: fd.decision_ts, order: fd.order_id })}>This run in Replay Terminal</Link>
+                      {fd.a ? <Link to={paths.order(ids[0], fd.order_id)}>Baseline forensics</Link> : null}
+                      {fd.b ? <Link to={paths.order(other, fd.order_id)}>This run forensics</Link> : null}
+                      <Link to={paths.comparePair(ids[0], other)}>Full comparison</Link>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="note">No divergence: every aligned decision and outcome is identical.</p>
+                )}
+              </section>
+            );
+          })
+        : null}
     </Panel>
   );
 }
 
-function InterpretationPanel({ ids, runs, comparisons }: PairPanelProps) {
+function InterpretationPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
   return (
     <Panel title="Interpretation notes (from the comparison, verbatim)">
-      <div className="col">
-        {comparisons.map((cmp, i) =>
-          cmp ? (
-            <section key={ids[i + 1]} className="col">
-              <h3>Baseline vs {runLabel(runs, ids, i + 1)}</h3>
-              {cmp.interpretation.length === 0 ? (
-                <p className="note">The comparison returned no interpretation notes.</p>
-              ) : (
-                <ul className="lat-notes">
-                  {cmp.interpretation.map((n, k) => (
-                    <li key={k}>
-                      <BasisBadge basis={n.basis} />
-                      <span>{n.statement}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          ) : null,
-        )}
-      </div>
+      {state}
+      {pair
+        ? ok(pair).map((cmp, i) =>
+            cmp ? (
+              <section key={pair.ids[i + 1]} className="col set-pair">
+                <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, pair.ids, i + 1)}</h3>
+                {cmp.interpretation.length === 0 ? (
+                  <p className="note">The comparison returned no interpretation notes.</p>
+                ) : (
+                  <ul className="set-notes">
+                    {cmp.interpretation.map((n, k) => (
+                      <li key={k}>
+                        <BasisBadge basis={n.basis} />
+                        <span>{n.statement}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            ) : null,
+          )
+        : null}
     </Panel>
   );
 }
+
+// ----- gross to net ---------------------------------------------------------------------------
 
 interface WaterfallStep {
   label: string;
@@ -601,9 +815,8 @@ interface WaterfallStep {
   total?: boolean;
 }
 
-function GrossToNet({ ids, runs }: { ids: string[]; runs: Settled<RunSummary>[] }) {
-  const rows = ids.flatMap((id, i) => {
-    const r = runs[i];
+function GrossToNet({ ids, runs, loading }: { ids: string[]; runs: Settled<RunSummary>[] | null; loading: boolean }) {
+  const rows = (runs ?? []).flatMap((r, i) => {
     if (!r || !r.ok) return [];
     const m = r.value.metrics;
     const gross = m.realized_pnl + m.unrealized_pnl;
@@ -615,69 +828,66 @@ function GrossToNet({ ids, runs }: { ids: string[]; runs: Settled<RunSummary>[] 
       { label: 'Net P&L (reported)', from: 0, to: m.net_pnl, total: true },
     ];
     const gap = m.net_pnl - (gross - m.fees);
-    return [{ id, label: runLabel(runs, ids, i), m, steps, gap }];
+    return [{ id: ids[i], label: runLabel(runs ?? [], ids, i), m, steps, gap }];
   });
-  if (rows.length === 0) return null;
   const points = rows.flatMap((r) => [...r.steps.flatMap((s) => [s.from, s.to]), r.m.spread_capture, 0]);
-  const lo = Math.min(...points);
-  const hi = Math.max(...points);
+  const lo = points.length > 0 ? Math.min(...points) : 0;
+  const hi = points.length > 0 ? Math.max(...points) : 0;
   const span = hi - lo || 1;
   const pct = (v: number) => ((v - lo) / span) * 100;
   return (
-    <Panel title={<>Gross to net, per run <BasisBadge basis="derived" /></>}>
-      <div className="col">
-        <p className="note">
-          Built only from each run's reported metrics: realized and unrealized P&amp;L, fees and net
-          P&amp;L (net = realized + unrealized − fees at the last account sample). Spread capture is
-          shown separately for reference; it is a measure over maker fills, not a step of the sum.
-          All bars share one scale.
-        </p>
-        {rows.map((r) => (
-          <section key={r.id} className="col lat-waterfall">
-            <h3>{r.label}</h3>
-            {r.steps.map((s) => {
-              const a = Math.min(s.from, s.to);
-              const b = Math.max(s.from, s.to);
-              const dir = s.total ? 'total' : s.to >= s.from ? 'up' : 'down';
-              return (
-                <div key={s.label} className="lat-wf-row">
-                  <span className="lat-wf-label small">{s.label}</span>
-                  <span className="lat-wf-track">
-                    <span className="lat-wf-zero" style={{ left: `${pct(0)}%` }} aria-hidden="true" />
-                    <span
-                      className={`lat-wf-bar lat-wf-${dir}`}
-                      style={{ left: `${pct(a)}%`, width: `max(1px, ${pct(b) - pct(a)}%)` }}
-                    />
-                  </span>
-                  <span className="lat-wf-value mono small">
-                    {s.total ? fmtQuoteSigned(s.to) : fmtQuoteSigned(s.to - s.from)}
-                  </span>
-                </div>
-              );
-            })}
-            <div className="lat-wf-row lat-wf-ref">
-              <span className="lat-wf-label small">Spread capture (reference)</span>
-              <span className="lat-wf-track">
-                <span className="lat-wf-zero" style={{ left: `${pct(0)}%` }} aria-hidden="true" />
-                <span
-                  className="lat-wf-bar lat-wf-refbar"
-                  style={{
-                    left: `${pct(Math.min(0, r.m.spread_capture))}%`,
-                    width: `max(1px, ${Math.abs(pct(r.m.spread_capture) - pct(0))}%)`,
-                  }}
-                />
-              </span>
-              <span className="lat-wf-value mono small">{fmtQuoteSigned(r.m.spread_capture)}</span>
-            </div>
-            {Math.abs(r.gap) > 1e-9 * Math.max(1, Math.abs(r.m.net_pnl)) ? (
-              <p className="notice">
-                Reported net P&amp;L differs from realized + unrealized − fees by{' '}
-                <span className="mono">{fmtSigned(r.gap, 8)}</span> (quote).
-              </p>
-            ) : null}
-          </section>
-        ))}
-      </div>
+    <Panel
+      title="Gross to net, per run"
+      basis="derived"
+      caption="Built only from each run's reported metrics: realized and unrealized P&L, fees and net P&L (net = realized + unrealized − fees at the last account sample). Spread capture is shown separately for reference; it is a measure over maker fills, not a step of the sum. All bars share one scale."
+    >
+      {loading && !runs ? <Spinner label="Loading runs" /> : null}
+      {runs && rows.length === 0 ? <Empty>No run of the set could be loaded.</Empty> : null}
+      {rows.map((r) => (
+        <section key={r.id} className="col set-waterfall" aria-label={`Gross to net of ${r.label}`}>
+          <div className="set-wf-row set-wf-head">
+            <h3 className="set-pair-title">{r.label}</h3>
+            <span />
+            <span className="unit">quote</span>
+          </div>
+          {r.steps.map((s) => {
+            const a = Math.min(s.from, s.to);
+            const b = Math.max(s.from, s.to);
+            const dir = s.total ? 'total' : s.to >= s.from ? 'up' : 'down';
+            const value = s.total ? s.to : s.to - s.from;
+            return (
+              <div key={s.label} className="set-wf-row">
+                <span className="set-wf-label">{s.label}</span>
+                <span className="set-wf-track" aria-hidden="true">
+                  <span className="set-wf-zero" style={{ left: `${pct(0)}%` }} />
+                  <span className={`set-wf-bar set-wf-${dir}`} style={{ left: `${pct(a)}%`, width: `max(1px, ${pct(b) - pct(a)}%)` }} />
+                </span>
+                <span className={['num', s.total ? undefined : signClass(value)].filter(Boolean).join(' ')}>{fmtPnl(value, 4)}</span>
+              </div>
+            );
+          })}
+          <div className="set-wf-row">
+            <span className="set-wf-label">Spread capture (reference)</span>
+            <span className="set-wf-track" aria-hidden="true">
+              <span className="set-wf-zero" style={{ left: `${pct(0)}%` }} />
+              <span
+                className="set-wf-bar set-wf-refbar"
+                style={{
+                  left: `${pct(Math.min(0, r.m.spread_capture))}%`,
+                  width: `max(1px, ${Math.abs(pct(r.m.spread_capture) - pct(0))}%)`,
+                }}
+              />
+            </span>
+            <span className="num">{fmtPnl(r.m.spread_capture, 4)}</span>
+          </div>
+          {Math.abs(r.gap) > 1e-9 * Math.max(1, Math.abs(r.m.net_pnl)) ? (
+            <Notice tag="WARN" tone="warn">
+              Reported net P&amp;L differs from realized + unrealized − fees by{' '}
+              <span className="mono">{fmtSigned(r.gap, 8)}</span> (quote).
+            </Notice>
+          ) : null}
+        </section>
+      ))}
     </Panel>
   );
 }

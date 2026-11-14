@@ -1,41 +1,63 @@
-import { Link } from 'react-router-dom';
+// Market Data Explorer (UI_DESIGN_SPEC.md §11.2): the installed datasets on the left, the selected
+// dataset's identity, quality report and files in the centre, the selected quality check in the
+// inspector. Vendor datasets show aggregate manifest statistics only, never raw rows.
+
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { api } from '../../api/client';
 import type {
   DataLevel,
   DatasetManifest,
+  InputFile,
+  JsonValue,
   LocalTsProvenance,
   QualityCheck,
   QualityReport,
   Severity,
 } from '../../api/types';
+import { DataTable } from '../../components/DataTable';
+import type { Column } from '../../components/DataTable';
 import { JsonBlock, QuantileTable } from '../../components/data';
 import { severityBadge } from '../../components/describe';
 import {
   fmtBytes,
   fmtDuration,
   fmtInt,
-  fmtNum,
   fmtOriginUtc,
   fmtPct,
+  fmtTicks,
   humanizeNsText,
   stepDecimals,
 } from '../../components/fmt';
-import { PageHeader, usePageTitle } from '../../components/page';
+import { digitsForUnit } from '../../components/ns';
+import { SplitPane } from '../../components/SplitPane';
+import { Tabs } from '../../components/Tabs';
 import {
   Badge,
   ClockText,
   Empty,
   ErrorBox,
   HashText,
+  Notice,
   Panel,
   Spinner,
+  TimeDigitsContext,
   useAsync,
 } from '../../components/ui';
 import type { BadgeKind } from '../../components/ui';
+import { useInspector } from '../../shell/inspector';
+import { paths } from '../../shell/paths';
+import { Workspace } from '../../shell/Workspace';
+import './datasets.css';
 
 const LEVEL_TEXT: Record<DataLevel, string> = {
   l2_mbp_with_trades: 'L2 Market-By-Price + trades \u2014 individual orders not visible',
+};
+
+const LEVEL_SHORT: Record<DataLevel, string> = {
+  l2_mbp_with_trades: 'L2 MBP + trades',
 };
 
 const LOCAL_TS: Record<LocalTsProvenance, { badge: BadgeKind; label: string; meaning: string }> = {
@@ -68,6 +90,22 @@ function worstFailed(q: QualityReport): Severity | null {
   return worst;
 }
 
+function failedCount(q: QualityReport): number {
+  return q.checks.filter((c) => !c.passed).length;
+}
+
+/** Paths of integers in `value` that JSON parsing could not represent exactly (above 2^53 − 1). */
+function unsafeIntegerPaths(value: JsonValue, path: string, out: string[]): string[] {
+  if (typeof value === 'number') {
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) out.push(path);
+  } else if (Array.isArray(value)) {
+    value.forEach((v, i) => unsafeIntegerPaths(v, `${path}[${i}]`, out));
+  } else if (value !== null && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) unsafeIntegerPaths(v as JsonValue, `${path}.${k}`, out);
+  }
+  return out;
+}
+
 function KindBadge({ ds }: { ds: DatasetManifest }) {
   if (ds.kind === 'synthetic') {
     return (
@@ -87,7 +125,7 @@ function KindBadge({ ds }: { ds: DatasetManifest }) {
 }
 
 function QualitySummaryBadge({ q }: { q: QualityReport }) {
-  const failed = q.checks.filter((c) => !c.passed).length;
+  const failed = failedCount(q);
   const worst = worstFailed(q);
   if (worst === null) {
     return <Badge kind="ok">quality: {q.checks.length} checks passed</Badge>;
@@ -99,59 +137,224 @@ function QualitySummaryBadge({ q }: { q: QualityReport }) {
   );
 }
 
-function CheckRow({ check }: { check: QualityCheck }) {
+const DATASET_COLUMNS: Column<DatasetManifest>[] = [
+  { id: 'id', header: 'Id', rowHeader: true, cell: (d) => <span className="mono">{d.id}</span>, sortValue: (d) => d.id },
+  { id: 'kind', header: 'Kind', cell: (d) => d.kind, sortValue: (d) => d.kind },
+  { id: 'level', header: 'Level', cell: (d) => LEVEL_SHORT[d.level], sortValue: (d) => d.level },
+  {
+    id: 'span',
+    header: 'Span',
+    numeric: true,
+    cell: (d) => fmtDuration(d.end - d.start),
+    sortValue: (d) => d.end - d.start,
+  },
+  {
+    id: 'events',
+    header: 'Events',
+    unit: 'rows',
+    numeric: true,
+    cell: (d) => fmtInt(d.counts.rows),
+    sortValue: (d) => d.counts.rows,
+  },
+];
+
+const CHECK_COLUMNS: Column<QualityCheck>[] = [
+  {
+    id: 'result',
+    header: 'Result',
+    cell: (c) => (c.passed ? <Badge kind="ok">pass</Badge> : <Badge kind={severityBadge(c.severity)}>fail</Badge>),
+    sortValue: (c) => (c.passed ? 1 : 0),
+    raw: (c) => (c.passed ? 'pass' : 'fail'),
+  },
+  {
+    id: 'severity',
+    header: 'Severity',
+    cell: (c) => <Badge kind={c.passed ? 'neutral' : severityBadge(c.severity)}>{c.severity}</Badge>,
+    sortValue: (c) => ({ info: 0, warn: 1, error: 2 })[c.severity],
+    raw: (c) => c.severity,
+  },
+  { id: 'check', header: 'Check', rowHeader: true, cell: (c) => <span className="mono">{c.id}</span>, sortValue: (c) => c.id },
+  {
+    id: 'occurrences',
+    header: 'Occurrences',
+    unit: 'count',
+    numeric: true,
+    cell: (c) => fmtInt(c.count),
+    sortValue: (c) => c.count,
+  },
+  { id: 'detail', header: 'Detail', cell: (c) => <span className="dataset-detail-cell">{c.title}</span>, raw: (c) => c.title },
+];
+
+const FILE_COLUMNS: Column<InputFile>[] = [
+  { id: 'name', header: 'File or URL', rowHeader: true, cell: (f) => <span className="mono wrap-anywhere">{f.name}</span>, sortValue: (f) => f.name },
+  { id: 'role', header: 'Role', cell: (f) => <span className="mono">{f.role}</span>, sortValue: (f) => f.role },
+  { id: 'rows', header: 'Rows', unit: 'count', numeric: true, cell: (f) => fmtInt(f.rows), sortValue: (f) => f.rows },
+  {
+    id: 'size',
+    header: 'Size',
+    numeric: true,
+    cell: (f) => <span title={`${f.bytes} bytes`}>{fmtBytes(f.bytes)}</span>,
+    sortValue: (f) => f.bytes,
+    raw: (f) => String(f.bytes),
+  },
+  { id: 'sha256', header: 'SHA-256 (as read)', cell: (f) => <HashText hash={f.sha256} chars={16} />, raw: (f) => f.sha256 },
+];
+
+function CheckInspector({ check }: { check: QualityCheck }) {
+  useInspector(
+    `Check ${check.id}`,
+    <div className="col">
+      <dl className="kv">
+        <dt>Check</dt>
+        <dd className="mono">{check.id}</dd>
+        <dt>Title</dt>
+        <dd className="prose">{check.title}</dd>
+        <dt>Result</dt>
+        <dd>{check.passed ? <Badge kind="ok">pass</Badge> : <Badge kind={severityBadge(check.severity)}>fail</Badge>}</dd>
+        <dt>Severity</dt>
+        <dd>{check.severity}</dd>
+        <dt>Occurrences</dt>
+        <dd className="num">{fmtInt(check.count)}</dd>
+      </dl>
+      <h3>Detail</h3>
+      <p className="prose">{humanizeNsText(check.detail)}</p>
+      <h3>
+        Examples ({check.examples.length})
+      </h3>
+      {check.examples.length === 0 ? (
+        <p className="note">The check recorded no examples.</p>
+      ) : (
+        <ul className="mono small dataset-examples">
+          {check.examples.map((ex, i) => (
+            <li key={i} className="wrap-anywhere">
+              {humanizeNsText(ex)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>,
+    [check],
+  );
+  return null;
+}
+
+function IdentityTab({ ds }: { ds: DatasetManifest }) {
+  const inst = ds.instrument;
+  const ts = LOCAL_TS[ds.timestamps.local_ts];
+  const digits = digitsForUnit(ds.timestamps.input_unit);
   return (
-    <tr>
-      <td>
-        {check.passed ? (
-          <Badge kind="ok">pass</Badge>
-        ) : (
-          <Badge kind={severityBadge(check.severity)}>fail</Badge>
-        )}
-      </td>
-      <td>
-        <Badge kind={check.passed ? 'neutral' : severityBadge(check.severity)}>
-          {check.severity}
-        </Badge>
-      </td>
-      <td className="mono">{check.id}</td>
-      <td className="wrap">{check.title}</td>
-      <td className="num">{fmtInt(check.count)}</td>
-      <td className="wrap">
-        {humanizeNsText(check.detail)}
-        {check.examples.length > 0 ? (
-          <details className="check-examples">
-            <summary>
-              {check.examples.length} example{check.examples.length === 1 ? '' : 's'}
-            </summary>
-            <ul className="mono small">
-              {check.examples.map((ex, i) => (
-                <li key={i} className="wrap-anywhere">
-                  {humanizeNsText(ex)}
-                </li>
-              ))}
-            </ul>
-          </details>
-        ) : null}
-      </td>
-    </tr>
+    <div className="dataset-identity">
+      <section className="col" aria-label="Identity">
+        <h3>Identity</h3>
+        <dl className="kv">
+          <dt>Dataset id</dt>
+          <dd className="mono">{ds.id}</dd>
+          <dt>Data level</dt>
+          <dd className="prose">{LEVEL_TEXT[ds.level]}</dd>
+          <dt>Span</dt>
+          <dd>
+            <ClockText ns={ds.start} /> {'\u2192'} <ClockText ns={ds.end} />{' '}
+            <span className="dim">({fmtDuration(ds.end - ds.start)}, exchange clock)</span>
+          </dd>
+          <dt>Origin</dt>
+          <dd className="mono" title={`${ds.origin_ns} ns since the Unix epoch`}>
+            {fmtOriginUtc(ds.origin_ns, 0, digits)}
+          </dd>
+          <dt>Tick size</dt>
+          <dd className="mono">{inst.tick_size.toFixed(stepDecimals(inst.tick_size))}</dd>
+          <dt>Lot size</dt>
+          <dd className="mono">{inst.lot_size.toFixed(stepDecimals(inst.lot_size))}</dd>
+          <dt>Contract size</dt>
+          <dd className="mono">{inst.contract_size}</dd>
+          <dt>Event file</dt>
+          <dd>
+            <span className="mono">{ds.events_file}</span> <span className="dim">({fmtBytes(ds.events_bytes)})</span>
+          </dd>
+          <dt>Dataset hash</dt>
+          <dd>
+            <HashText hash={ds.events_sha256} chars={16} /> <span className="dim">sha256</span>
+          </dd>
+        </dl>
+      </section>
+
+      <section className="col" aria-label="Events and timestamps">
+        <h3>Events</h3>
+        <dl className="kv">
+          <dt>Engine rows</dt>
+          <dd className="num">{fmtInt(ds.counts.rows)}</dd>
+          <dt>Trades</dt>
+          <dd className="num">{fmtInt(ds.counts.trades)}</dd>
+          <dt>Depth updates</dt>
+          <dd className="num">{fmtInt(ds.counts.depth_updates)}</dd>
+          <dt>Snapshots</dt>
+          <dd>
+            <span className="num">{fmtInt(ds.counts.snapshots)}</span>{' '}
+            <span className="dim">({fmtInt(ds.counts.snapshot_levels)} levels)</span>
+          </dd>
+          <dt>Depth clears</dt>
+          <dd className="num">{fmtInt(ds.counts.depth_clears)}</dd>
+        </dl>
+        <h3>Timestamp provenance</h3>
+        <dl className="kv">
+          <dt>Local receipt time</dt>
+          <dd className="prose">
+            <Badge kind={ts.badge} title={ts.meaning}>
+              {ts.label}
+            </Badge>{' '}
+            <span className="dim">{ts.meaning}</span>
+          </dd>
+          <dt>Source unit</dt>
+          <dd className="mono">{ds.timestamps.input_unit}</dd>
+          <dt>Local shift applied</dt>
+          <dd>
+            {fmtDuration(ds.timestamps.local_ts_shift_ns)}
+            {ds.timestamps.local_ts_shift_ns !== 0 ? (
+              <span className="dim"> (added to every local timestamp to undo clock skew)</span>
+            ) : null}
+          </dd>
+          <dt>Note</dt>
+          <dd className="prose">
+            {ds.timestamps.note ? humanizeNsText(ds.timestamps.note) : <span className="dim">none</span>}
+          </dd>
+        </dl>
+      </section>
+
+      <section className="col" aria-label="Source and licence">
+        <h3>Source</h3>
+        <dl className="kv">
+          <dt>Vendor</dt>
+          <dd>{ds.source.vendor}</dd>
+          <dt>Exchange</dt>
+          <dd>{ds.source.exchange}</dd>
+          <dt>Symbol</dt>
+          <dd className="mono">{ds.source.symbol}</dd>
+          <dt>Exchange time means</dt>
+          <dd className="prose">{ds.source.exch_ts_semantics}</dd>
+          <dt>Licence note</dt>
+          <dd className="prose">{ds.source.license_note}</dd>
+        </dl>
+      </section>
+    </div>
   );
 }
 
-function QualitySection({ ds }: { ds: DatasetManifest }) {
+function QualityTab({ ds }: { ds: DatasetManifest }) {
   const q = ds.quality;
-  const failed = q.checks.filter((c) => !c.passed);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => q.checks.find((c) => !c.passed)?.id ?? null,
+  );
+  const selected = q.checks.find((c) => c.id === selectedId) ?? null;
   return (
     <section className="col" aria-label="Data quality report">
       <div className="row">
-        <h3>Data quality report</h3>
         <QualitySummaryBadge q={q} />
         <span className="note">
-          Book valid (two-sided, not crossed) for{' '}
-          <span className="mono">{fmtPct(q.book_valid_fraction)}</span> of the exchange-clock span.
+          Book valid (two-sided, not crossed) for <span className="mono">{fmtPct(q.book_valid_fraction)}</span> of the
+          exchange-clock span.
         </span>
       </div>
       <QuantileTable
+        label="Data quality distributions"
         rows={[
           {
             label: 'Feed latency (local receipt \u2212 exchange time)',
@@ -160,8 +363,9 @@ function QualitySection({ ds }: { ds: DatasetManifest }) {
           },
           {
             label: 'Spread at top-of-book changes (ticks)',
+            unit: 'ticks',
             q: q.spread_ticks,
-            fmt: (x) => fmtNum(x, 2),
+            fmt: fmtTicks,
           },
           {
             label: 'Gap between consecutive exchange events',
@@ -170,206 +374,88 @@ function QualitySection({ ds }: { ds: DatasetManifest }) {
           },
         ]}
       />
-      {q.checks.length === 0 ? (
-        <Empty>The manifest lists no quality checks for this dataset.</Empty>
-      ) : (
-        <details open={failed.length > 0}>
-          <summary>
-            All {q.checks.length} checks ({failed.length} failed)
-          </summary>
-          <div className="table-scroll">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th scope="col">Result</th>
-                  <th scope="col">Severity</th>
-                  <th scope="col">Check</th>
-                  <th scope="col">Title</th>
-                  <th scope="col" className="num">
-                    Occurrences
-                  </th>
-                  <th scope="col">Detail and examples</th>
-                </tr>
-              </thead>
-              <tbody>
-                {q.checks.map((c) => (
-                  <CheckRow key={c.id} check={c} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </details>
-      )}
+      <h3>
+        All {q.checks.length} checks ({failedCount(q)} failed)
+      </h3>
+      <p className="note">Select a check to show its full detail and examples in the inspector.</p>
+      <DataTable
+        label="Data quality checks"
+        rows={q.checks}
+        rowKey={(c) => c.id}
+        columns={CHECK_COLUMNS}
+        selectedKey={selectedId}
+        onSelect={(c) => setSelectedId(c.id)}
+        onActivate={(c) => setSelectedId(c.id)}
+        empty="The manifest lists no quality checks for this dataset."
+      />
+      {selected ? <CheckInspector check={selected} /> : null}
     </section>
   );
 }
 
-function DatasetCard({ ds }: { ds: DatasetManifest }) {
-  const inst = ds.instrument;
-  const ts = LOCAL_TS[ds.timestamps.local_ts];
+function FilesTab({ ds }: { ds: DatasetManifest }) {
+  const unsafe = useMemo(() => (ds.generator === null ? [] : unsafeIntegerPaths(ds.generator, 'generator', [])), [ds.generator]);
   return (
-    <Panel
-      title={
+    <section className="col" aria-label="Input files">
+      <h3>Input files</h3>
+      <DataTable
+        label="Input files"
+        rows={ds.source.inputs}
+        rowKey={(f) => `${f.name}-${f.role}-${f.sha256}`}
+        columns={FILE_COLUMNS}
+        empty="The manifest lists no input files."
+      />
+      {ds.generator !== null ? (
         <>
-          <span className="dataset-title">{ds.title}</span>
-          <KindBadge ds={ds} />
+          {unsafe.map((p) => (
+            <Notice key={p} tag="PRECISION" tone="warn">
+              <span className="mono">{p}</span> arrived as a JSON number above 2^53 {'\u2212'} 1; its last digits may
+              have been rounded by the browser. The exact origin is <span className="mono">origin_ns</span> ={' '}
+              <span className="mono">{ds.origin_ns}</span>.
+            </Notice>
+          ))}
+          <JsonBlock
+            summary="Generator configuration (regenerates this synthetic dataset exactly)"
+            value={ds.generator}
+          />
         </>
-      }
-      actions={
-        <>
-          <Link className="btn" to={`/replay/${encodeURIComponent(ds.id)}`}>
-            Market replay
-          </Link>
-          <Link className="btn btn-primary" to={`/lab?dataset=${encodeURIComponent(ds.id)}`}>
-            Open in Strategy Lab
-          </Link>
-        </>
-      }
-    >
-      <div className="col">
-        <div className="grid-3">
-          <section className="col" aria-label="Identity">
-            <h3>Identity</h3>
-            <dl className="kv">
-              <dt>Dataset id</dt>
-              <dd>{ds.id}</dd>
-              <dt>Data level</dt>
-              <dd className="prose">{LEVEL_TEXT[ds.level]}</dd>
-              <dt>Span</dt>
-              <dd>
-                <ClockText ns={ds.start} /> {'\u2192'} <ClockText ns={ds.end} />{' '}
-                <span className="dim">({fmtDuration(ds.end - ds.start)}, exchange clock)</span>
-              </dd>
-              <dt>Origin</dt>
-              <dd title={`${ds.origin_ns} ns since the Unix epoch`}>
-                {fmtOriginUtc(ds.origin_ns)}
-              </dd>
-              <dt>Tick size</dt>
-              <dd>{inst.tick_size.toFixed(stepDecimals(inst.tick_size))}</dd>
-              <dt>Lot size</dt>
-              <dd>{inst.lot_size.toFixed(stepDecimals(inst.lot_size))}</dd>
-              <dt>Contract size</dt>
-              <dd>{inst.contract_size}</dd>
-              <dt>Event file</dt>
-              <dd>
-                {ds.events_file} <span className="dim">({fmtBytes(ds.events_bytes)})</span>
-              </dd>
-              <dt>Dataset hash</dt>
-              <dd>
-                <HashText hash={ds.events_sha256} chars={16} />{' '}
-                <span className="dim">sha256</span>
-              </dd>
-            </dl>
-          </section>
+      ) : null}
+    </section>
+  );
+}
 
-          <section className="col" aria-label="Events and timestamps">
-            <h3>Events</h3>
-            <dl className="kv">
-              <dt>Engine rows</dt>
-              <dd>{fmtInt(ds.counts.rows)}</dd>
-              <dt>Trades</dt>
-              <dd>{fmtInt(ds.counts.trades)}</dd>
-              <dt>Depth updates</dt>
-              <dd>{fmtInt(ds.counts.depth_updates)}</dd>
-              <dt>Snapshots</dt>
-              <dd>
-                {fmtInt(ds.counts.snapshots)}{' '}
-                <span className="dim">({fmtInt(ds.counts.snapshot_levels)} levels)</span>
-              </dd>
-              <dt>Depth clears</dt>
-              <dd>{fmtInt(ds.counts.depth_clears)}</dd>
-            </dl>
-            <h3>Timestamp provenance</h3>
-            <dl className="kv">
-              <dt>Local receipt time</dt>
-              <dd className="prose">
-                <Badge kind={ts.badge} title={ts.meaning}>
-                  {ts.label}
-                </Badge>{' '}
-                <span className="dim">{ts.meaning}</span>
-              </dd>
-              <dt>Source unit</dt>
-              <dd>{ds.timestamps.input_unit}</dd>
-              <dt>Local shift applied</dt>
-              <dd>
-                {fmtDuration(ds.timestamps.local_ts_shift_ns)}
-                {ds.timestamps.local_ts_shift_ns !== 0 ? (
-                  <span className="dim"> (added to every local timestamp to undo clock skew)</span>
-                ) : null}
-              </dd>
-              <dt>Note</dt>
-              <dd className="prose">
-                {ds.timestamps.note ? humanizeNsText(ds.timestamps.note) : <span className="dim">none</span>}
-              </dd>
-            </dl>
-          </section>
+type DetailTab = 'identity' | 'quality' | 'files';
 
-          <section className="col" aria-label="Source and licence">
-            <h3>Source</h3>
-            <dl className="kv">
-              <dt>Vendor</dt>
-              <dd>{ds.source.vendor}</dd>
-              <dt>Exchange</dt>
-              <dd>{ds.source.exchange}</dd>
-              <dt>Symbol</dt>
-              <dd>{ds.source.symbol}</dd>
-              <dt>Exchange time means</dt>
-              <dd className="prose">{ds.source.exch_ts_semantics}</dd>
-              <dt>Licence note</dt>
-              <dd className="prose">{ds.source.license_note}</dd>
-            </dl>
-          </section>
-        </div>
-
-        <section className="col" aria-label="Input files">
-          <h3>Input files</h3>
-          {ds.source.inputs.length === 0 ? (
-            <p className="note">The manifest lists no input files.</p>
-          ) : (
-            <div className="table-scroll">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th scope="col">File or URL</th>
-                    <th scope="col">Role</th>
-                    <th scope="col" className="num">
-                      Rows
-                    </th>
-                    <th scope="col" className="num">
-                      Size
-                    </th>
-                    <th scope="col">SHA-256 (as read)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ds.source.inputs.map((f, i) => (
-                    <tr key={`${f.name}-${i}`}>
-                      <td className="mono wrap wrap-anywhere">{f.name}</td>
-                      <td className="mono">{f.role}</td>
-                      <td className="num">{fmtInt(f.rows)}</td>
-                      <td className="num" title={`${f.bytes} bytes`}>
-                        {fmtBytes(f.bytes)}
-                      </td>
-                      <td>
-                        <HashText hash={f.sha256} chars={16} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {ds.generator !== null ? (
-            <JsonBlock
-              summary="Generator configuration (regenerates this synthetic dataset exactly)"
-              value={ds.generator}
-            />
-          ) : null}
-        </section>
-
-        <QualitySection ds={ds} />
-      </div>
-    </Panel>
+function DatasetDetail({ ds }: { ds: DatasetManifest }) {
+  const [tab, setTab] = useState<DetailTab>('identity');
+  const failed = failedCount(ds.quality);
+  return (
+    <TimeDigitsContext.Provider value={digitsForUnit(ds.timestamps.input_unit)}>
+      <Panel
+        fill
+        title={
+          <>
+            <span className="dataset-title">{ds.id}</span> <KindBadge ds={ds} />
+          </>
+        }
+        caption={ds.title}
+      >
+        <Tabs
+          label="Dataset detail"
+          active={tab}
+          onChange={setTab}
+          tabs={[
+            { id: 'identity', label: 'Identity' },
+            { id: 'quality', label: 'Quality', count: `${fmtInt(failed)} failed` },
+            { id: 'files', label: 'Files', count: fmtInt(ds.source.inputs.length) },
+          ]}
+        >
+          {tab === 'identity' ? <IdentityTab ds={ds} /> : null}
+          {tab === 'quality' ? <QualityTab key={ds.id} ds={ds} /> : null}
+          {tab === 'files' ? <FilesTab ds={ds} /> : null}
+        </Tabs>
+      </Panel>
+    </TimeDigitsContext.Provider>
   );
 }
 
@@ -397,24 +483,100 @@ function HowToCreate() {
 }
 
 export default function DatasetsPage() {
-  usePageTitle('Datasets');
+  const { datasetId } = useParams<{ datasetId?: string }>();
+  const navigate = useNavigate();
   const datasets = useAsync(() => api.datasets(), []);
+  const list = datasets.data;
+  const selected = list && datasetId ? (list.find((d) => d.id === datasetId) ?? null) : null;
+
+  // `/data` without an id opens the first installed dataset.
+  useEffect(() => {
+    if (datasetId === undefined && list && list.length > 0) {
+      navigate(paths.dataset(list[0].id), { replace: true });
+    }
+  }, [datasetId, list, navigate]);
+
+  const toolbar = (
+    <>
+      {selected ? (
+        <>
+          <Link className="btn" to={paths.bookDataset(selected.id)}>
+            Open in Order Book Lab
+          </Link>
+          <Link className="btn btn-primary" to={paths.strategy({ dataset: selected.id })}>
+            Open in Strategy Lab
+          </Link>
+        </>
+      ) : (
+        <>
+          <button type="button" disabled title="Select a dataset first.">
+            Open in Order Book Lab
+          </button>
+          <button type="button" className="btn-primary" disabled title="Select a dataset first.">
+            Open in Strategy Lab
+          </button>
+        </>
+      )}
+      <button type="button" onClick={datasets.reload} disabled={datasets.loading}>
+        Reload
+      </button>
+    </>
+  );
+
+  let state: ReactNode;
+  if (datasets.error) state = <ErrorBox error={datasets.error} onRetry={datasets.reload} />;
+  else if (!list) state = <Spinner label="Loading datasets" />;
+  else if (list.length === 0) state = <HowToCreate />;
+  else if (selected) state = null;
+  else if (datasetId !== undefined) {
+    state = (
+      <Empty>
+        Dataset <span className="mono">{datasetId}</span> is not installed on the server. Select one from the list.
+      </Empty>
+    );
+  } else state = <Spinner label="Opening the first dataset" />;
 
   return (
-    <div className="col">
-      <PageHeader
-        title="Datasets"
-        lead="Historical Level-2 data available for replay. Each dataset carries its provenance, hashes and a data-quality report; simulations are only as trustworthy as the data they replay."
-        actions={
-          <button type="button" onClick={datasets.reload} disabled={datasets.loading}>
-            Reload
-          </button>
-        }
+    <Workspace context={datasetId ?? null} toolbar={toolbar} layout>
+      <SplitPane
+        id="data.main"
+        panes={[
+          {
+            id: 'datasets',
+            label: 'Datasets',
+            defaultSize: '28%',
+            minSize: '16%',
+            collapsible: true,
+            content: (
+              <Panel title="Datasets" fill flush>
+                <DataTable
+                  label="Datasets"
+                  fill
+                  rows={list ?? []}
+                  rowKey={(d) => d.id}
+                  columns={DATASET_COLUMNS}
+                  selectedKey={selected?.id ?? null}
+                  onSelect={(d) => navigate(paths.dataset(d.id))}
+                  onActivate={(d) => navigate(paths.dataset(d.id))}
+                  empty={list ? 'No datasets are installed.' : 'Loading datasets'}
+                />
+              </Panel>
+            ),
+          },
+          {
+            id: 'detail',
+            label: 'Dataset detail',
+            minSize: '40%',
+            content: selected ? (
+              <DatasetDetail key={selected.id} ds={selected} />
+            ) : (
+              <Panel title="Dataset" fill>
+                {state}
+              </Panel>
+            ),
+          },
+        ]}
       />
-      {datasets.error ? <ErrorBox error={datasets.error} /> : null}
-      {datasets.loading && !datasets.data ? <Spinner label="Loading datasets" /> : null}
-      {datasets.data && datasets.data.length === 0 ? <HowToCreate /> : null}
-      {datasets.data?.map((ds) => <DatasetCard key={ds.id} ds={ds} />)}
-    </div>
+    </Workspace>
   );
 }

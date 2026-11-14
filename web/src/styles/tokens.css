@@ -1,0 +1,143 @@
+/*
+ * Design tokens (docs/engineering/UI_DESIGN_SPEC.md §4). The only file that holds colour values.
+ *
+ * Colour carries meaning only: side (bid/ask), sign (up/down), the four evidence bases and status.
+ * Surfaces are neutral. Evidence bases also differ by border style (observed solid, modeled dashed,
+ * derived double, unobservable dotted) so they never depend on colour vision.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces: charcoal -> graphite. Lighter = closer to the user. */
+  --bg-0: #0E0F11;
+  --bg-1: #141518;
+  --bg-2: #1B1D21;
+  --bg-3: #23262B;
+  --bg-selected: #1A2636;
+
+  /* Lines */
+  --border-subtle: #25282D;
+  --border: #30343A;
+  --border-strong: #454B53;
+  --border-control: #646B74;
+
+  /* Text */
+  --fg-0: #E4E6E9;
+  --fg-1: #A9AFB7;
+  --fg-2: #868D96;
+  --fg-disabled: #5B6169;
+
+  /* Interaction */
+  --accent: #7FA7D9;
+
+  /* Market semantics (default palette) */
+  --bid: #3FB68B;
+  --ask: #EB6F66;
+  --up: #3FB68B;
+  --down: #EB6F66;
+  --bid-weak: #1C322D;
+  --ask-weak: #3B2526;
+  --bid-bar: #2C6E57;
+  --ask-bar: #8A4643;
+
+  /* Evidence bases */
+  --observed: #62B8D6;
+  --modeled: #D9A441;
+  --derived: #A99CDB;
+  --unobservable: #9AA0A8;
+
+  /* Status */
+  --ok: #74BE87;
+  --warn: #D8C25A;
+  --error: #F2675C;
+  --info: #7FA7D9;
+
+  /* Typography (§4.4). Fonts are self-hosted (CSP font-src 'self'). */
+  --font-sans: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', ui-monospace, Consolas, monospace;
+  --text-2xs: 11px;
+  --lh-2xs: 14px;
+  --text-xs: 11px;
+  --lh-xs: 16px;
+  --text-sm: 12px;
+  --lh-sm: 16px;
+  --text-md: 13px;
+  --lh-md: 18px;
+  --text-lg: 15px;
+  --lh-lg: 20px;
+  --text-xl: 18px;
+  --lh-xl: 24px;
+
+  /* 4 px grid (§4.5) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  --h-topbar: 36px;
+  --h-statusbar: 24px;
+  --w-rail: 48px;
+  --w-rail-open: 208px;
+  --h-panel-head: 28px;
+  --h-toolbar: 32px;
+  --h-tab: 28px;
+  --h-control: 24px;
+  --h-row: 24px;
+  --h-row-compact: 20px;
+  --w-inspector: 320px;
+
+  --radius-0: 0;
+  --radius-1: 2px;
+  --radius-2: 3px;
+
+  --shadow-float: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  --dur-fast: 120ms;
+
+  /*
+   * Legacy names, read only by features/compare/compare.css, which is owned by a parallel branch
+   * and is migrated there. Nothing else may use them; delete this block with that migration.
+   */
+  --bg: var(--bg-0);
+  --surface: var(--bg-1);
+  --surface-2: var(--bg-2);
+  --fg: var(--fg-0);
+  --muted: var(--fg-2);
+  --buy: var(--bid);
+  --sell: var(--ask);
+  --mono: var(--font-mono);
+  --radius: var(--radius-2);
+  --gap: var(--sp-3);
+}
+
+/* Colour-vision-deficiency palette: setting "Side colours: blue/orange". */
+:root[data-side-palette='cvd'] {
+  --bid: #5AA2E6;
+  --ask: #E8953A;
+  --up: #5AA2E6;
+  --down: #E8953A;
+  --bid-weak: #212E3D;
+  --ask-weak: #3A2C1E;
+  --bid-bar: #3B6389;
+  --ask-bar: #895B2B;
+}
+
+/* Density (setting, `bb.density.v1`). Rows stay on the 4 px grid. */
+:root[data-density='comfortable'] {
+  --h-row: 28px;
+}
+
+:root[data-density='compact'] {
+  --h-row: var(--h-row-compact);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+  }
+}

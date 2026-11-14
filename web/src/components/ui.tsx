@@ -1,29 +1,65 @@
-// Shared presentational primitives and the data-loading hook used by every page.
+// Shared presentational primitives and the data-loading hook used by every workspace
+// (UI_DESIGN_SPEC.md §6.3, §6.6, §6.9, §6.10).
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { ApiError } from '../api/client';
 import type { Basis, Side } from '../api/types';
 import { DASH, fmtClock, shortHash } from './fmt';
+import { relParts, type NsDigits, type NsInput } from './ns';
 
 // ----- Panel ------------------------------------------------------------------------------
 
 export interface PanelProps {
   title: ReactNode;
+  /** Right-aligned header controls (24 px buttons, links). */
   actions?: ReactNode;
   children?: ReactNode;
   className?: string;
+  /** One-line honesty caption under the header ("Observed L2. Downsampled 1:200 ms."). */
+  caption?: ReactNode;
+  /** Evidence basis of the panel's content, shown as a badge after the title. */
+  basis?: Basis;
+  /** Body without padding (tables, charts). */
+  flush?: boolean;
+  /** Body fills the remaining height and scrolls internally (docked panels). */
+  fill?: boolean;
+  /** Collapse to the header with a `^` toggle. */
+  collapsible?: boolean;
 }
 
-export function Panel({ title, actions, children, className }: PanelProps) {
+/** A titled region: 28 px header, optional caption, body on `--bg-1`. */
+export function Panel({ title, actions, children, className, caption, basis, flush, fill, collapsible }: PanelProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const bodyId = useId();
+  const classes = ['panel', fill ? 'panel-fill' : '', className ?? ''].filter(Boolean).join(' ');
   return (
-    <section className={className ? `panel ${className}` : 'panel'}>
+    <section className={classes}>
       <header className="panel-head">
         <h2 className="panel-title">{title}</h2>
-        {actions ? <div className="panel-actions">{actions}</div> : null}
+        {basis ? <BasisBadge basis={basis} /> : null}
+        <div className="panel-actions">
+          {actions}
+          {collapsible ? (
+            <button
+              type="button"
+              className="btn-icon"
+              aria-expanded={!collapsed}
+              aria-controls={bodyId}
+              aria-label={collapsed ? 'Expand panel' : 'Collapse panel'}
+              title={collapsed ? 'Expand panel' : 'Collapse panel'}
+              onClick={() => setCollapsed((c) => !c)}
+            >
+              {collapsed ? '\u02c5' : '\u02c4'}
+            </button>
+          ) : null}
+        </div>
       </header>
-      <div className="panel-body">{children}</div>
+      {caption && !collapsed ? <p className="panel-caption">{caption}</p> : null}
+      <div id={bodyId} className={flush ? 'panel-body panel-body-flush' : 'panel-body'} hidden={collapsed}>
+        {children}
+      </div>
     </section>
   );
 }
@@ -86,7 +122,9 @@ export function BasisLegend() {
     <ul className="basis-legend" aria-label="Evidence basis legend">
       {BASIS_ORDER.map((b) => (
         <li key={b}>
-          <Badge kind={b}>{b}</Badge>
+          <span>
+            <Badge kind={b}>{b}</Badge>
+          </span>
           <span>{BASIS_MEANING[b]}</span>
         </li>
       ))}
@@ -99,7 +137,16 @@ export function SideBadge({ side }: { side: Side | null }) {
   return <Badge kind={side}>{side}</Badge>;
 }
 
-// ----- Stat -------------------------------------------------------------------------------
+/** Status pill: uppercase text plus a shape, so state never depends on colour (§6.6). */
+export function Pill({ tone, children, title }: { tone: 'ok' | 'warn' | 'error' | 'neutral' | 'info'; children: ReactNode; title?: string }) {
+  return (
+    <span className={`pill pill-${tone}`} title={title}>
+      {children}
+    </span>
+  );
+}
+
+// ----- Stat (KPI strip cell) --------------------------------------------------------------
 
 export interface StatProps {
   label: ReactNode;
@@ -117,13 +164,27 @@ export function Stat({ label, value, hint }: StatProps) {
   );
 }
 
-// ----- Spinner / ErrorBox / Empty ---------------------------------------------------------
+// ----- Loading / ErrorBox / Empty / Notice ------------------------------------------------
 
+/** Seconds since mount, updated once a second (for "Loading… 3 s"). */
+export function useElapsedSeconds(): number {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return elapsed;
+}
+
+/** Static loading line with an elapsed-time counter; no animation (§4.5, §6.9). */
 export function Spinner({ label = 'Loading' }: { label?: string }) {
+  const elapsed = useElapsedSeconds();
   return (
-    <span className="spinner" role="status" aria-live="polite">
-      <span className="spinner-mark" aria-hidden="true" />
-      <span>{label}</span>
+    <span className="spinner" role="status">
+      {label}
+      {'\u2026'}
+      {elapsed > 0 ? <span className="mono">{` ${elapsed} s`}</span> : null}
     </span>
   );
 }
@@ -132,24 +193,29 @@ export function Spinner({ label = 'Loading' }: { label?: string }) {
  * Shows a failure exactly as reported. For API errors the server's code and message are
  * printed verbatim (an `invalid_config` message lists every problem, one per line).
  */
-export function ErrorBox({ error }: { error: unknown }) {
+export function ErrorBox({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+  const [copied, setCopied] = useState(false);
   if (error === null || error === undefined) return null;
   const message = error instanceof Error ? error.message : String(error);
   const api = error instanceof ApiError ? error : null;
+  const head = api ? `ERROR ${api.status > 0 ? `${api.status} ` : ''}${api.code}` : 'ERROR unexpected failure';
+  const copy = () => {
+    void navigator.clipboard?.writeText(`${head}\n${message}`).then(() => setCopied(true));
+  };
   return (
     <div className="error-box" role="alert">
-      <div className="error-box-head">
-        <Badge kind="error">error</Badge>
-        {api ? (
-          <span className="mono">
-            {api.code}
-            {api.status > 0 ? ` (HTTP ${api.status})` : ''}
-          </span>
-        ) : (
-          <span>Unexpected failure</span>
-        )}
-      </div>
+      <div className="error-box-head">{head}</div>
       <div className="error-box-message">{message}</div>
+      <div className="error-box-actions">
+        {onRetry ? (
+          <button type="button" onClick={onRetry}>
+            Retry
+          </button>
+        ) : null}
+        <button type="button" onClick={copy}>
+          {copied ? 'Copied' : 'Copy details'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -158,16 +224,48 @@ export function Empty({ children }: { children?: ReactNode }) {
   return <div className="empty">{children}</div>;
 }
 
-// ----- small text helpers -----------------------------------------------------------------
+export type NoticeTone = 'warn' | 'info' | 'modeled' | 'error';
 
-/** `mm:ss.mmm` with the microsecond digits dimmed. `null` renders an em dash. */
-export function ClockText({ ns }: { ns: number | null }) {
-  if (ns === null) return <span className="mono dim">{DASH}</span>;
-  const text = fmtClock(ns);
+/** Inline notice: a 2 px left rule, an uppercase tag and one sentence (§6.10). Not dismissible. */
+export function Notice({ tag, tone = 'warn', children }: { tag: string; tone?: NoticeTone; children: ReactNode }) {
   return (
-    <span className="mono nowrap" title={`${ns} ns after dataset origin`}>
-      {text.slice(0, -3)}
-      <span className="dim">{text.slice(-3)}</span>
+    <div className={tone === 'warn' ? 'notice' : `notice notice-${tone}`} role="note">
+      <span className="notice-tag">{tag}</span>
+      <span>{children}</span>
+    </div>
+  );
+}
+
+// ----- time and hash text -----------------------------------------------------------------
+
+/**
+ * Fraction digits of the dataset in view, from its declared timestamp resolution
+ * (`digitsForUnit(manifest.timestamps.input_unit)`). Unknown resolution shows all nine digits
+ * with the sub-microsecond group dimmed (§7.3, §16).
+ */
+export const TimeDigitsContext = createContext<NsDigits>(9);
+
+/**
+ * Dataset-relative time, `+mm:ss.mmm uuu`: the sub-millisecond groups are dimmed and the
+ * exact nanosecond value is in the tooltip. `null` renders an em dash.
+ */
+export function ClockText({ ns, digits }: { ns: NsInput | null; digits?: NsDigits }) {
+  const contextDigits = useContext(TimeDigitsContext);
+  if (ns === null) return <span className="mono dim">{DASH}</span>;
+  const d = digits ?? contextDigits;
+  let parts;
+  try {
+    parts = relParts(ns, d);
+  } catch {
+    return <span className="mono dim">{fmtClock(ns, d)}</span>;
+  }
+  const [ms, ...sub] = parts.groups;
+  return (
+    <span className="mono nowrap" title={`${String(ns)} ns after dataset origin`}>
+      {parts.sign}
+      {parts.clock}
+      {ms !== undefined ? `.${ms}` : null}
+      {sub.length > 0 ? <span className="dim">{sub.map((g) => `\u2009${g}`).join('')}</span> : null}
     </span>
   );
 }

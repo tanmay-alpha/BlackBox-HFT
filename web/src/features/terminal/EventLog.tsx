@@ -1,7 +1,10 @@
 // Flight-recorder events near the cursor, on both clocks, with source and clock badges.
 
 import type { FlightEvent, InstrumentMeta } from '../../api/types';
-import { Badge, ClockText, Empty } from '../../components/ui';
+import { DataTable } from '../../components/DataTable';
+import type { Column } from '../../components/DataTable';
+import { fmtInt } from '../../components/fmt';
+import { Badge, ClockText } from '../../components/ui';
 import { eventSummary, eventTitle } from '../forensics/eventFormat';
 
 const BEFORE = 12;
@@ -30,77 +33,91 @@ export interface EventLogProps {
 }
 
 export function EventLog({ events, cursor, instrument, selectedOrder, onSelectOrder, onJump }: EventLogProps) {
-  if (events.length === 0) {
-    return <Empty>No events in this window match the filters.</Empty>;
-  }
   const at = lastEventAtOrBefore(events, cursor);
   const from = Math.max(0, at - BEFORE + 1);
   const to = Math.min(events.length, Math.max(at + 1, from) + AFTER);
   const slice = events.slice(from, to);
+  const current = at >= 0 ? events[at] : null;
+
+  const columns: Column<FlightEvent>[] = [
+    {
+      id: 'time',
+      header: 'Time',
+      width: 150,
+      cell: (ev) => (
+        <button type="button" className="btn-link" onClick={() => onJump(ev)} title="Move the cursor here">
+          <ClockText ns={ev.ts} />
+        </button>
+      ),
+      raw: (ev) => String(ev.ts),
+    },
+    {
+      id: 'clock',
+      header: 'Clock',
+      term: 'clocks',
+      width: 64,
+      cell: (ev) => (
+        <Badge kind="neutral" title={`${ev.clock} clock`}>
+          {ev.clock === 'exchange' ? 'exch' : 'local'}
+        </Badge>
+      ),
+    },
+    {
+      id: 'source',
+      header: 'Source',
+      width: 84,
+      cell: (ev) => <Badge kind={ev.source}>{ev.source}</Badge>,
+    },
+    {
+      id: 'order',
+      header: 'Order',
+      width: 80,
+      cell: (ev) =>
+        ev.order_id === null ? (
+          <span className="dim">run</span>
+        ) : (
+          <button type="button" className="btn-link mono" onClick={() => onSelectOrder(ev.order_id as number)}>
+            {ev.order_id}
+          </button>
+        ),
+      raw: (ev) => (ev.order_id === null ? '' : String(ev.order_id)),
+    },
+    {
+      id: 'event',
+      header: 'Event',
+      cell: (ev) => (
+        <span className="term-ev">
+          <span>{eventTitle(ev)}</span> <span className="dim term-ev-summary">{eventSummary(ev, instrument)}</span>
+        </span>
+      ),
+    },
+  ];
+
   return (
-    <div className="col">
-      <p className="note">
-        Showing {to - from} of {events.length} matching events around the cursor (rows {from + 1}{'\u2013'}
-        {to}). Times on both clocks share the dataset origin; local and exchange are different
-        clocks, so their difference is modeled latency.
-      </p>
-      <div className="table-scroll term-events">
-        <table className="table">
-          <thead>
-            <tr>
-              <th scope="col">Time</th>
-              <th scope="col">Clock</th>
-              <th scope="col">Source</th>
-              <th scope="col">Order</th>
-              <th scope="col">Event</th>
-            </tr>
-          </thead>
-          <tbody>
-            {slice.map((ev, i) => {
-              const idx = from + i;
-              const past = ev.ts <= cursor;
-              const current = idx === at;
-              const cls = [
-                current ? 'selected' : '',
-                past ? '' : 'term-future',
-                ev.order_id !== null && ev.order_id === selectedOrder ? 'term-ev-sel' : '',
-              ]
-                .filter(Boolean)
-                .join(' ');
-              return (
-                <tr key={ev.seq} className={cls || undefined} aria-current={current ? 'true' : undefined}>
-                  <td className="nowrap">
-                    <button type="button" className="btn-link" onClick={() => onJump(ev)} title="Move the cursor here">
-                      <ClockText ns={ev.ts} />
-                    </button>
-                  </td>
-                  <td>
-                    <Badge kind="neutral" title={`${ev.clock} clock`}>
-                      {ev.clock === 'exchange' ? 'exch' : 'local'}
-                    </Badge>
-                  </td>
-                  <td>
-                    <Badge kind={ev.source}>{ev.source}</Badge>
-                  </td>
-                  <td className="mono">
-                    {ev.order_id === null ? (
-                      <span className="dim">run</span>
-                    ) : (
-                      <button type="button" className="btn-link mono" onClick={() => onSelectOrder(ev.order_id as number)}>
-                        {ev.order_id}
-                      </button>
-                    )}
-                  </td>
-                  <td className="wrap">
-                    <span>{eventTitle(ev)}</span>
-                    <div className="dim small term-ev-summary">{eventSummary(ev, instrument)}</div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <DataTable
+      label="Event log"
+      rows={slice}
+      rowKey={(ev) => String(ev.seq)}
+      columns={columns}
+      fill
+      selectedKey={current ? String(current.seq) : null}
+      onActivate={(ev) => onJump(ev)}
+      rowClassName={(ev) =>
+        [ev.ts <= cursor ? '' : 'term-future', ev.order_id !== null && ev.order_id === selectedOrder ? 'term-ev-sel' : '']
+          .filter(Boolean)
+          .join(' ') || undefined
+      }
+      empty="No events in this window match the filters."
+      footer={
+        events.length > 0 ? (
+          <span className="dim small">
+            Showing {fmtInt(to - from)} of {fmtInt(events.length)} matching events around the cursor (rows {fmtInt(from + 1)}
+            {'\u2013'}
+            {fmtInt(to)}). Times on both clocks share the dataset origin; local and exchange are different clocks, so their
+            difference is modeled latency.
+          </span>
+        ) : null
+      }
+    />
   );
 }

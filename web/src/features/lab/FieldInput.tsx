@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
+import { fmtNum } from '../../components/fmt';
 import { Badge } from '../../components/ui';
 import { fieldProblem } from './fields';
 import type { Field, NumberField, OptionalNumberField } from './fields';
@@ -222,7 +223,8 @@ export function FieldRow<T>({ field, obj, onChange, scope, modeled }: FieldRowPr
   if (field.kind === 'number' && field.convert) {
     const stored = field.get(obj);
     if (Number.isFinite(stored)) {
-      conversion = `= ${stored.toLocaleString('en-US', { maximumFractionDigits: 12 })} ${field.convert.storedUnit} (stored and sent)`;
+      // Twelve decimals cover every stored fraction; trailing zeros (and a bare point) are dropped.
+      conversion = `= ${fmtNum(stored, 12).replace(/\.?0+$/, '')} ${field.convert.storedUnit} (stored and sent)`;
     }
   }
 
@@ -230,7 +232,6 @@ export function FieldRow<T>({ field, obj, onChange, scope, modeled }: FieldRowPr
     <div className="field">
       <label className="field-label" htmlFor={domId}>
         <span>{field.label}</span>
-        {unit ? <span className="field-unit">{unit}</span> : null}
         {modeled ? (
           <Badge kind="modeled" title="An execution assumption: what it produces is an estimate.">
             modeled
@@ -245,6 +246,7 @@ export function FieldRow<T>({ field, obj, onChange, scope, modeled }: FieldRowPr
           domId={domId}
           describedBy={helpId}
         />
+        {unit ? <span className="field-unit">{unit}</span> : null}
       </div>
       {conversion ? <span className="field-help mono">{conversion}</span> : null}
       <span className="field-help" id={helpId}>

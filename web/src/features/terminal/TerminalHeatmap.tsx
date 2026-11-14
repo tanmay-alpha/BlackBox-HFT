@@ -9,6 +9,7 @@ import { cssVar } from '../../components/theme';
 import { ClockText, ErrorBox } from '../../components/ui';
 import { HeatmapRenderer } from '../replay/heatmap';
 import type { HeatmapHover, HeatmapTheme, LevelQty } from '../replay/heatmap';
+import { readHeatmapTheme } from '../replay/HeatmapView';
 import { ownOrdersPainter } from './overlay';
 import type { OverlayTheme } from './overlay';
 
@@ -30,23 +31,13 @@ export interface TerminalHeatmapProps {
 const FOCUS_SPAN_NS = 4_000_000_000;
 
 function readThemes(): { heat: HeatmapTheme; overlay: OverlayTheme } {
-  const heat: HeatmapTheme = {
-    bg: cssVar('--bg', '#0f1113'),
-    surface: cssVar('--surface', '#15181b'),
-    border: cssVar('--border', '#2c3238'),
-    fg: cssVar('--fg', '#d7dbe0'),
-    muted: cssVar('--muted', '#929ba5'),
-    accent: cssVar('--accent', '#9db8dc'),
-    buy: cssVar('--buy', '#4fbf8d'),
-    sell: cssVar('--sell', '#ee7468'),
-    mono: cssVar('--mono', 'monospace'),
-  };
+  const heat = readHeatmapTheme();
   return {
     heat,
     overlay: {
       buy: heat.buy,
       sell: heat.sell,
-      modeled: cssVar('--modeled', '#e2a83a'),
+      modeled: cssVar('--modeled'),
       accent: heat.accent,
       bg: heat.bg,
     },
@@ -140,11 +131,11 @@ export function TerminalHeatmap({
   if (fatal) return <ErrorBox error={fatal} />;
 
   return (
-    <div className="col heatmap">
+    <div className="heatmap">
       <div className="heatmap-wrap" ref={wrapRef}>
         <canvas
           ref={canvasRef}
-          className="heatmap-canvas term-heatmap-canvas"
+          className="heatmap-canvas"
           role="img"
           aria-label="Order book heatmap reconstructed from Level-2 updates, with this run's simulated orders as dashed price lines and simulated fills as diamonds. Click to move the cursor; wheel zooms; drag pans; double-click resets."
         />
@@ -156,8 +147,8 @@ export function TerminalHeatmap({
               <ClockText ns={Math.round(hover.t)} />
             </span>
             <span>{fmtPrice(hover.tick, instrument)}</span>
-            <span className="buy">bid qty {levelText(hover.bid, instrument)}</span>
-            <span className="sell">ask qty {levelText(hover.ask, instrument)}</span>
+            <span className="bid">bid qty {levelText(hover.bid, instrument)}</span>
+            <span className="ask">ask qty {levelText(hover.ask, instrument)}</span>
           </>
         ) : (
           <span className="dim">
@@ -177,8 +168,8 @@ export function TerminalHeatmap({
           <span className="legend-dot legend-dot-buy" aria-hidden="true" /> market trade (observed)
         </span>
         <span>
-          <span className="term-swatch-order term-swatch-buy" aria-hidden="true" />
-          <span className="term-swatch-order term-swatch-sell" aria-hidden="true" /> own order resting
+          <span className="term-swatch-order term-swatch-bid" aria-hidden="true" />
+          <span className="term-swatch-order term-swatch-ask" aria-hidden="true" /> own order resting
           at the simulated exchange (modeled)
         </span>
         <span>

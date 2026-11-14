@@ -11,6 +11,7 @@
 
 import type { FlightEvent } from "../../api/types";
 import { fmtDuration } from "../../components/fmt";
+import { cssVar } from "../../components/theme";
 import { fmtAxisNs, niceStep, ticksBetween } from "./axis";
 
 export type AxisMode = "linear" | "ordinal";
@@ -145,22 +146,21 @@ interface Palette {
   sans: string;
 }
 
-function readPalette(el: HTMLElement): Palette {
-  const style = getComputedStyle(el);
-  const v = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+/** Token values at draw time (styles/tokens.css); the side palette setting applies on redraw. */
+function readPalette(): Palette {
   return {
-    fg: v("--fg", "#d8dbe0"),
-    muted: v("--muted", "#7f8794"),
-    border: v("--border", "#2a2f38"),
-    accent: v("--accent", "#e0b050"),
-    buy: v("--buy", "#3fae7a"),
-    sell: v("--sell", "#d9534f"),
-    observed: v("--observed", "#5aa9e6"),
-    modeled: v("--modeled", "#c792ea"),
-    warn: v("--warn", "#e0a030"),
-    error: v("--error", "#e5534b"),
-    mono: v("--mono", "ui-monospace, monospace"),
-    sans: v("--sans", "system-ui, sans-serif"),
+    fg: cssVar("--fg-0"),
+    muted: cssVar("--fg-2"),
+    border: cssVar("--border"),
+    accent: cssVar("--accent"),
+    buy: cssVar("--bid"),
+    sell: cssVar("--ask"),
+    observed: cssVar("--observed"),
+    modeled: cssVar("--modeled"),
+    warn: cssVar("--warn"),
+    error: cssVar("--error"),
+    mono: cssVar("--font-mono"),
+    sans: cssVar("--font-sans"),
   };
 }
 
@@ -194,7 +194,7 @@ export class TimelineRenderer {
     if (!ctx) throw new Error("Canvas 2D is not available in this browser");
     this.canvas = canvas;
     this.ctx = ctx;
-    this.palette = readPalette(canvas);
+    this.palette = readPalette();
   }
 
   destroy(): void {
@@ -208,7 +208,7 @@ export class TimelineRenderer {
     this.dpr = dpr > 0 ? dpr : 1;
     this.canvas.width = Math.round(this.width * this.dpr);
     this.canvas.height = Math.round(this.height * this.dpr);
-    this.palette = readPalette(this.canvas);
+    this.palette = readPalette();
     // Resizing clears the bitmap, so paint in the same task to avoid a blank frame.
     this.draw();
   }
@@ -383,7 +383,7 @@ export class TimelineRenderer {
     ctx.fillText("EXCHANGE", 10, yExch - (narrow ? 0 : 6));
     if (!narrow) {
       ctx.fillStyle = p.muted;
-      ctx.font = `10px ${p.sans}`;
+      ctx.font = `11px ${p.sans}`;
       ctx.fillText("strategy host", 10, yLocal + 8);
       ctx.fillText("simulated matching engine", 10, yExch + 8);
     }
@@ -437,7 +437,7 @@ export class TimelineRenderer {
   private drawAxis(left: number, plotWidth: number, axisY: number): void {
     const { ctx, palette: p } = this;
     ctx.lineWidth = 1;
-    ctx.font = `10px ${p.mono}`;
+    ctx.font = `11px ${p.mono}`;
     ctx.textBaseline = "top";
     ctx.textAlign = "center";
 

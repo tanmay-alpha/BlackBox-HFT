@@ -1,5 +1,5 @@
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 
 // The BlackBox server (`blackbox serve`) listens on 127.0.0.1:8787 and owns everything under /api.
 // It refuses requests whose Host or Origin is not its own (403 `forbidden`). `changeOrigin`
@@ -26,5 +26,9 @@ export default defineConfig(({ mode }) => ({
     proxy: {
       '/api': { target: API_TARGET, changeOrigin: true },
     },
+  },
+  test: {
+    include: ['src/**/*.test.ts'],
+    environment: 'node',
   },
 }));

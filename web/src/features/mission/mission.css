@@ -1,48 +1,67 @@
-/* Mission Control. */
-.mc-title { letter-spacing: 0.01em; }
-.mc-onboarding {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--border);
-  overflow: hidden;
-}
-.mc-onboarding-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 10px 12px;
-  background: var(--surface);
-  font-size: 12px;
-  color: var(--muted);
-}
-.mc-demos {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
-  gap: var(--gap);
-  align-items: stretch;
-}
-.mc-demo {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
-}
-.mc-demo-head h3 { font-size: 14px; }
-.mc-controlled { margin-top: 4px; font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
-.mc-question { font-size: 13px; color: var(--fg); }
-.mc-list { margin: 0; padding-left: 16px; }
-.mc-list li { padding: 1px 0; }
-.mc-pre { margin-top: 6px; max-height: 220px; overflow: auto; font-size: 11px; }
-.mc-demo-actions { margin-top: auto; gap: 8px; }
+/* Overview workspace (UI_DESIGN_SPEC.md §11.1). */
 
-@media (max-width: 900px) {
-  .mc-onboarding { grid-template-columns: minmax(0, 1fr); }
+.ov-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ov-body > .split {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+.ov-status {
+  flex: none;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ov-actions {
+  flex-wrap: nowrap;
+  gap: var(--sp-2);
+}
+
+.ov-dataset {
+  flex-wrap: nowrap;
+  gap: var(--sp-2);
+  font-size: var(--text-sm);
+}
+
+.ov-list {
+  margin: 0;
+  padding-left: var(--sp-4);
+}
+
+.ov-list > li {
+  padding: 0;
+}
+
+.ov-cmd {
+  max-height: 220px;
+  font-size: var(--text-2xs);
+  line-height: var(--lh-2xs);
+}
+
+.ov-disclaimer {
+  color: var(--fg-1);
+}
+
+.ov-about {
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ov-bases {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
 }
