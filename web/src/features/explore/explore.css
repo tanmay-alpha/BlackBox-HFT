@@ -325,10 +325,11 @@
   color: var(--fg-1);
 }
 
-.ex-legend li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+/* Plain inline flow: a long entry wraps as one sentence instead of splitting into flex items. */
+.ex-legend li > .ex-key-line,
+.ex-legend li > .ex-key-mark {
+  margin-right: 2px;
+  vertical-align: middle;
 }
 
 .ex-key-line {
@@ -412,6 +413,16 @@
 
 .ex-table .ex-num {
   text-align: right;
+}
+
+/* Column headers are labels: only the values below them use the mono figures. */
+.ex-table thead th.ex-num {
+  font-family: inherit;
+}
+
+/* A value and its unit ("100 ms") never break across lines. */
+.ex-table td.ex-num {
+  white-space: nowrap;
 }
 
 .ex-table [data-focus] {
@@ -660,6 +671,13 @@
 
 .ex-orders td:nth-child(n + 4):last-child {
   min-width: 20ch;
+}
+
+/* The marker tag sits under the order id, so the table fits beside the lifecycle panel. */
+.ex-orders td:first-child .ex-tag {
+  display: block;
+  width: max-content;
+  margin: 2px 0 0 4px;
 }
 
 .ex .ex-linkbtn {

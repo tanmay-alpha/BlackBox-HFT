@@ -192,7 +192,7 @@ function EquityChart({ pages, names, focus, t, divergenceTs, onPick }: EquityPan
               </g>
             ))}
             {geom.xTicks.map((tk) => (
-              <text key={tk.label} x={tk.x} y={height - 8} textAnchor="middle" className="ex-axis">
+              <text key={tk.label} x={tk.x} y={height - 8} textAnchor={tk.x + 30 > width ? 'end' : 'middle'} className="ex-axis">
                 {tk.label}
               </text>
             ))}
