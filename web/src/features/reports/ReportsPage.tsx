@@ -4,16 +4,16 @@
 // `/reports/saved/:reportId` renders an immutable saved snapshot whose body is checked against
 // its recorded SHA-256 in the browser. Markdown is rendered without raw HTML.
 
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { api, PAGE_LIMIT, saveDownload, saveText } from '../../api/client';
 import type { Report, Run, RunDetail } from '../../api/model';
 import { DataTable, type Column } from '../../components/DataTable';
-import { strategyName } from '../../components/describe';
+import { latencyLabel, strategyName } from '../../components/describe';
 import { RouteTabs } from '../../components/Tabs';
-import { Markdown, MarkdownBlocks, sectionOf } from '../../components/Markdown';
-import { DASH, fmtBytes, fmtDuration, fmtNum, fmtPnl } from '../../components/fmt';
+import { MarkdownBlocks, parseBlocks, renderInline, sectionOf, type Block } from '../../components/Markdown';
+import { DASH, fmtBytes, fmtDuration, fmtInt, fmtNum, fmtPct, fmtPnl } from '../../components/fmt';
 import { fmtNsUtc } from '../../components/ns';
 import { Empty, ErrorBox, HashText, Notice, Panel, Pill, Spinner, useAsync } from '../../components/ui';
 import { GatedButton } from '../../shell/access';
@@ -25,6 +25,106 @@ import './reports.css';
 
 function ReportsTabs() {
   return <RouteTabs label="Research Reports" items={[{ to: paths.reports(), label: 'Reports', end: true }]} />;
+}
+
+// ----- readable report -------------------------------------------------------------------------
+
+/** Anchor id of a report heading (`report-identity-and-engine`). */
+function headingId(text: string): string {
+  return `report-${text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+}
+
+/**
+ * The report as a web page: headings carry anchors for the contents list, and machine-readable
+ * blocks (JSON, manifests) are folded behind a disclosure so the prose reads first. Same Markdown
+ * subset and sanitising as `Markdown`; nothing is dropped.
+ */
+function ReportDocument({ blocks }: { blocks: Block[] }) {
+  const out: ReactNode[] = [];
+  let run: Block[] = [];
+  const flush = () => {
+    if (run.length > 0) out.push(<MarkdownBlocks key={`p${out.length}`} blocks={run} />);
+    run = [];
+  };
+  for (const b of blocks) {
+    if (b.type === 'heading') {
+      flush();
+      const level = Math.min(Math.max(b.level, 1), 6);
+      const Tag = `h${level}` as 'h1';
+      out.push(
+        <Tag key={`h${out.length}`} id={headingId(b.text)} className="report-heading">
+          {renderInline(b.text)}
+        </Tag>,
+      );
+    } else if (b.type === 'code' && b.text.split('\n').length > 12) {
+      flush();
+      out.push(
+        <details key={`c${out.length}`} className="report-code">
+          <summary>
+            Show {b.lang || 'raw'} block ({fmtInt(b.text.split('\n').length)} lines)
+          </summary>
+          <MarkdownBlocks blocks={[b]} />
+        </details>,
+      );
+    } else {
+      run.push(b);
+    }
+  }
+  flush();
+  return <>{out}</>;
+}
+
+function Contents({ blocks }: { blocks: Block[] }) {
+  const heads = blocks.filter((b): b is Extract<Block, { type: 'heading' }> => b.type === 'heading' && b.level === 2);
+  if (heads.length === 0) return null;
+  return (
+    <Panel title="Contents">
+      <nav aria-label="Report contents">
+        <ol className="report-toc">
+          {heads.map((h) => (
+            <li key={h.text}>
+              <a href={`#${headingId(h.text)}`}>{h.text}</a>
+            </li>
+          ))}
+        </ol>
+      </nav>
+    </Panel>
+  );
+}
+
+/** The run's identity and headline figures, as served with the run, above the full report. */
+function AtAGlance({ run }: { run: RunDetail }) {
+  const m = run.metrics;
+  const gross = m.net_pnl + m.fees;
+  const rows: [string, ReactNode][] = [
+    ['Strategy', `${strategyName(run.strategy_kind)}, every ${fmtDuration(run.interval_ns)}`],
+    ['Dataset', <span className="mono">{`${run.dataset.id} v${run.dataset.version}`}</span>],
+    ['Order latency', <span className="mono">{`${latencyLabel(run.config.execution.order_latency)} (entry / response)`}</span>],
+    ['Net P&L', <span className="mono">{`${fmtPnl(m.net_pnl)} quote (${m.net_pnl < 0 ? 'loss' : m.net_pnl > 0 ? 'gain' : 'no change'})`}</span>],
+    ['Gross trading P&L', <span className="mono">{`${fmtPnl(gross)} quote, before fees`}</span>],
+    ['Fees', <span className="mono">{`${fmtNum(m.fees, 4)} quote`}</span>],
+    ['Max drawdown', <span className="mono">{`${fmtNum(m.max_drawdown, 4)} quote`}</span>],
+    ['Order fill ratio', <span className="mono">{`${fmtPct(m.fill_ratio_orders)} of ${fmtInt(m.orders_submitted)} orders`}</span>],
+  ];
+  return (
+    <section className="report-glance" aria-labelledby="report-glance-title">
+      <h2 id="report-glance-title" className="report-glance-title">
+        {run.label || 'Unlabelled run'}
+      </h2>
+      <dl className="kv">
+        {rows.map(([k, v]) => (
+          <Fragment key={k}>
+            <dt>{k}</dt>
+            <dd>{v}</dd>
+          </Fragment>
+        ))}
+      </dl>
+      <p className="note">
+        Simulated on historical replay without market impact; fills and queue position are modeled. The full report follows; Download .md saves the same
+        text. <Link to={paths.riskRun(run.run_id)}>Charts in Risk &amp; P&amp;L</Link>
+      </p>
+    </section>
+  );
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -160,6 +260,7 @@ function RunReport({ runId }: { runId: string }) {
   const [actionError, setActionError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const limitations = useMemo(() => (report.data ? sectionOf(report.data, /limitation/i) : null), [report.data]);
+  const blocks = useMemo(() => (report.data ? parseBlocks(report.data) : null), [report.data]);
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -213,19 +314,38 @@ function RunReport({ runId }: { runId: string }) {
           <ErrorBox error={actionError} />
           {report.loading ? <Spinner label="Generating report" /> : null}
           <ErrorBox error={report.error} onRetry={report.reload} />
-          {report.data ? (
+          {run.data ? <AtAGlance run={run.data} /> : null}
+          {blocks ? (
             <article className="report-doc" aria-label={`Research report of run ${runId}`}>
-              <Markdown source={report.data} />
+              <ReportDocument blocks={blocks} />
             </article>
           ) : null}
         </div>
         <aside className="col reports-side">
+          {blocks ? <Contents blocks={blocks} /> : null}
+          <Panel title="Limitations" caption="Verbatim from the report.">
+            {limitations && limitations.length > 0 ? (
+              <MarkdownBlocks blocks={limitations} />
+            ) : limitations ? (
+              <p className="note">
+                The report states its limitations as separate sections, starting at{' '}
+                {blocks
+                  ?.filter((b): b is Extract<Block, { type: 'heading' }> => b.type === 'heading' && /limitation/i.test(b.text))
+                  .slice(0, 1)
+                  .map((h) => (
+                    <a key={h.text} href={`#${headingId(h.text)}`}>
+                      {h.text}
+                    </a>
+                  ))}{' '}
+                in Contents.
+              </p>
+            ) : report.data ? (
+              <Empty>The report has no limitations section.</Empty>
+            ) : null}
+          </Panel>
           {run.loading ? <Spinner label="Loading run" /> : null}
           <ErrorBox error={run.error} onRetry={run.reload} />
           {run.data ? <ManifestPanel run={run.data} /> : null}
-          <Panel title="Limitations" caption="Verbatim from the report.">
-            {limitations && limitations.length > 0 ? <MarkdownBlocks blocks={limitations} /> : report.data ? <Empty>The report has no limitations section.</Empty> : null}
-          </Panel>
         </aside>
       </div>
     </Workspace>
@@ -266,7 +386,7 @@ function SavedReport({ reportId }: { reportId: string }) {
           <ErrorBox error={body.error} onRetry={body.reload} />
           {body.data ? (
             <article className="report-doc" aria-label="Saved research report">
-              <Markdown source={body.data.text} />
+              <ReportDocument blocks={parseBlocks(body.data.text)} />
             </article>
           ) : null}
         </div>

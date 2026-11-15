@@ -3,17 +3,46 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import { api } from '../../api/client';
 import type { Run } from '../../api/model';
+import type { OrderLatencyConfig } from '../../api/types';
 import { DataTable, type Column } from '../../components/DataTable';
-import { strategyName } from '../../components/describe';
-import { fmtDuration, fmtInt, fmtPnl } from '../../components/fmt';
+import { latencyLabel, strategyName } from '../../components/describe';
+import { DASH, fmtDuration, fmtInt, fmtPnl } from '../../components/fmt';
 import { fmtNsUtc } from '../../components/ns';
 import { ToolbarDivider } from '../../components/Toolbar';
-import { Badge, ErrorBox, HashText, Notice, Panel, Spinner, useAsync } from '../../components/ui';
+import { Badge, ErrorBox, Notice, Panel, Spinner, useAsync } from '../../components/ui';
 import { GatedButton } from '../../shell/access';
 import { useInspector } from '../../shell/inspector';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
+import { CopyableHash } from './CopyableHash';
 import './runs.css';
+
+/** Runs whose order latency is looked up when the list omits their configuration. */
+const LATENCY_LOOKUPS = 40;
+
+/**
+ * Order latency per run. The list response may omit `config`; for the newest runs without one the
+ * run resource is read (a few at a time) so the table can say which latency each run assumed.
+ */
+function useLatencies(list: readonly Run[] | null): Map<string, OrderLatencyConfig> {
+  const missing = (list ?? []).filter((r) => r.config === null).slice(0, LATENCY_LOOKUPS).map((r) => r.run_id);
+  const fetched = useAsync(
+    async (signal) => {
+      const out = new Map<string, OrderLatencyConfig>();
+      for (let i = 0; i < missing.length; i += 4) {
+        const batch = await Promise.all(missing.slice(i, i + 4).map((id) => api.run(id, { signal }).catch(() => null)));
+        for (const r of batch) if (r) out.set(r.run_id, r.config.execution.order_latency);
+      }
+      return out;
+    },
+    [missing.join(',')],
+  );
+  return useMemo(() => {
+    const out = new Map(fetched.data ?? []);
+    for (const r of list ?? []) if (r.config) out.set(r.run_id, r.config.execution.order_latency);
+    return out;
+  }, [fetched.data, list]);
+}
 
 const LEAD =
   'Every stored simulation, newest first. A run is identified by the hash of its inputs, so repeating an experiment returns the same run rather than a new one.';
@@ -25,26 +54,24 @@ function signClass(x: number | null): string | undefined {
   return x === null ? undefined : x > 0 ? 'up' : x < 0 ? 'down' : undefined;
 }
 
-function RunInspector({ run }: { run: Run }) {
+function RunInspector({ run, latency }: { run: Run; latency: OrderLatencyConfig | undefined }) {
   return (
     <div className="col">
       <dl className="kv">
         <dt>Label</dt>
         <dd>{run.label ?? <span className="dim">unlabelled</span>}</dd>
-        <dt>Run id</dt>
-        <dd className="mono wrap-anywhere">{run.run_id}</dd>
         <dt>Strategy</dt>
-        <dd className="mono">
+        <dd>
           {strategyName(run.strategy_kind)} every {fmtDuration(run.interval_ns)}
         </dd>
         <dt>Dataset</dt>
-        <dd className="mono wrap-anywhere">
+        <dd className="wrap-anywhere">
           <Link to={paths.dataset(run.dataset.id)}>{run.dataset.id}</Link> v{run.dataset.version}
         </dd>
-        <dt>Config fingerprint</dt>
-        <dd className="mono wrap-anywhere">
-          {run.fingerprint} <Badge kind="modeled">modeled</Badge>
-        </dd>
+        <dt>Order latency</dt>
+        <dd className="mono">{latency ? `${latencyLabel(latency)} (entry / response)` : DASH}</dd>
+        <dt>Completed</dt>
+        <dd className="mono">{fmtNsUtc(run.created_at_ns, 0)} UTC</dd>
         <dt>Orders / fills</dt>
         <dd className="mono">
           {fmtInt(run.counts.orders)} / {fmtInt(run.counts.fills)}
@@ -53,15 +80,26 @@ function RunInspector({ run }: { run: Run }) {
           Net P&amp;L <span className="unit">quote</span>
         </dt>
         <dd className={`mono ${signClass(run.metrics.net_pnl) ?? ''}`}>{fmtPnl(run.metrics.net_pnl, 4)}</dd>
+      </dl>
+      <h3 className="run-subhead">Metadata</h3>
+      <dl className="kv">
+        <dt>Run id</dt>
+        <dd>
+          <CopyableHash value={run.run_id} label="run id" />
+        </dd>
+        <dt>Config fingerprint</dt>
+        <dd>
+          <CopyableHash value={run.fingerprint} label="config fingerprint" />
+        </dd>
         <dt>Result hash</dt>
-        <dd className="mono wrap-anywhere">{run.result_sha256}</dd>
+        <dd>
+          <CopyableHash value={run.result_sha256} label="result hash" />
+        </dd>
         <dt>Platform</dt>
         <dd className="mono">
           {run.platform}
           {run.canonical ? ' (canonical)' : ''}
         </dd>
-        <dt>Created</dt>
-        <dd className="mono">{fmtNsUtc(run.created_at_ns, 0)}</dd>
       </dl>
       <div className="row">
         <Link className="btn" to={paths.run(run.run_id)}>
@@ -93,6 +131,7 @@ export default function RunsPage() {
   // A picked run can disappear (its experiment deleted elsewhere); only offer comparison for runs still listed.
   const live = picked.filter((id) => list?.some((r) => r.run_id === id));
   const selectedRun = list?.find((r) => r.run_id === selected) ?? null;
+  const latencies = useLatencies(list);
 
   const toggle = (runId: string) =>
     setPicked((p) => (p.includes(runId) ? p.filter((id) => id !== runId) : [...p, runId]));
@@ -116,14 +155,14 @@ export default function RunsPage() {
   useInspector(
     selectedRun ? `Run ${selectedRun.label ?? selectedRun.run_id}` : 'Stored runs',
     selectedRun ? (
-      <RunInspector run={selectedRun} />
+      <RunInspector run={selectedRun} latency={latencies.get(selectedRun.run_id)} />
     ) : (
       <div className="col">
         <p className="note">{LEAD}</p>
         <p className="note">{PNL_NOTE}</p>
       </div>
     ),
-    [selectedRun],
+    [selectedRun, latencies],
   );
 
   const columns = useMemo<Column<Run>[]>(
@@ -151,47 +190,16 @@ export default function RunsPage() {
       },
       {
         id: 'run',
-        header: 'Run id',
+        header: 'Run',
         rowHeader: true,
         cell: (r) => (
-          <Link to={paths.run(r.run_id)} tabIndex={-1}>
-            <HashText hash={r.run_id} />
+          <Link to={paths.run(r.run_id)} tabIndex={-1} title={`Run ${r.run_id}`}>
+            {r.label || <span className="mono">{r.run_id}</span>}
           </Link>
         ),
         raw: (r) => r.run_id,
-        sortValue: (r) => r.run_id,
+        sortValue: (r) => r.label ?? r.run_id,
       },
-      {
-        id: 'label',
-        header: 'Label',
-        cell: (r) => r.label ?? <span className="dim">unlabelled</span>,
-        sortValue: (r) => r.label,
-      },
-      {
-        id: 'dataset',
-        header: 'Dataset',
-        cell: (r) => (
-          <span className="mono">
-            {r.dataset.id} v{r.dataset.version}
-          </span>
-        ),
-        sortValue: (r) => r.dataset.id,
-      },
-      {
-        id: 'strategy',
-        header: 'Strategy',
-        cell: (r) => <span>{strategyName(r.strategy_kind)}</span>,
-        sortValue: (r) => r.strategy_kind,
-      },
-      {
-        id: 'interval',
-        header: 'Interval',
-        numeric: true,
-        cell: (r) => fmtDuration(r.interval_ns),
-        sortValue: (r) => r.interval_ns,
-      },
-      { id: 'orders', header: 'Orders', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.orders), sortValue: (r) => r.counts.orders },
-      { id: 'fills', header: 'Fills', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.fills), sortValue: (r) => r.counts.fills },
       {
         id: 'pnl',
         header: 'Net P&L',
@@ -201,14 +209,50 @@ export default function RunsPage() {
         className: (r) => signClass(r.metrics.net_pnl),
         sortValue: (r) => r.metrics.net_pnl,
       },
-      { id: 'hash', header: 'Result hash', cell: (r) => <HashText hash={r.result_sha256} />, raw: (r) => r.result_sha256, sortValue: (r) => r.result_sha256 },
+      {
+        id: 'strategy',
+        header: 'Strategy',
+        cell: (r) => (
+          <span>
+            {strategyName(r.strategy_kind)} <span className="dim">every {fmtDuration(r.interval_ns)}</span>
+          </span>
+        ),
+        sortValue: (r) => r.strategy_kind,
+      },
+      {
+        id: 'dataset',
+        header: 'Dataset',
+        cell: (r) => (
+          <span>
+            {r.dataset.id} <span className="dim">v{r.dataset.version}</span>
+          </span>
+        ),
+        sortValue: (r) => r.dataset.id,
+      },
+      {
+        id: 'latency',
+        header: 'Order latency',
+        unit: 'entry / response',
+        cell: (r) => {
+          const l = latencies.get(r.run_id);
+          return <span className="mono">{l ? latencyLabel(l) : DASH}</span>;
+        },
+      },
       {
         id: 'created',
-        header: 'Created',
+        header: 'Completed',
         unit: 'UTC',
         cell: (r) => <span className="mono">{fmtNsUtc(r.created_at_ns, 0)}</span>,
         raw: (r) => fmtNsUtc(r.created_at_ns, 0),
         sortValue: (r) => BigInt(r.created_at_ns),
+      },
+      {
+        id: 'fills',
+        header: 'Fills / orders',
+        unit: 'count',
+        numeric: true,
+        cell: (r) => `${fmtInt(r.counts.fills)} / ${fmtInt(r.counts.orders)}`,
+        sortValue: (r) => r.counts.fills,
       },
       {
         id: 'views',
@@ -228,7 +272,7 @@ export default function RunsPage() {
     ],
     // `toggle` only closes over the state setter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [live.join(',')],
+    [live.join(','), latencies],
   );
 
   const pickNote =

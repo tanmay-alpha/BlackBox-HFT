@@ -68,3 +68,90 @@
   border-bottom: 1px solid var(--border-subtle);
   text-align: left;
 }
+
+/* ----- readable run report: summary, anchored headings, folded raw blocks ----- */
+
+.report-glance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  max-width: 100ch;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  background: var(--bg-1);
+}
+
+.report-glance-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--lh-lg);
+}
+
+.report-glance .note {
+  margin: 0;
+}
+
+.report-heading {
+  margin: var(--sp-5) 0 var(--sp-2);
+  scroll-margin-top: var(--sp-4);
+}
+
+.report-doc > .report-heading:first-child {
+  margin-top: 0;
+}
+
+h1.report-heading {
+  font-size: var(--text-xl);
+  line-height: var(--lh-xl);
+}
+
+h2.report-heading {
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--text-lg);
+  line-height: var(--lh-lg);
+}
+
+.report-code {
+  margin: 0 0 var(--sp-3);
+}
+
+.report-code > summary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.report-toc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding-left: var(--sp-4);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.report-toc a {
+  display: inline-block;
+  padding: var(--sp-1) 0;
+}
+
+@media (max-width: 599px) {
+  .report-glance {
+    padding: var(--sp-3);
+  }
+
+  .report-glance .kv {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0;
+  }
+
+  .report-glance .kv > dd {
+    margin-bottom: var(--sp-2);
+  }
+}

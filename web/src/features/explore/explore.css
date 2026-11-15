@@ -105,15 +105,14 @@
 /* ----- header ------------------------------------------------------------------------- */
 
 .ex-head {
-  padding: var(--sp-6) var(--sp-6) var(--sp-4);
+  padding: var(--sp-4) var(--sp-6) var(--sp-3);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-0);
 }
 
 .ex-head-top {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--sp-2) var(--sp-4);
 }
@@ -131,9 +130,9 @@
 }
 
 .ex-flag {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
   color: var(--fg-1);
   white-space: nowrap;
 }
@@ -141,6 +140,10 @@
 .ex-flag-data {
   border-color: var(--warn);
   color: var(--warn);
+}
+
+.ex-head-actions summary {
+  white-space: nowrap;
 }
 
 .ex-head-actions {
@@ -171,103 +174,49 @@
 }
 
 .ex-question {
-  margin-top: var(--sp-4);
-  max-width: 42ch;
-  font-size: clamp(24px, 2.5vw, 34px);
-  line-height: 1.22;
-  font-weight: 500;
-  letter-spacing: -0.035em;
+  margin-top: var(--sp-2);
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
   text-wrap: balance;
 }
 
+/* The answer: the conclusion in words beside the comparison table. */
 .ex-answer {
-  margin-top: var(--sp-5);
-}
-
-.ex-result-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--sp-5);
-  max-width: 1020px;
-  margin: 0;
-}
-
-.ex-result {
-  min-width: 0;
-}
-
-.ex-result + .ex-result {
-  padding-left: var(--sp-5);
-  border-left: 1px solid var(--border-subtle);
-}
-
-.ex-result dt {
-  margin-bottom: var(--sp-2);
-  color: var(--fg-1);
-}
-
-.ex-result dd {
-  margin: 0;
-}
-
-.ex-result-pair {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2) var(--sp-5);
-}
-
-.ex-result-value {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-
-.ex-result-scenario {
-  color: var(--fg-1);
-  white-space: nowrap;
-}
-
-.ex-result-value strong {
-  font-size: clamp(22px, 2.5vw, 32px);
-  line-height: 1.2;
-  letter-spacing: -0.045em;
-  font-weight: 500;
-}
-
-.ex-result-fast strong {
-  color: var(--accent);
-}
-
-.ex-result-delta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0 var(--sp-2);
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-2) var(--sp-6);
   margin-top: var(--sp-2);
+}
+
+.ex-conclusion {
+  min-width: 0;
+  max-width: 70ch;
+}
+
+.ex-ident {
   color: var(--fg-1);
 }
 
-.ex-hero-action {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-3);
-  margin-top: var(--sp-5);
+.ex-ident .ex-swatch {
+  margin-right: 2px;
 }
 
-.ex .ex-hero-cta {
-  min-height: 42px;
-  padding: var(--sp-2) var(--sp-4);
-  border-radius: var(--radius-2);
-  font-weight: 600;
-}
-
-.ex-hero-cta span {
-  margin-left: var(--sp-4);
+/* "Why?" follows the one-line answer on the same line until it is opened. */
+.ex-headline {
+  display: inline;
+  margin-right: var(--sp-2);
+  color: var(--fg-0);
 }
 
 .ex-answer-detail {
-  margin-top: var(--sp-3);
   color: var(--fg-1);
+}
+
+.ex-answer-detail:not([open]) {
+  display: inline-block;
 }
 
 .ex-answer-detail summary,
@@ -275,9 +224,74 @@
   cursor: pointer;
 }
 
+.ex-answer-detail summary {
+  color: var(--accent);
+}
+
 .ex-answer-detail p {
-  max-width: 100ch;
-  margin-top: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+.ex-compare {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.ex-compare th,
+.ex-compare td {
+  padding: 1px var(--sp-3);
+  text-align: right;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+.ex-compare th:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+.ex-compare thead th {
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--fg-1);
+}
+
+.ex-compare tbody th {
+  color: var(--fg-1);
+}
+
+.ex-compare tbody th .ex-swatch {
+  margin-right: 4px;
+}
+
+.ex-compare td {
+  color: var(--fg-0);
+  font-size: 15px;
+}
+
+.ex-compare-delta th,
+.ex-compare-delta td {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ex-compare-delta td {
+  color: var(--fg-1);
+}
+
+.ex-unit {
+  color: var(--fg-2);
+}
+
+/* ----- controls bar ------------------------------------------------------------------- */
+
+.ex-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-5);
+  padding: var(--sp-2) var(--sp-6);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-0);
 }
 
 /* ----- controls bar ------------------------------------------------------------------- */
@@ -327,11 +341,20 @@
   align-items: center;
   gap: 6px;
   background: var(--bg-2);
+  color: var(--fg-1);
 }
 
+/* The scenario shown is unmistakable: filled, outlined, bold (not colour alone). */
 .ex .ex-seg[aria-pressed='true'] {
   background: var(--bg-selected);
   border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.ex .ex-first {
+  font-weight: 600;
 }
 
 .ex-seek {
@@ -366,13 +389,24 @@
   background: var(--ex-slow);
 }
 
-/* ----- stage: replay, book, lifecycle, window orders ---------------------------------- */
+/* ----- stage: replay (chart and book), lifecycle, window orders ------------------------ */
 
 .ex-stage {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-5);
-  padding: var(--sp-5) var(--sp-6) 0;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-6) 0;
+}
+
+.ex-replay {
+  min-width: 0;
+}
+
+.ex-replay[data-split] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: var(--sp-3);
+  align-items: stretch;
 }
 
 .ex-replay-chart,
@@ -385,11 +419,58 @@
   background: transparent;
 }
 
-.ex-replay-chart {
-  padding: var(--sp-4);
+.ex-replay-chart,
+.ex-replay[data-split] .ex-book {
+  padding: var(--sp-3);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-3);
+  border-radius: var(--radius-2);
   background: var(--bg-1);
+}
+
+.ex-replay[data-split] .ex-book {
+  overflow: auto;
+}
+
+.ex-replay:not([data-split]) .ex-book {
+  padding: var(--sp-2) 0;
+  border-top: 0;
+}
+
+/* Narrow: the chart or the book, under a tab; the replay-time slider shares the row. */
+.ex-pane-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-4);
+  margin-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ex-pane-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-1);
+}
+
+.ex .ex-pane-tabs [role='tab'] {
+  min-height: var(--h-touch);
+  margin-bottom: -1px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--fg-1);
+}
+
+.ex .ex-pane-tabs [role='tab'][aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.ex-pane-bar .ex-seek {
+  flex: 1 1 280px;
 }
 
 .ex-replay-head,
@@ -415,9 +496,10 @@
   border-left: 2px solid var(--warn);
 }
 
+/* The chart takes what the first screen leaves after the header, bar and legend. */
 .ex-chart-wrap {
   position: relative;
-  height: 360px;
+  height: clamp(300px, calc(100dvh - 430px), 600px);
   border: 0;
 }
 
@@ -438,11 +520,11 @@
   z-index: 4;
   padding: 2px 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--fg-0);
-  background: var(--bg-1, Canvas);
-  border: 1px solid var(--border, currentColor);
-  border-radius: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
   cursor: pointer;
 }
 
@@ -453,8 +535,44 @@
   left: 0;
   z-index: 3;
   width: 0;
-  border-left: 1px dashed var(--fg-0);
+  border-left: 1px solid var(--fg-0);
   pointer-events: none;
+}
+
+.ex-chart-cursor-label {
+  position: absolute;
+  bottom: 2px;
+  left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--fg-0);
+  color: var(--bg-0);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.ex-chart-tip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  max-width: 320px;
+  padding: 6px var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-float);
+  color: var(--fg-0);
+  font-size: 13px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.ex-chart-tip[hidden] {
+  display: none;
 }
 
 .ex-chart-empty {
@@ -496,7 +614,7 @@
 }
 
 .ex-key-cursor {
-  border-top: 1px dashed var(--fg-0);
+  border-top: 2px solid var(--fg-0);
 }
 
 .ex-key-mark {
@@ -702,6 +820,90 @@
   background: var(--bg-2);
 }
 
+.ex-verdict-k {
+  margin-right: var(--sp-1);
+  color: var(--fg-1);
+  font-weight: 600;
+}
+
+/* One line per scenario: decided → sent → reached the exchange → outcome. */
+.ex-flow {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.ex-flow-row {
+  display: grid;
+  grid-template-columns: 5em minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.ex-flow-row[data-dim] {
+  opacity: 0.55;
+}
+
+.ex-flow-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ex-flow-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ex-flow-steps > li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.ex-flow-steps > li + li::before {
+  content: '→';
+  margin: 0 var(--sp-2);
+  color: var(--fg-2);
+}
+
+.ex .ex-flow-step {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  background: var(--bg-1);
+  line-height: 30px;
+  white-space: nowrap;
+}
+
+.ex button.ex-flow-step:hover {
+  border-color: var(--accent);
+}
+
+.ex-flow-label {
+  color: var(--fg-1);
+}
+
+.ex-flow-steps > li[data-differs] .ex-flow-step {
+  border-color: var(--warn);
+  border-style: dashed;
+}
+
+.ex-flow-diff {
+  color: var(--warn);
+  font-size: 13px;
+}
+
 .ex-life-table th[scope='row'] {
   min-width: 15ch;
 }
@@ -845,6 +1047,24 @@
 
 .ex .ex-linkbtn:hover {
   text-decoration: underline;
+}
+
+/* Phones: order buttons, the time slider and the forensics links are 40 px touch targets. */
+@media (max-width: 599px) {
+  .ex .ex-linkbtn {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .ex-seek input[type='range'] {
+    height: 40px;
+  }
+
+  .ex-life-why a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
 }
 
 .ex-tag {
@@ -1202,42 +1422,13 @@
   color: var(--fg-1);
 }
 
-/* ----- wide: chart beside the book, order list beside the lifecycle -------------------- */
+/* ----- wide: sticky controls ---------------------------------------------------------------- */
 
 @container ex (min-width: 1000px) {
   .ex-bar {
     position: sticky;
     top: 0;
     z-index: 4;
-  }
-
-  .ex-stage {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 300px;
-    grid-template-areas:
-      'chart book'
-      'orders life';
-    align-items: start;
-  }
-
-  .ex-replay-chart {
-    grid-area: chart;
-  }
-
-  .ex-book {
-    grid-area: book;
-  }
-
-  .ex-life-sec {
-    grid-area: life;
-  }
-
-  .ex-orders-sec {
-    grid-area: orders;
-  }
-
-  .ex-stage .ex-life-sec .ex-life-table th[scope='row'] {
-    min-width: 12ch;
   }
 }
 
@@ -1257,7 +1448,34 @@
   }
 
   .ex-chart-wrap {
-    height: 340px;
+    height: clamp(260px, calc(100dvh - 500px), 420px);
+  }
+
+  .ex-question {
+    font-size: 20px;
+    line-height: 26px;
+  }
+
+  .ex-answer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ex-replay:not([data-split]) .ex-replay-chart {
+    padding-top: var(--sp-1);
+  }
+
+  /* The top bar names the workspace; the tab row carries the replay time. */
+  .ex-eyebrow {
+    display: none;
+  }
+
+  .ex-replay:not([data-split]) .ex-replay-head {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }
 
@@ -1268,12 +1486,8 @@
     padding-right: var(--sp-3);
   }
 
-  /* The question, controls and chart fit the first phone screen: the eyebrow repeats the
-     workspace name in the top bar, and the two links need no button chrome here. */
-  .ex-eyebrow {
-    display: none;
-  }
-
+  /* The question, controls and chart fit the first phone screen; the two links need no button
+     chrome here. */
   .ex-flags {
     gap: var(--sp-1);
   }
@@ -1302,84 +1516,77 @@
     padding: var(--sp-2) 0 0;
   }
 
+  .ex-pane-bar {
+    margin: 0 var(--sp-3) var(--sp-2);
+  }
+
   .ex-guide {
     margin: var(--sp-2) 0 0;
   }
 
   .ex-replay-chart,
   .ex-book,
+  .ex-replay:not([data-split]) .ex-book,
   .ex-panel {
     border-left: 0;
     border-right: 0;
+    border-radius: 0;
     padding-left: var(--sp-3);
     padding-right: var(--sp-3);
   }
 
   .ex-question {
-    font-size: 24px;
-    line-height: 30px;
+    font-size: 20px;
+    line-height: 26px;
   }
 
-  .ex-head {
-    padding-top: var(--sp-4);
-  }
-
-  .ex-question {
-    margin-top: var(--sp-3);
-  }
-
-  .ex-answer {
-    margin-top: var(--sp-4);
-  }
-
-  .ex-result-strip {
-    gap: var(--sp-2);
-  }
-
-  .ex-result + .ex-result {
-    padding-left: var(--sp-2);
-  }
-
-  .ex-result-pair {
-    flex-direction: column;
-    gap: var(--sp-2);
-  }
-
-
-  .ex-result-delta {
-    flex-direction: column;
-  }
-
-
-  .ex-result-value {
-    flex-direction: row;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 2px;
-  }
-
-  .ex-result-value strong {
-    font-size: 19px;
-  }
-
-  .ex-result-delta > span:last-child {
-    display: none;
-  }
-
-  .ex-hero-action {
-    margin-top: var(--sp-4);
-  }
-
-  .ex-hero-action > .ex-muted {
-    display: none;
-  }
-
-  .ex-hero-cta {
+  .ex-compare {
     width: 100%;
   }
 
-  .ex-replay-chart {
-    border-radius: 0;
+  .ex-compare th,
+  .ex-compare td {
+    padding-left: var(--sp-1);
+    padding-right: 0;
+    white-space: normal;
+  }
+
+  .ex-compare td,
+  .ex-compare th:first-child {
+    white-space: nowrap;
+  }
+
+  /* The optional fourth measure stays in the full table (step 1) on phones. */
+  .ex-compare [data-key='round_trip_ns'] {
+    display: none;
+  }
+
+  .ex-answer-detail:not([open]) {
+    display: block;
+  }
+
+  .ex summary {
+    padding-block: 10px;
+  }
+
+  .ex-flow-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-1);
+  }
+
+  .ex .ex-flow-step {
+    white-space: normal;
+  }
+
+  .ex-flow-steps > li + li::before {
+    margin: 0 var(--sp-1);
+  }
+
+  /* Touch targets. */
+  .ex button,
+  .ex .btn,
+  .ex .ex-flow-step {
+    min-height: var(--h-touch);
   }
 
   .ex-bar {
@@ -1389,7 +1596,6 @@
   .ex-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
 
   .ex-chart-wrap {
     height: 300px;

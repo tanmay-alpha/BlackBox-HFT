@@ -417,11 +417,11 @@ export function FillsTable({
       { id: "price", header: "Price", numeric: true, cell: (f) => fmtPrice(f.price_tick, instrument), sortValue: (f) => f.price_tick },
       { id: "qty", header: "Qty", numeric: true, cell: (f) => fmtQty(f.qty, instrument), sortValue: (f) => f.qty },
       { id: "liq", header: "Liquidity", cell: (f) => (f.maker ? "maker" : "taker"), sortValue: (f) => (f.maker ? "maker" : "taker") },
-      { id: "fee", header: "Fee", unit: "quote", term: "fees", numeric: true, cell: (f) => fmtPnl(f.fee, 4), sortValue: (f) => f.fee },
+      { id: "fee", header: "Fee (negative = rebate)", unit: "quote", term: "fees", numeric: true, cell: (f) => fmtPnl(f.fee, 4), sortValue: (f) => f.fee },
       { id: "pos", header: "Position after", numeric: true, cell: (f) => fmtQty(f.position_after, instrument), sortValue: (f) => f.position_after },
       {
         id: "rpnl",
-        header: "Realized P&L",
+        header: "Realized P&L from this fill (before fees)",
         unit: "quote",
         numeric: true,
         cell: (f) => fmtPnl(f.realized_pnl, 4),

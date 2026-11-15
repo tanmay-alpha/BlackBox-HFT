@@ -59,3 +59,30 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Inspector metadata: a full digest and its copy button. */
+.runs-copy {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.run-context-meta {
+  max-width: 48ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 767px) {
+  .run-context {
+    flex-wrap: wrap;
+  }
+
+  .run-context-meta {
+    max-width: 100%;
+    white-space: normal;
+  }
+}

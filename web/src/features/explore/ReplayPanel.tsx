@@ -1,10 +1,10 @@
 // The synchronized replay: the observed best bid/ask of the window around the shared time with
 // both scenarios' simulated arrivals and fills (PriceChart), and the book at that same time with
 // each scenario's resting orders. One time drives both: the chart's time line and the book.
-// `between` is rendered between the chart and the book (the page puts the order lifecycle there,
-// so on narrow screens it follows the chart directly; wide layouts place the parts in a grid).
+// Wide pages (`split`) show the book beside the chart; narrow ones show one of them under a
+// "Price chart / Order book" tab whose choice lives in the URL.
 
-import { useMemo, type ReactNode, type RefObject } from 'react';
+import { useMemo, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 
 import type { InstrumentMeta } from '../../api/types';
 import { Spinner } from '../../components/ui';
@@ -28,11 +28,21 @@ export interface ReplayPanelProps {
   selected: number | null;
   onSelectOrder: (orderId: number) => void;
   onPick: (t: number) => void;
-  between?: ReactNode;
-  chartRef?: RefObject<HTMLElement | null>;
+  /** Book beside the chart; otherwise one of them under a tab. */
+  split: boolean;
+  pane: 'chart' | 'book';
+  onPane: (pane: 'chart' | 'book') => void;
+  /** The replay-time slider, shown in the tab row (narrow pages only). */
+  seek?: ReactNode;
+  chartRef?: RefObject<HTMLDivElement | null>;
 }
 
-export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, focus, selected, onSelectOrder, onPick, between, chartRef }: ReplayPanelProps) {
+const PANES = [
+  { key: 'chart', label: 'Price chart' },
+  { key: 'book', label: 'Order book' },
+] as const;
+
+export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, focus, selected, onSelectOrder, onPick, split, pane, onPane, seek, chartRef }: ReplayPanelProps) {
   // The window on screen holds `t` unless a new window is still loading or failed to load.
   const current = moment !== null && t >= moment.window.t0 && t <= moment.window.t1;
   const frame = useMemo(() => {
@@ -51,9 +61,44 @@ export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, f
     [moment, current, t, focus],
   );
 
+  const onTabsKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const next = e.key === 'Home' ? 'chart' : e.key === 'End' ? 'book' : pane === 'chart' ? 'book' : 'chart';
+    onPane(next);
+    document.getElementById(`ex-tab-${next}`)?.focus();
+  };
+
   return (
-    <>
-      <section ref={chartRef} className="ex-replay-chart" aria-labelledby="ex-replay-title">
+    <div ref={chartRef} className="ex-replay" data-split={split ? '' : undefined}>
+      {split ? null : (
+        <div className="ex-pane-bar">
+          <div className="ex-pane-tabs" role="tablist" aria-label="Replay view" onKeyDown={onTabsKey}>
+            {PANES.map((p) => (
+              <button
+                key={p.key}
+                id={`ex-tab-${p.key}`}
+                type="button"
+                role="tab"
+                aria-selected={pane === p.key}
+                aria-controls={`ex-pane-${p.key}`}
+                tabIndex={pane === p.key ? 0 : -1}
+                onClick={() => onPane(p.key)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          {seek}
+        </div>
+      )}
+      <section
+        id="ex-pane-chart"
+        className="ex-replay-chart"
+        aria-labelledby="ex-replay-title"
+        role={split ? undefined : 'tabpanel'}
+        hidden={!split && pane !== 'chart'}
+      >
         <div className="ex-replay-head">
           <h2 id="ex-replay-title">
             Market replay{moment ? ` ${fmtSec(moment.window.t0, 3)} – ${fmtSec(moment.window.t1, 3)}` : ''}
@@ -109,14 +154,13 @@ export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, f
         <details className="ex-chart-note">
           <summary>How to read this replay</summary>
           <p className="ex-muted">
-            Drag or scroll to zoom; Reset zoom fits the whole window again. Click a marker to open its order; click anywhere else to move the replay time there. The book and trades are the
+            Hover for prices, quantities and times; drag or scroll to zoom; Reset view fits the whole window again. Click a marker to open its order; click anywhere else to move the replay time there. The book and trades are the
             recorded synthetic market; simulated orders never change it, so it is identical in both scenarios. Chart drawn with{' '}
             <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts</a>.
           </p>
         </details>
       </section>
-      {between}
-      <section className="ex-book" aria-labelledby="ex-book-title">
+      <section id="ex-pane-book" className="ex-book" aria-labelledby="ex-book-title" role={split ? undefined : 'tabpanel'} hidden={!split && pane !== 'book'}>
         <h2 id="ex-book-title">Order book at the replay time</h2>
         {moment && current ? (
           <Ladder frame={frame} t={t} inst={inst} resting={resting} focus={focus} names={names} selected={selected} onSelectOrder={onSelectOrder} />
@@ -124,6 +168,6 @@ export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, f
           <p className="ex-muted">{error ? `No book for ${fmtSec(t, 3)} yet.` : 'Loading the book at the replay time…'}</p>
         )}
       </section>
-    </>
+    </div>
   );
 }

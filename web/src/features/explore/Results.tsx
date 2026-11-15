@@ -9,9 +9,9 @@ import { METRIC_GROUPS, presentMetric, type Focus, type ScenarioKey } from './da
 
 const KEYS: { key: string; label: string; hint: string }[] = [
   { key: 'fill_count', label: 'Fills', hint: 'Simulated executions' },
-  { key: 'fees', label: 'Fees paid', hint: 'Quote currency' },
+  { key: 'fees', label: 'Fees / rebates', hint: 'Quote currency; raw sign, negative = rebate' },
   { key: 'net_pnl', label: 'Net P&L', hint: 'After fees, quote currency' },
-  { key: 'fill_ratio_orders', label: 'Orders filled', hint: 'Share of submitted orders' },
+  { key: 'fill_ratio_orders', label: 'Orders with any fill', hint: 'Fully or partially filled orders ÷ submitted orders, as of run end' },
   { key: 'round_trip_ns', label: 'Round trip (median)', hint: 'Order sent → response back' },
   { key: 'orders_submitted', label: 'Orders submitted', hint: 'Sent to the simulated exchange' },
 ];
@@ -48,32 +48,67 @@ function delta(m: ScenarioMetric): string {
   }
 }
 
-/** The three headline measures, using the same stored values and formatting as the full table. */
+/** Headline measures of the comparison table and the unit shown next to each label. */
+const STRIP: { key: string; unit: string }[] = [
+  { key: 'fill_count', unit: '' },
+  { key: 'fees', unit: 'quote' },
+  { key: 'net_pnl', unit: 'quote' },
+  { key: 'round_trip_ns', unit: 'median' },
+];
+
+/**
+ * The compact comparison: fills, fees, net P&L and (when stored) the median round trip for both
+ * scenarios and their difference (slow minus fast), one aligned column per measure, using the
+ * same stored values and formatting as the full table. The difference is not marked good or bad.
+ */
 export function ResultStrip({ story, names }: { story: LatencyStory; names: Record<ScenarioKey, string> }) {
   const rows = scenarioMetrics(story);
+  const cols = STRIP.flatMap(({ key, unit }) => {
+    const m = metric(rows, key);
+    const k = KEYS.find((x) => x.key === key);
+    return m && k ? [{ m, k, unit }] : [];
+  });
   return (
-    <dl className="ex-result-strip" aria-label={`Whole-run results, ${names.fast} versus ${names.slow}`}>
-      {KEYS.slice(0, 3).map(({ key, label, hint }) => {
-        const m = metric(rows, key);
-        if (!m) return null;
-        return (
-          <div key={key} className="ex-result">
-            <dt title={hint}>{label}</dt>
-            <dd>
-              <div className="ex-result-pair">
-                {(['fast', 'slow'] as const).map((s) => (
-                  <span key={s} className={`ex-result-value ex-result-${s}`}>
-                    <span className="ex-result-scenario">{names[s]}</span>
-                    <strong className="ex-num">{value(m, m[s])}</strong>
-                  </span>
-                ))}
-              </div>
-              <span className="ex-result-delta"><span className="ex-num">Δ {delta(m)}</span> <span>{names.slow} − {names.fast}</span></span>
-            </dd>
-          </div>
-        );
-      })}
-    </dl>
+    <table className="ex-compare">
+      <caption className="visually-hidden">
+        Whole-run results, {names.fast} versus {names.slow}. Δ is {names.slow} minus {names.fast}; it is not marked good or bad.
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">Order latency</th>
+          {cols.map(({ m, k, unit }) => (
+            <th key={m.key} scope="col" data-key={m.key} title={k.hint}>
+              {k.label.replace(' (median)', '')}
+              {unit ? <span className="ex-unit"> {unit}</span> : null}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {(['fast', 'slow'] as const).map((s) => (
+          <tr key={s}>
+            <th scope="row">
+              <span className={`ex-swatch ex-swatch-${s}`} aria-hidden="true" /> {names[s]}
+            </th>
+            {cols.map(({ m }) => (
+              <td key={m.key} className="ex-num" data-key={m.key}>
+                {value(m, m[s])}
+              </td>
+            ))}
+          </tr>
+        ))}
+        <tr className="ex-compare-delta">
+          <th scope="row" title={`Difference: ${names.slow} minus ${names.fast}`}>
+            Δ {names.slow} − {names.fast}
+          </th>
+          {cols.map(({ m }) => (
+            <td key={m.key} className="ex-num" data-key={m.key}>
+              {delta(m)}
+            </td>
+          ))}
+        </tr>
+      </tbody>
+    </table>
   );
 }
 

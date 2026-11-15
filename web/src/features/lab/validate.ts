@@ -47,6 +47,28 @@ function cubicProblems(name: string, leg: CubicLeg, e: string[]): void {
   }
 }
 
+const STRATEGY_PARAMS = ['order_qty', 'max_position', 'offset_ticks', 'skew_ticks_per_unit', 'gamma', 'kappa', 'horizon_s', 'intensity_a', 'vol_halflife_ticks', 'threshold', 'hold_ticks'];
+
+/**
+ * The form fields a `validateRunConfig` message is about, so the Lab can show one problem per
+ * field (the field's own message, in display units) instead of the same mistake twice.
+ */
+export function ruleFieldPaths(text: string): string[] {
+  if (text.startsWith('strategy.interval_ns')) return ['strategy.interval_ns'];
+  if (text.startsWith('order latency')) {
+    return ['execution.order_latency.entry_ns', 'execution.order_latency.response_ns', 'execution.order_latency.jitter_ns'];
+  }
+  if (text.startsWith('execution.think_time_ns')) return ['execution.think_time_ns'];
+  if (text.startsWith('feed_latency_offset_ns')) return ['execution.feed_latency_offset_ns'];
+  if (text.startsWith('queue model exponent')) return ['execution.queue_model.n'];
+  if (text.startsWith('fees')) return ['execution.fees.maker', 'execution.fees.taker'];
+  const field = /^(risk\.\w+|record\.\w+)/.exec(text);
+  if (field) return [field[1]];
+  const strat = /^(touch_maker|avellaneda_stoikov|glft|imbalance_taker): (.*)$/.exec(text);
+  if (strat) return STRATEGY_PARAMS.filter((p) => new RegExp(`\\b${p}\\b`).test(strat[2])).map((p) => `strategy.kind.${p}`);
+  return [];
+}
+
 /** Human-readable problems; empty means valid. */
 export function validateRunConfig(c: RunConfig): string[] {
   const e: string[] = [];

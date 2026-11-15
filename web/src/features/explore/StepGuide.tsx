@@ -101,7 +101,7 @@ function ResultStep({ exp, summary, names, focus, t, onPick }: StepGuideProps) {
               <td className="ex-num">{fmtSigned(s.unrealized, 2)}</td>
             </tr>
             <tr>
-              <th scope="row">Fees (subtracted)</th>
+              <th scope="row">Fee impact (−fees; rebates positive)</th>
               <td className="ex-num">{fmtSigned(-f.fees, 2)}</td>
               <td className="ex-num">{fmtSigned(-s.fees, 2)}</td>
             </tr>

@@ -63,7 +63,7 @@ export function TerminalLadder({ frame, instrument, rows, resting, selectedOrder
         frame={frame}
         instrument={instrument}
         rows={rows}
-        caption="(observed, displayed quantity per level) with own simulated orders resting at the cursor (modeled)."
+        caption="(observed displayed quantity) · own simulated orders resting at the cursor (modeled)."
         own={{
           header: 'Own orders',
           cell: (tick) => (

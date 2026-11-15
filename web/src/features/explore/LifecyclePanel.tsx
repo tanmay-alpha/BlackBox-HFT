@@ -1,6 +1,7 @@
-// One order's lifecycle in both scenarios side by side: a two-lane timing diagram and the
-// lifecycle table (each step with its clock and the time since the decision; rows that differ are
-// highlighted). Every time is a button that moves the shared replay there.
+// One order's lifecycle in both scenarios side by side: first what differed and a one-line flow
+// per scenario (decided → sent → reached the exchange → filled / cancelled), then a two-lane
+// timing diagram and the lifecycle table (each step with its clock and the time since the
+// decision; rows that differ are highlighted). Every time is a button that moves the shared replay there.
 
 import { Link } from 'react-router-dom';
 
@@ -21,6 +22,12 @@ function learnedFillTs(d: OrderDetail): number | null {
   return ev ? ev.ts : null;
 }
 
+/** The engine sent the new-order request (strategy clock). */
+function sentTs(d: OrderDetail): number | null {
+  const ev = d.events.find((e) => e.body.type === 'request_sent' && e.body.req === 'new');
+  return ev ? ev.ts : null;
+}
+
 interface Stage {
   key: string;
   label: string;
@@ -30,6 +37,7 @@ interface Stage {
 
 const STAGES: Stage[] = [
   { key: 'decided', label: 'Strategy decides', clock: 'strategy clock', ts: (d) => d.order.decision_ts },
+  { key: 'sent', label: 'Order sent', clock: 'strategy clock', ts: sentTs },
   { key: 'arrived', label: 'Order reaches the exchange', clock: 'exchange clock', ts: (d) => d.order.exch_arrival_ts },
   { key: 'confirmed', label: 'Exchange response reaches the strategy', clock: 'strategy clock', ts: (d) => d.order.first_response_ts },
   { key: 'fill', label: 'First fill', clock: 'exchange clock', ts: (d) => d.order.first_fill_ts },
@@ -63,20 +71,23 @@ export function LifecyclePanel({ story, orderId, details, pair, inst, names, foc
         <span className={o.side === 'buy' ? 'ex-buy' : 'ex-sell'}>{o.side === 'buy' ? 'Buy' : 'Sell'}</span> {fmtQty(o.qty, inst)} at{' '}
         <span className="ex-num">{fmtPrice(o.price_tick, inst)}</span>, {tifLabel(o.tif)} {o.ord_type} order.
       </p>
-      {pair === 'identical' ? (
+      {pair !== null || !details.fast || !details.slow ? (
         <p className="ex-verdict">
-          <strong>Identical in both scenarios.</strong>
-        </p>
-      ) : pair ? (
-        <p className="ex-verdict">
-          <strong>{pairClassText(story, pair.class)}.</strong>
-          {pair.differences.length > 0 ? ` Differs in: ${pair.differences.map(differenceWords).join(', ')}.` : null}
-        </p>
-      ) : !details.fast || !details.slow ? (
-        <p className="ex-verdict">
-          <strong>Placed only in the {details.fast ? names.fast : names.slow} scenario.</strong>
+          <span className="ex-verdict-k">What differed</span>{' '}
+          {pair === 'identical' ? (
+            <strong>Nothing: identical in both scenarios.</strong>
+          ) : pair ? (
+            <>
+              <strong>{pairClassText(story, pair.class)}.</strong>
+              {pair.differences.length > 0 ? ` Differs in: ${pair.differences.map(differenceWords).join(', ')}.` : null}
+            </>
+          ) : (
+            <strong>Placed only in the {details.fast ? names.fast : names.slow} scenario.</strong>
+          )}
         </p>
       ) : null}
+
+      <Flow details={details} names={names} focus={focus} onPick={onPick} />
 
       <TimingDiagram details={details} names={names} focus={focus} onPick={onPick} />
 
@@ -153,7 +164,7 @@ export function LifecyclePanel({ story, orderId, details, pair, inst, names, foc
               })}
             </tr>
             <tr>
-              <th scope="row">Fee paid</th>
+              <th scope="row">Fee (negative = rebate)</th>
               {SCENARIO_KEYS.map((k) => (
                 <td key={k} className="ex-num-left" data-focus={focusAttr(k)}>
                   {details[k] ? fmtNum(details[k].order.fees, 4) : DASH}
@@ -199,6 +210,86 @@ export function LifecyclePanel({ story, orderId, details, pair, inst, names, foc
           </div>
         ))}
       </details>
+    </div>
+  );
+}
+
+// ----- one-line flow per scenario ---------------------------------------------------------
+
+interface FlowStep {
+  key: string;
+  label: string;
+  ts: number | null;
+}
+
+function flowSteps(d: OrderDetail): FlowStep[] {
+  const o = d.order;
+  return [
+    { key: 'decided', label: 'Decided', ts: o.decision_ts },
+    { key: 'sent', label: 'Sent', ts: sentTs(d) },
+    { key: 'arrived', label: 'Reached exchange', ts: o.exch_arrival_ts },
+    { key: 'end', label: outcomeWords(o), ts: o.filled_qty > 0 ? o.first_fill_ts : o.terminal_ts },
+  ];
+}
+
+function Flow({
+  details,
+  names,
+  focus,
+  onPick,
+}: {
+  details: Record<ScenarioKey, OrderDetail | null>;
+  names: Record<ScenarioKey, string>;
+  focus: Focus;
+  onPick: (t: number) => void;
+}) {
+  const steps = { fast: details.fast ? flowSteps(details.fast) : null, slow: details.slow ? flowSteps(details.slow) : null };
+  // A step differs when its label or its time since the decision differs between the scenarios.
+  const rel = (k: ScenarioKey, i: number) => {
+    const s = steps[k]?.[i];
+    return s && s.ts !== null ? `${s.label}@${s.ts - details[k]!.order.decision_ts}` : `${s?.label ?? ''}@none`;
+  };
+  const differs = (i: number) => steps.fast !== null && steps.slow !== null && rel('fast', i) !== rel('slow', i);
+  return (
+    <div className="ex-flow">
+      {SCENARIO_KEYS.map((k) => {
+        const list = steps[k];
+        const decided = details[k]?.order.decision_ts ?? 0;
+        return (
+          <div key={k} className="ex-flow-row" data-dim={focus !== 'both' && focus !== k ? '' : undefined}>
+            <span className="ex-flow-name">
+              <span className={`ex-swatch ex-swatch-${k}`} aria-hidden="true" /> {names[k]}
+            </span>
+            {list ? (
+              <ol className="ex-flow-steps" aria-label={`${names[k]} scenario, order flow`}>
+                {list.map((s, i) => (
+                  <li key={s.key} data-differs={differs(i) ? '' : undefined}>
+                    {s.ts === null ? (
+                      <span className="ex-flow-step">
+                        <span className="ex-flow-label">{s.label}</span>
+                        <span className="ex-muted">{s.key === 'end' ? 'at run end' : 'did not happen'}</span>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="ex-flow-step"
+                        onClick={() => onPick(s.ts!)}
+                        aria-label={`${s.label} in the ${names[k]} scenario at ${fmtSec(s.ts, 6)}${differs(i) ? ', differs between the scenarios' : ''}. Show in the replay`}
+                      >
+                        <span className="ex-flow-label">{s.label}</span>
+                        <span className="ex-num">{s.key === 'decided' ? fmtSec(s.ts, 6) : `+${fmtDuration(s.ts - decided)}`}</span>
+                      </button>
+                    )}
+                    {differs(i) ? <span className="ex-flow-diff">differs</span> : null}
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <span className="ex-muted">not placed in this scenario</span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

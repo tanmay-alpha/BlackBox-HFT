@@ -124,7 +124,7 @@ export function answerSummary(story: LatencyStory): AnswerSummary {
   if (identityHolds && gap !== 0) {
     // net = realized + unrealized − fees, so the gap is the sum of these three contributions.
     const parts = [
-      { what: 'the difference in fees', c: -(s.fees - f.fees), detail: `${ns} paid ${fmtNum(s.fees, 2)} in fees, ${nf} paid ${fmtNum(f.fees, 2)}` },
+      { what: 'the difference in fees', c: -(s.fees - f.fees), detail: `fee balance was ${fmtNum(s.fees, 2)} at ${ns} vs ${fmtNum(f.fees, 2)} at ${nf} (negative = rebate)` },
       { what: 'the difference in realized trading P&L', c: s.realized - f.realized, detail: `realized trading P&L was ${fmtSigned(s.realized, 2)} at ${ns} vs ${fmtSigned(f.realized, 2)} at ${nf}` },
       { what: 'the difference in unrealized P&L', c: s.unrealized - f.unrealized, detail: `unrealized P&L at the end was ${fmtSigned(s.unrealized, 2)} vs ${fmtSigned(f.unrealized, 2)}` },
     ];
@@ -163,12 +163,12 @@ const PLAIN: Record<string, Partial<MetricPresentation>> = {
   net_pnl: { label: 'Net result after fees', group: 'Money', value: signedMoney },
   realized_pnl: { label: 'Realized trading P&L', group: 'Money', value: signedMoney },
   unrealized_pnl: { label: 'Unrealized P&L on the open position at the end', group: 'Money', value: signedMoney },
-  fees: { label: 'Fees paid', group: 'Money', value: money },
+  fees: { label: 'Fees / rebates (negative = rebate)', group: 'Money', value: money },
   max_drawdown: { label: 'Largest fall from a previous high', group: 'Money', value: money },
   turnover: { label: 'Traded value', group: 'Activity', value: money },
   orders_submitted: { label: 'Orders sent', group: 'Activity' },
   fill_count: { label: 'Fills', group: 'Activity' },
-  fill_ratio_orders: { label: 'Share of orders that filled', group: 'Activity' },
+  fill_ratio_orders: { label: 'Orders with any fill (fully or partially filled ÷ submitted, at run end)', group: 'Activity' },
   fill_ratio_qty: { label: 'Share of order quantity that filled', group: 'Activity' },
   volume: { label: 'Quantity traded', group: 'Activity' },
   cancels_sent: { label: 'Cancel requests sent', group: 'Activity' },
@@ -182,12 +182,12 @@ const PLAIN: Record<string, Partial<MetricPresentation>> = {
   max_long: { label: 'Largest long position', group: 'Inventory' },
   max_short: { label: 'Largest short position', group: 'Inventory' },
   mean_abs_position: { label: 'Average absolute position', group: 'Inventory' },
-  spread_capture: { label: 'Spread captured per fill', group: 'Execution quality' },
-  spread_capture_ticks: { label: 'Spread captured per fill', group: 'Execution quality' },
-  markout_100ms: { label: 'Price move after a fill, 100 ms later', group: 'Execution quality' },
-  markout_1000ms: { label: 'Price move after a fill, 1 s later', group: 'Execution quality' },
-  markout_5000ms: { label: 'Price move after a fill, 5 s later', group: 'Execution quality' },
-  markout_30000ms: { label: 'Price move after a fill, 30 s later', group: 'Execution quality' },
+  spread_capture: { label: 'Total maker spread capture (quote)', group: 'Execution quality' },
+  spread_capture_ticks: { label: 'Maker spread capture per unit (ticks)', group: 'Execution quality' },
+  markout_100ms: { label: 'Side-signed mid minus fill price at +100 ms (ticks)', group: 'Execution quality' },
+  markout_1000ms: { label: 'Side-signed mid minus fill price at +1 s (ticks)', group: 'Execution quality' },
+  markout_5000ms: { label: 'Side-signed mid minus fill price at +5 s (ticks)', group: 'Execution quality' },
+  markout_30000ms: { label: 'Side-signed mid minus fill price at +30 s (ticks)', group: 'Execution quality' },
 };
 
 export const METRIC_GROUPS = ['Money', 'Activity', 'Timing', 'Inventory', 'Execution quality', 'Other'];

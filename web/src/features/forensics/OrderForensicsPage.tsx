@@ -44,6 +44,7 @@ import {
 import { findNeighbours } from "./neighbours";
 import type { Neighbours } from "./neighbours";
 import { DecisionContext, EventList, ExplanationSteps, FillsTable, LatencyTable } from "./panels";
+import { Lifecycle } from "./Lifecycle";
 import { RunContextLinks } from "../runs/RunContextLinks";
 import { QueueChart } from "./QueueChart";
 import { TwoClockTimeline } from "./TwoClockTimeline";
@@ -56,7 +57,7 @@ const QUESTION_TEXT: Record<Question, string> = {
   why_partially_filled: "Why did this order only partly fill?",
 };
 
-type BottomTab = "explanation" | "context" | "latency" | "fills" | "events";
+type BottomTab = "lifecycle" | "explanation" | "context" | "latency" | "fills" | "events";
 /** Panes of the phone layout (below 600 px), one at a time. */
 type PhoneTab = "order" | "timeline" | "evidence";
 
@@ -271,9 +272,13 @@ function OrderContext({
           <dd className="mono">
             {fmtQty(order.queue_ahead_at_entry, instrument)} <span className="dim">modeled</span>
           </dd>
-          <dt>Smallest queue ahead</dt>
-          <dd className="mono">
-            {fmtQty(order.min_queue_ahead, instrument)} <span className="dim">modeled</span>
+          <dt>Minimum raw queue estimate (modeled)</dt>
+          <dd>
+            <span className="mono">{fmtQty(order.min_queue_ahead, instrument)}</span>{" "}
+            <span className="dim">
+              Negative means traded quantity beyond the modeled front, not negative displayed depth. Fill events
+              establish executions.
+            </span>
           </dd>
           <dt>Traded at price while resting</dt>
           <dd className="mono">
@@ -386,7 +391,7 @@ function OrderView({
   const [mode, setMode] = useState<AxisMode>("linear");
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [activeStep, setActiveStep] = useState<number | null>(null);
-  const [tab, setTab] = useState<BottomTab>("explanation");
+  const [tab, setTab] = useState<BottomTab>("lifecycle");
   const digits = useContext(TimeDigitsContext);
   const phone = usePhone();
   const [phoneTab, setPhoneTab] = useState<PhoneTab>("order");
@@ -511,6 +516,7 @@ function OrderView({
       active={tab}
       onChange={setTab}
       tabs={[
+        { id: "lifecycle", label: "Lifecycle" },
         { id: "explanation", label: "Explanation", count: explanation.steps.length },
         { id: "context", label: "Decision context" },
         { id: "latency", label: "Latency breakdown" },
@@ -518,7 +524,21 @@ function OrderView({
         { id: "events", label: "Flight recorder", count: events.length },
       ]}
     >
-      {tab === "explanation" ? (
+      {tab === "lifecycle" ? (
+        <Panel title="Order lifecycle" basis="modeled" fill>
+          <p className="note">
+            Strategy decision and responses run on the local (strategy) clock; arrival, queue, fills and cancels on the
+            exchange clock. Every step is simulated on historical replay.
+          </p>
+          <Lifecycle
+            events={events}
+            instrument={instrument}
+            originNs={originNs}
+            selectedSeq={selectedSeq}
+            onSelect={setSelectedSeq}
+          />
+        </Panel>
+      ) : tab === "explanation" ? (
         <Panel title="Explanation" fill>
           <ExplanationSteps
             explanation={explanation}

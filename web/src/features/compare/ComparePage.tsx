@@ -3,7 +3,7 @@
 // the browser. Without a stored comparison for the pair the page offers to create one (scope
 // `run`), and lists the comparisons that already exist.
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
@@ -18,7 +18,7 @@ import type {
   PairClass,
 } from "../../api/types";
 import { ConfigValue, metricLabel } from "../../components/configValue";
-import { exchangeModelLabel, latencyLabel, queueModelLabel, strategyName } from "../../components/describe";
+import { exchangeModelLabel, feeLabel, latencyLabel, queueModelLabel, strategyName } from "../../components/describe";
 import { DataTable, type Column } from "../../components/DataTable";
 import { fmtDuration, fmtInt, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
 import { fmtNsUtc } from "../../components/ns";
@@ -34,6 +34,7 @@ import {
 } from "../forensics/labels";
 import { CLASS_LABEL, CLASS_MEANING, EligibilityNotice, PAIR_CLASSES } from "./classes";
 import { EquityOverlay } from "./EquityOverlay";
+import { differenceWords } from "../explore/data";
 import "./compare.css";
 
 /** `GET /comparisons/{id}/pairs` page size (the contract's maximum). */
@@ -433,18 +434,16 @@ function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunD
         {runA ? <ScenarioCard tag="A" label={cmp.label_a} run={runA} /> : null}
         {runB ? <ScenarioCard tag="B" label={cmp.label_b} run={runB} /> : null}
       </section>
-      <EligibilityNotice cmp={cmp} />
 
-      <Panel title="What changed">
-        <ConfigDiffTable cmp={cmp} />
+      <Panel title="Held constant">
+        {runA ? <HeldConstant cmp={cmp} run={runA} /> : <Spinner label="Loading scenario A" />}
       </Panel>
 
-      <Panel title="Measured outcomes">
-        <MetricsTable rows={cmp.metrics} likeForLike={cmp.eligibility.like_for_like} />
-      </Panel>
-
-      <Panel title="Order alignment">
-        {alignment === null ? notAligned : <AlignmentSummary alignment={alignment} />}
+      <Panel title="Changed">
+        <div className="col">
+          <ConfigDiffTable cmp={cmp} />
+          <EligibilityNotice cmp={cmp} />
+        </div>
       </Panel>
 
       <Panel title="First divergence">
@@ -460,40 +459,109 @@ function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunD
         )}
       </Panel>
 
-      <Panel title="Order pairs">
-        {alignment === null ? notAligned : <PairsTable cmp={cmp} alignment={alignment} instA={instA} instB={instB} />}
+      <Panel title="Afterwards">
+        <div className="col cmp-afterwards">
+          <section className="col" aria-labelledby="cmp-outcomes">
+            <h3 id="cmp-outcomes" className="cmp-subhead">Measured outcomes</h3>
+            <MetricsTable rows={cmp.metrics} likeForLike={cmp.eligibility.like_for_like} />
+          </section>
+          <section className="col" aria-labelledby="cmp-equity">
+            <h3 id="cmp-equity" className="cmp-subhead">Equity, overlaid</h3>
+            {equity.error ? (
+              <ErrorBox error={equity.error} onRetry={equity.reload} />
+            ) : equity.data ? (
+              <EquityOverlay a={equity.data[0]} b={equity.data[1]} divergenceTs={first === null ? null : first.decision_ts} sameDataset={sameDataset} />
+            ) : (
+              <Spinner label="Loading both equity curves" />
+            )}
+          </section>
+          <section className="col" aria-labelledby="cmp-alignment">
+            <h3 id="cmp-alignment" className="cmp-subhead">Order alignment</h3>
+            {alignment === null ? notAligned : <AlignmentSummary alignment={alignment} />}
+          </section>
+          <section className="col" aria-labelledby="cmp-pairs">
+            <h3 id="cmp-pairs" className="cmp-subhead">Order pairs</h3>
+            {alignment === null ? notAligned : <PairsTable cmp={cmp} alignment={alignment} instA={instA} instB={instB} />}
+          </section>
+        </div>
       </Panel>
 
-      <Panel title="Equity, overlaid">
-        {equity.error ? (
-          <ErrorBox error={equity.error} onRetry={equity.reload} />
-        ) : equity.data ? (
-          <EquityOverlay
-            a={equity.data[0]}
-            b={equity.data[1]}
-            divergenceTs={first === null ? null : first.decision_ts}
-            sameDataset={sameDataset}
-          />
-        ) : (
-          <Spinner label="Loading both equity curves" />
-        )}
-      </Panel>
-
-      <Panel title="Interpretation">
-        {cmp.interpretation.length === 0 ? (
-          <Empty>The comparison returned no interpretation notes.</Empty>
-        ) : (
-          <ul className="cmp-notes">
-            {cmp.interpretation.map((note, i) => (
-              <li key={i}>
-                <Badge kind={note.basis}>{note.basis}</Badge>
-                <span>{readableNote(note.statement, instA !== null && instB !== null && instA.tick_size === instB.tick_size ? instA : null)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
+      <Panel title="What we can conclude">
+        <div className="col">
+          <p className="prose cmp-conclusion">
+            {!cmp.eligibility.aligned ? (
+              <>
+                <Badge kind="warn">aggregates only</Badge> The runs differ in{" "}
+                <span className="mono">{cmp.eligibility.reasons.map((r) => r.field).join(", ")}</span>, so decisions cannot be paired and the
+                metric deltas mix the configuration change with those differences.
+              </>
+            ) : !cmp.eligibility.like_for_like ? (
+              <>
+                <Badge kind="warn">not like-for-like</Badge> Decisions are paired, but the runs also differ in{" "}
+                <span className="mono">{cmp.eligibility.reasons.map((r) => r.field).join(", ")}</span>; the deltas do not isolate the
+                configuration change.
+              </>
+            ) : (
+              <>
+                <Badge kind="ok">like-for-like</Badge> The runs share every eligibility field; the deltas reflect the{" "}
+                {cmp.config_diffs.length === 1 ? "one configuration difference" : `${fmtInt(cmp.config_diffs.length)} configuration differences`}{" "}
+                listed under Changed, on this one simulated path.
+              </>
+            )}
+          </p>
+          {cmp.interpretation.length === 0 ? (
+            <Empty>The comparison returned no interpretation notes.</Empty>
+          ) : (
+            <ul className="cmp-notes" aria-label="Interpretation">
+              {cmp.interpretation.map((note, i) => (
+                <li key={i}>
+                  <Badge kind={note.basis}>{note.basis}</Badge>
+                  <span>{readableNote(note.statement, instA !== null && instB !== null && instA.tick_size === instB.tick_size ? instA : null)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="note">
+            Not shown, because one simulated path per scenario cannot support it: statistical significance, market impact or how the strategy would
+            behave live.
+          </p>
+        </div>
       </Panel>
     </>
+  );
+}
+
+/**
+ * The main assumptions of the run, each listed only when the server reported no configuration
+ * difference and no eligibility reason under its path: held constant by the server's own diff.
+ */
+function HeldConstant({ cmp, run }: { cmp: Comparison; run: RunDetail }) {
+  const c = run.config;
+  const e = c.execution;
+  const rows: [string, string[], ReactNode][] = [
+    ["Dataset and instrument", ["dataset", "instrument"], <span className="mono">{run.dataset.id} v{run.dataset.version}</span>],
+    ["Strategy", ["strategy"], <>{strategyName(run.strategy_kind)}, every {fmtDuration(run.interval_ns)}</>],
+    ["Exchange model", ["execution.exchange_model"], exchangeModelLabel(e.exchange_model)],
+    ["Queue model", ["execution.queue_model"], queueModelLabel(e.queue_model)],
+    ["Order latency (entry / response)", ["execution.order_latency"], <span className="mono">{latencyLabel(e.order_latency)}</span>],
+    ["Feed latency offset", ["execution.feed_latency_offset_ns"], <span className="mono">{fmtDuration(e.feed_latency_offset_ns)}</span>],
+    ["Fees (maker / taker)", ["execution.fees"], <span className="mono">{feeLabel(e.fees)}</span>],
+    ["Risk limits", ["risk"], <span className="mono">max position {fmtNum(c.risk.max_position, 4)}, max order {fmtNum(c.risk.max_order_qty, 4)}</span>],
+    ["Seed", ["seed"], <span className="mono">{String(c.seed)}</span>],
+    ["Simulator revision", ["simulation_revision", "engine"], <span className="mono">{run.simulation_revision}</span>],
+  ];
+  const touched = [...cmp.config_diffs.map((d) => d.path), ...cmp.eligibility.reasons.map((r) => r.field)];
+  const held = rows.filter(([, prefixes]) => !touched.some((p) => prefixes.some((x) => p === x || p.startsWith(`${x}.`) || p.startsWith(`${x}_`))));
+  if (held.length === 0) return <Empty>None of the main assumptions is the same in both runs.</Empty>;
+  return (
+    <dl className="kv cmp-held">
+      {held.map(([label, , value]) => (
+        <Fragment key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </Fragment>
+      ))}
+    </dl>
   );
 }
 
@@ -643,7 +711,7 @@ function MetricsTable({ rows, likeForLike }: { rows: MetricRow[]; likeForLike: b
           </>
         )}
         Values and deltas as computed by the server; delta is B minus A. A dash means the value is undefined for that
-        run. Only net P&amp;L is coloured, by sign.
+        run. Only net P&amp;L values are coloured, by sign; deltas are not, because a smaller loss is still a loss.
       </caption>
       <thead>
         <tr>
@@ -669,7 +737,7 @@ function MetricsTable({ rows, likeForLike }: { rows: MetricRow[]; likeForLike: b
             </th>
             <td className={`mono cmp-num${signClass(row, row.a)}`}>{fmtMetric(row.a, row.unit)}</td>
             <td className={`mono cmp-num${signClass(row, row.b)}`}>{fmtMetric(row.b, row.unit)}</td>
-            <td className={`mono cmp-num${signClass(row, row.delta)}`}>{fmtMetricDelta(row.delta, row.unit)}</td>
+            <td className="mono cmp-num">{fmtMetricDelta(row.delta, row.unit)}</td>
             <td className="dim">{UNIT_LABEL[row.unit] ?? row.unit}</td>
             <td>{likeForLike ? <span className="dim">yes</span> : <Badge kind="warn">no</Badge>}</td>
           </tr>
@@ -929,7 +997,12 @@ function FirstDivergence({
         The earliest non-identical pair in decision order. Every aligned pair before it is
         identical in both runs, timing, fees and recorded lifecycle included.{" "}
         {CLASS_MEANING[pair.class]}
-        {pair.differences.length > 0 ? ` Differs in: ${pair.differences.join(", ")}.` : ""}
+        {pair.differences.length > 0 ? (
+          <>
+            {" "}Differs in:{" "}
+            <span title={`Fields: ${pair.differences.join(", ")}`}>{pair.differences.map(differenceWords).join(", ")}</span>.
+          </>
+        ) : null}
       </p>
       <div className="cmp-outcomes">
         <OutcomeCard
@@ -1167,7 +1240,9 @@ function PairPages({
                 <td>
                   <span className={`cmp-class cmp-seg-${pair.class}`}>{CLASS_LABEL[pair.class]}</span>
                 </td>
-                <td className="mono small">{pair.differences.join(", ")}</td>
+                <td className="small" title={pair.differences.join(", ")}>
+                  {pair.differences.map(differenceWords).join(", ")}
+                </td>
                 <PairSide tag="A" runId={cmp.run_a} orderId={pair.order_id} outcome={pair.a} inst={instA} />
                 <PairSide tag="B" runId={cmp.run_b} orderId={pair.order_id} outcome={pair.b} inst={instB} />
               </tr>

@@ -1,8 +1,10 @@
 // Status bar (UI_DESIGN_SPEC.md §5.5): API state and round trip, worker health and queue depth
 // (from `GET /api/v1/status`), build, access mode, the research banner (verbatim, never hidden)
 // and a UTC clock. Changes of API state are announced once, through the shell's polite live
-// region.
+// region. Below 960 px it is one 40 px line (API, worker, SIMULATED + "Research only") with a
+// disclosure that reveals the full banner, build, access mode and clock (shell.css).
 
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 import type { Status } from '../api/model';
@@ -91,11 +93,17 @@ export function workerHealth(status: Status, checkedAt: number | null, nowMs: nu
   };
 }
 
+/** `Idle — waiting for jobs (…)` → `idle`: the state word(s) for the one-line status bar. */
+export function workerStateWord(label: string): string {
+  return label.split(/ [\u2014(]/)[0].toLowerCase();
+}
+
 export function StatusBar({ announce }: { announce: (message: string) => void }) {
   const h = useHealth();
   const access = useAccess();
   const now = useNow();
   const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
   const lastPhase = useRef<ApiPhase | null>(null);
   const lastMismatch = useRef(false);
 
@@ -136,13 +144,13 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
           : 'ACCESS unknown';
 
   return (
-    <footer className="statusbar" aria-label="Status">
+    <footer className={open ? 'statusbar sb-open' : 'statusbar'} aria-label="Status">
       <button type="button" className={`sb-seg sb-api sb-${tone}`} title={apiTitle} onClick={h.retry}>
         <span className="sb-dot" aria-hidden="true" />
         API {h.phase === 'unreachable' ? 'ERROR ' : ''}
         {PHASE_TEXT[h.phase]}
-        {h.phase === 'ok' && h.rttMs !== null ? ` ${h.rttMs} ms` : null}
-        {h.phase === 'waking' ? ` ${elapsed} s` : null}
+        {h.phase === 'ok' && h.rttMs !== null ? <span className="mono">{` ${h.rttMs} ms`}</span> : null}
+        {h.phase === 'waking' ? <span className="mono">{` ${elapsed} s`}</span> : null}
         {s?.status === 'draining' ? ' \u00b7 draining' : null}
       </button>
       {h.contractMismatch ? (
@@ -158,22 +166,31 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
           title={`Worker: ${worker.label}; queued ${worker.queueDepth}; running ${worker.running}. Reported by GET /api/v1/status: ${worker.text}, heartbeat ${worker.heartbeatAgeS === null ? 'not reported yet' : `${worker.heartbeatAgeS} s ago`} (expected every ${Math.round((s?.worker.heartbeat_interval_ms ?? 0) / 1000)} s; flagged as not responding after 3 missed).`}
         >
           <span className="sb-dot" aria-hidden="true" />
-          <span className="sb-worker-text">Worker: {worker.label} {'\u00b7'} queued {worker.queueDepth} {'\u00b7'} running {worker.running}</span>
+          <span className="sb-worker-text" aria-hidden="true">
+            Worker {workerStateWord(worker.label)}
+            <span className="sb-worker-queue">
+              {' \u00b7 '}queued <span className="mono">{worker.queueDepth}</span>
+              {' \u00b7 '}running <span className="mono">{worker.running}</span>
+            </span>
+          </span>
+          <span className="visually-hidden">
+            Worker: {worker.label} {'\u00b7'} queued {worker.queueDepth} {'\u00b7'} running {worker.running}
+          </span>
         </span>
       ) : null}
       {build ? (
         <button
           type="button"
-          className="sb-seg sb-build"
+          className="sb-seg sb-build sb-detail"
           title={`Build: ${build}. Activate to copy.`}
           onClick={() => void navigator.clipboard?.writeText(build).then(() => setCopied(true))}
         >
-          <span className="sb-build-text">{copied ? 'copied' : build}</span>
+          <span className="sb-build-text mono">{copied ? 'copied' : build}</span>
         </button>
       ) : null}
       <button
         type="button"
-        className="sb-seg sb-mode"
+        className="sb-seg sb-mode sb-detail"
         data-testid="sb-mode"
         title={access.mode === 'research' ? 'Research access. Activate to change the key.' : 'Public demo workspace, read-only. Activate to enter an API key.'}
         onClick={access.openKeyDialog}
@@ -182,11 +199,24 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
       </button>
       <span className="sb-seg sb-banner" tabIndex={0} title={RESEARCH_BANNER} role="note">
         <Badge kind="modeled">simulated</Badge>
+        <span className="sb-banner-short" aria-hidden="true">
+          Research only
+        </span>
         <span className="sb-banner-text">{RESEARCH_BANNER}</span>
       </span>
-      <span className="sb-seg sb-clock" tabIndex={0} title={`Local time ${now.toString()}`}>
+      <span className="sb-seg sb-clock sb-detail mono" tabIndex={0} title={`Local time ${now.toString()}`}>
         {utc}
       </span>
+      <button
+        type="button"
+        className="sb-toggle"
+        aria-expanded={open}
+        aria-label="Status details"
+        title={open ? 'Hide status details' : 'Show status details: worker, full research notice, build, access and clock'}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {open ? <ChevronDown size={16} strokeWidth={1.5} aria-hidden /> : <ChevronUp size={16} strokeWidth={1.5} aria-hidden />}
+      </button>
     </footer>
   );
 }

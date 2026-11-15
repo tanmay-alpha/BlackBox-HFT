@@ -35,7 +35,7 @@ test('bounded keyed experiment: submit, complete, inspect, compare, report, relo
   // 1–6: Strategy Lab, key, dataset, preset, a small change, validation.
   await page.goto('/strategy?dataset=synthetic-demo');
   await signIn(page);
-  await page.locator('#lab-preset').selectOption({ label: 'Touch maker: baseline' });
+  await page.getByRole('radio', { name: 'Touch maker: baseline', exact: true }).check();
   const entry = page.getByLabel('Entry latency', { exact: true });
   await entry.fill('5');
   await entry.blur();
@@ -53,6 +53,7 @@ test('bounded keyed experiment: submit, complete, inspect, compare, report, relo
   // 7–10: submit; observe states until completed.
   const t0 = Date.now();
   await page.getByTestId('lab-submit').click();
+  await page.getByTestId('lab-next-job').click();
   await page.waitForURL(/\/sim\/jobs\//);
   const jobId = page.url().split('/sim/jobs/')[1].split(/[?#]/)[0];
   evidence.job_id = jobId;

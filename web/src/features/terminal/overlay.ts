@@ -67,8 +67,26 @@ export function ownOrdersPainter(
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
+      // A dark halo under the dashed side-coloured line keeps it readable over the same-coloured
+      // book; a short tick marks the arrival at the simulated exchange.
+      ctx.strokeStyle = theme.bg;
+      ctx.lineWidth = (isSel ? 5 : 4) * dpr;
+      ctx.beginPath();
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+      if (span.from >= v0) {
+        ctx.moveTo(x0, y - 5 * dpr);
+        ctx.lineTo(x0, y + 5 * dpr);
+      }
+      ctx.stroke();
       ctx.strokeStyle = o.side === 'buy' ? theme.buy : theme.sell;
       ctx.lineWidth = (isSel ? 2.5 : 1.75) * dpr;
+      if (span.from >= v0) {
+        ctx.beginPath();
+        ctx.moveTo(x0, y - 4 * dpr);
+        ctx.lineTo(x0, y + 4 * dpr);
+        ctx.stroke();
+      }
       ctx.setLineDash([5 * dpr, 3 * dpr]);
       ctx.beginPath();
       ctx.moveTo(x0, y);
@@ -77,22 +95,26 @@ export function ownOrdersPainter(
       ctx.setLineDash([]);
     }
 
-    // Simulated fills: diamonds in the side colour with a modeled-colour outline.
+    // Simulated fills: diamonds in the side colour, ringed in the background colour and then in
+    // the modeled colour so they stand apart from the round observed trade prints.
     for (const f of fills) {
       if (f.ts < v0 || f.ts > v1) continue;
       const x = xf.xOf(f.ts);
       const y = xf.yOf(f.price_tick);
-      const r = (f.order_id === selected ? 5.5 : 3.5) * dpr;
+      const r = (f.order_id === selected ? 6.5 : 4.5) * dpr;
       ctx.beginPath();
       ctx.moveTo(x, y - r);
       ctx.lineTo(x + r, y);
       ctx.lineTo(x, y + r);
       ctx.lineTo(x - r, y);
       ctx.closePath();
+      ctx.strokeStyle = theme.bg;
+      ctx.lineWidth = 3 * dpr;
+      ctx.stroke();
       ctx.fillStyle = f.side === 'buy' ? theme.buy : theme.sell;
       ctx.fill();
       ctx.strokeStyle = theme.modeled;
-      ctx.lineWidth = Math.max(1, dpr);
+      ctx.lineWidth = 1.5 * dpr;
       ctx.stroke();
     }
     ctx.restore();

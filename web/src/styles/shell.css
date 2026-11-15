@@ -423,10 +423,11 @@
 }
 
 .panel-caption {
+  max-width: 100ch;
   padding: 0 var(--sp-4) var(--sp-3);
   color: var(--fg-2);
-  font-size: var(--text-xs);
-  line-height: var(--lh-xs);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
 }
 
 .panel-body {
@@ -497,8 +498,9 @@
   position: sticky;
   top: 0;
   z-index: 2;
+  border-bottom-color: var(--border);
   background: var(--bg-1);
-  color: var(--fg-1);
+  color: var(--fg-2);
   font-size: var(--text-xs);
   font-weight: 500;
   letter-spacing: 0;
@@ -514,10 +516,15 @@
 }
 
 .dt-table td.num,
-.dt-table th.num {
+.dt-table tbody th.num {
   text-align: right;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* Column labels are prose even over numeric columns. */
+.dt-table thead th.num {
+  font-family: var(--font-sans);
 }
 
 .dt-table td.wrap {
@@ -541,6 +548,14 @@
   font: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
+}
+
+/* Phones: header sort buttons are 40 px touch targets. */
+@media (max-width: 599px) {
+  .dt-sort {
+    height: auto;
+    min-height: var(--h-touch);
+  }
 }
 
 .dt-sort:hover {
@@ -599,9 +614,10 @@
   gap: var(--sp-2);
   min-height: var(--h-row);
   padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
   color: var(--fg-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
 }
 
 /* ----- tabs (§6.5) ----------------------------------------------------------------------- */
@@ -620,6 +636,12 @@
   min-width: 0;
   overflow-x: auto;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* In a height-constrained Tabs column the scrolling strip keeps its height (route tabs sit in
+   toolbar rows and must still shrink and scroll horizontally). */
+.tabs > .tablist {
+  flex: none;
 }
 
 .route-tabs {
@@ -644,6 +666,11 @@
 
 .ws-toolbar .tab {
   height: var(--h-control);
+}
+
+/* Tab rows scroll horizontally, so the ring sits inside the tab instead of being clipped. */
+.tab:focus-visible {
+  outline-offset: -2px;
 }
 
 .tab:hover {
@@ -964,6 +991,7 @@
 /* ----- status bar (§5.5) ----------------------------------------------------------------- */
 
 .statusbar {
+  position: relative;
   grid-area: status;
   display: flex;
   align-items: stretch;
@@ -972,16 +1000,15 @@
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-1);
   color: var(--fg-1);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  line-height: var(--lh-2xs);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
 }
 
 .sb-seg {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: var(--sp-1);
+  gap: 6px;
   min-height: 0;
   height: 100%;
   padding: 0 var(--sp-2);
@@ -994,9 +1021,21 @@
   white-space: nowrap;
 }
 
-.sb-worker,
+.sb-seg.sb-api,
+.sb-seg.sb-build,
+.sb-seg.sb-mode {
+  background: transparent;
+  border-color: transparent;
+}
+
+.sb-seg.sb-api:hover,
+.sb-seg.sb-build:hover,
+.sb-seg.sb-mode:hover {
+  background: var(--bg-2);
+}
+
 .sb-build {
-  max-width: 156px;
+  max-width: 200px;
 }
 
 .sb-worker-text,
@@ -1006,7 +1045,16 @@
   white-space: nowrap;
 }
 
-.sb-seg:focus-visible {
+.sb-build-text {
+  font-size: var(--text-2xs);
+}
+
+.sb-worker-queue {
+  color: var(--fg-2);
+}
+
+.sb-seg:focus-visible,
+.sb-toggle:focus-visible {
   outline-offset: -2px;
 }
 
@@ -1046,8 +1094,15 @@
   text-overflow: ellipsis;
 }
 
+.sb-banner-short,
+.sb-toggle {
+  display: none;
+}
+
 .sb-clock {
   border: 0;
+  color: var(--fg-2);
+  font-size: var(--text-2xs);
 }
 
 /* ----- narrow viewports (§5.1, SC 1.4.10) ------------------------------------------------ */
@@ -1058,6 +1113,14 @@
   }
 
   .palette-trigger > span {
+    display: none;
+  }
+
+  /* The verbatim research banner keeps its full width: build, clock and queue counts give way
+     (System status shows all three). */
+  .sb-build,
+  .sb-clock,
+  .sb-worker-queue {
     display: none;
   }
 }
@@ -1113,35 +1176,94 @@
     padding-right: 0;
   }
 
-  /* Status bar condenses: build and clock go (System status has both); segments and the research
-     banner wrap instead of being cut off. */
+  /* Status bar: one 40 px line (API, worker state, SIMULATED + "Research only") and a disclosure
+     that reveals the verbatim banner, build, access mode and clock. Nothing is cut mid-word. */
   .statusbar {
     flex-wrap: wrap;
+    align-items: center;
   }
 
-  .sb-build,
-  .sb-clock,
-  .sb-mode,
-  .palette-trigger > kbd {
+  .palette-trigger > kbd,
+  .sb-worker-queue,
+  .statusbar:not(.sb-open) .sb-detail {
     display: none;
   }
 
   .sb-seg {
     flex: 0 1 auto;
-    height: auto;
-    min-height: 28px;
-    white-space: normal;
+    height: var(--h-touch);
   }
 
   .sb-banner {
-    flex: 1 1 100%;
-    padding: var(--sp-2) var(--sp-3);
-    border: 0;
-    align-items: flex-start;
+    flex: 1 1 0;
+    gap: var(--sp-2);
   }
 
-  .sb-banner-text {
+  .sb-banner-short {
+    display: inline;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fg-1);
+  }
+
+  /* Collapsed: the verbatim banner stays for assistive technology and in the segment's title. */
+  .statusbar:not(.sb-open) .sb-banner-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .sb-toggle {
+    display: inline-flex;
+    flex: none;
+    width: var(--h-touch);
+    height: var(--h-touch);
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-left: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: transparent;
+    color: var(--fg-1);
+  }
+
+  /* Expanded: the banner gets its own full-width row, the details wrap below it. */
+  .sb-open .sb-banner-short {
+    display: none;
+  }
+
+  .sb-open .sb-banner {
+    order: 10;
+    flex: 1 1 100%;
+    height: auto;
+    padding: var(--sp-2) var(--sp-3);
+    align-items: flex-start;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .sb-open .sb-banner-text {
     white-space: normal;
+  }
+
+  .sb-open .sb-detail {
+    display: inline-flex;
+    order: 11;
+  }
+
+  .sb-open .sb-worker-queue {
+    display: inline;
+  }
+
+  .sb-open .sb-toggle {
+    margin-left: auto;
+  }
+
+  .sb-open .sb-build {
+    max-width: 100%;
   }
 
   /* Wide tables scroll inside their own container; a row-header first column stays in view. */
@@ -1202,37 +1324,71 @@
   }
 }
 
+/* Small phones: a healthy worker moves into the details so "SIMULATED · Research only" fits on the
+   one line; a worker that is not healthy stays visible. */
+@media (max-width: 479px) {
+  .statusbar:not(.sb-open) .sb-worker:is(.sb-ok, .sb-neutral) {
+    display: none;
+  }
+}
+
 @media (max-width: 599px) {
   .brand-name {
     display: none;
   }
 
   .topbar {
-    gap: var(--sp-1);
-    padding: 0 var(--sp-2);
+    gap: 2px;
+    padding: 0 var(--sp-1) 0 var(--sp-2);
   }
 
   .topbar .spacer {
     min-width: 0;
   }
 
-  .topbar .palette-trigger {
-    padding: 0;
-    width: var(--h-control);
+  /* Icon actions are chrome-less 40 px squares; the access badge keeps its outline. */
+  .topbar .palette-trigger,
+  .topbar .btn-icon {
     flex: none;
+    width: var(--h-touch);
+    padding: 0;
+    border-color: transparent;
+    background: transparent;
+    color: var(--fg-1);
   }
 
-  /* One line: the badge drops its detail (kept in the title) and "Sign out" stays beside it. */
-  .topbar .badge-detail {
+  .topbar .palette-trigger:hover,
+  .topbar .btn-icon:hover {
+    background: var(--bg-3);
+  }
+
+  .topbar .btn-icon[aria-pressed='true'] {
+    background: var(--bg-selected);
+    color: var(--accent);
+  }
+
+  /* One line: the badge drops its detail (kept in the title); "Sign out" lives in the command
+     palette and System status on phones. */
+  .topbar .badge-detail,
+  .topbar .access-badge .btn-link {
     display: none;
   }
 
+  /* The badge stays 24 px tall visually; an invisible frame makes its target 40 px. */
   .topbar > .badge,
   .topbar .access-badge .badge {
-    min-height: var(--h-control);
+    position: relative;
+    min-height: 24px;
+    margin: 0 var(--sp-1);
     white-space: nowrap;
     justify-content: center;
-    font-size: 10px;
+  }
+
+  .topbar > .badge::after,
+  .topbar .access-badge .badge::after {
+    content: '';
+    position: absolute;
+    inset: -9px -5px;
   }
 
   .topbar .access-badge {
@@ -1243,6 +1399,9 @@
 
   .nav-menu-button {
     padding: 0 var(--sp-2);
+    border-color: transparent;
+    background: transparent;
+    font-weight: 600;
   }
 
   .topbar .brand {
