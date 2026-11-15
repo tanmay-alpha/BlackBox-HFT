@@ -941,27 +941,31 @@ pub fn timeline_page(
         None => crate::server::timeline_events(run, w, 0).count() as u64,
     };
 
-    let (mut fills, mut equity, mut orders, mut context_bytes) = (vec![], vec![], vec![], 0);
+    let (mut fills, mut equity, mut orders) = (vec![], vec![], vec![]);
+    let mut context_bytes = 0;
+    let context_limit = cap.saturating_sub(ENVELOPE_RESERVE);
     if cursor.is_none() {
-        let context = crate::server::timeline_context(run, w);
-        for (out, items) in [
-            (&mut fills, wire_items(&context.fills)?),
-            (&mut equity, wire_items(&context.equity)?),
-            (&mut orders, wire_items(&context.orders)?),
-        ] {
-            *out = items.0;
-            context_bytes += items.1;
-        }
+        fills = wire_items(
+            crate::server::timeline_fills(run, w),
+            &mut context_bytes,
+            context_limit,
+            cap,
+        )?;
+        equity = wire_items(
+            crate::server::timeline_equity(run, w),
+            &mut context_bytes,
+            context_limit,
+            cap,
+        )?;
+        orders = wire_items(
+            crate::server::timeline_orders(run, w),
+            &mut context_bytes,
+            context_limit,
+            cap,
+        )?;
+        orders.sort_unstable_by_key(|order| order["order_id"].as_u64());
     }
-    let Some(budget) = cap.checked_sub(ENVELOPE_RESERVE + context_bytes) else {
-        return Err(ApiError::invalid_request(format!(
-            "the fills, equity and orders of this window take {context_bytes} bytes, above the \
-             {cap}-byte response limit; request a shorter window (t0_ns..t1_ns)"
-        ))
-        .with_details(
-            json!({ "field": "t1_ns", "reason": "window_too_large", "limit_bytes": cap }),
-        ));
-    };
+    let budget = context_limit - context_bytes;
 
     let mut events = Vec::new();
     let mut used = 0usize;
@@ -1013,18 +1017,29 @@ pub fn timeline_page(
     })
 }
 
-/// Wire values of `items` and their serialized size (as counted by [`wire_item`]).
-fn wire_items<T: Serialize>(items: &[T]) -> Result<(Vec<Value>, usize), ApiError> {
-    let mut bytes = 0;
-    let values = items
-        .iter()
-        .map(|item| {
-            let (v, size) = wire_item(item)?;
-            bytes += size;
-            Ok(v)
-        })
-        .collect::<Result<_, ApiError>>()?;
-    Ok((values, bytes))
+/// Encodes borrowed context incrementally, refusing as soon as the response budget is spent.
+fn wire_items<'a, T: Serialize + 'a>(
+    items: impl IntoIterator<Item = &'a T>,
+    bytes: &mut usize,
+    limit: usize,
+    cap: usize,
+) -> Result<Vec<Value>, ApiError> {
+    let mut values = Vec::new();
+    for item in items {
+        let (v, size) = wire_item(item)?;
+        if size > limit.saturating_sub(*bytes) {
+            return Err(ApiError::invalid_request(format!(
+                "the fills, equity and orders of this window exceed the {cap}-byte response \
+                 limit; request a shorter window (t0_ns..t1_ns)"
+            ))
+            .with_details(
+                json!({ "field": "t1_ns", "reason": "window_too_large", "limit_bytes": cap }),
+            ));
+        }
+        *bytes += size;
+        values.push(v);
+    }
+    Ok(values)
 }
 
 /// The deterministic Markdown research report of a run.
@@ -1304,4 +1319,32 @@ pub fn peek(limit: i64) -> i64 {
 /// page always offers a cursor (the next page may then be empty).
 pub fn has_more(len: usize, limit: i64) -> bool {
     len as i64 > limit || (limit >= 100 && len as i64 >= 100)
+}
+
+#[cfg(test)]
+mod timeline_budget_tests {
+    use std::cell::Cell;
+
+    use serde::{Serialize, Serializer};
+
+    #[test]
+    fn context_encoding_stops_when_the_byte_budget_is_spent() {
+        struct Counted<'a>(&'a Cell<usize>);
+
+        impl Serialize for Counted<'_> {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                self.0.set(self.0.get() + 1);
+                serializer.serialize_str("context")
+            }
+        }
+
+        let visited = Cell::new(0);
+        let item = Counted(&visited);
+        let mut used = 0;
+        let error = super::wire_items(std::iter::repeat_n(&item, 1_000_000), &mut used, 32, 4128)
+            .unwrap_err();
+        assert_eq!(error.details["reason"], "window_too_large");
+        assert_eq!(visited.get(), 4, "do not materialise the remaining context");
+        assert_eq!(used, 30);
+    }
 }

@@ -45,11 +45,11 @@ import { TwoClockTimeline } from '../forensics/TwoClockTimeline';
 import { BookModeRun } from '../replay/BookMode';
 import { frameIndexAt, seriesIndexAt } from '../replay/heatmap';
 import { parseSeconds, secondsText } from '../replay/seconds';
-import { EventLog, lastEventAtOrBefore } from './EventLog';
+import { EventLog } from './EventLog';
 import { ordersRestingAt } from './overlay';
 import { TerminalHeatmap } from './TerminalHeatmap';
 import { TerminalLadder } from './TerminalLadder';
-import { fetchTimelineWindow } from './timelinePaging';
+import { fetchTimelineWindow, findStep } from './timelinePaging';
 import type { TimelineProgress } from './timelinePaging';
 import '../replay/replay.css';
 import './terminal.css';
@@ -102,14 +102,6 @@ function intParam(raw: string | null): number | null {
 function windowAt(t: number, lead: number, ds: DatasetManifest): Win {
   const t0 = Math.round(Math.max(ds.start, Math.min(t - lead, ds.end - WINDOW_NS)));
   return { t0, t1: Math.round(Math.min(ds.end, t0 + WINDOW_NS)) };
-}
-
-/** The first event after `t` (`dir` 1) or the last event before it (`dir` -1). */
-function findStep(events: FlightEvent[], t: number, dir: 1 | -1): FlightEvent | null {
-  let i = lastEventAtOrBefore(events, t);
-  if (dir === 1) return events[i + 1] ?? null;
-  while (i >= 0 && events[i].ts >= t) i -= 1;
-  return i >= 0 ? events[i] : null;
 }
 
 function RunLinks({ runId }: { runId: string }) {
