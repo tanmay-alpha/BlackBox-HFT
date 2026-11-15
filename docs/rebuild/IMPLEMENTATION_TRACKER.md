@@ -50,8 +50,8 @@ Operational summary. Read this first, then the linked documents.
 | P2-M3 | P1 | M3 | UIAudit, UIRemaining (Opus 5.5) | UI_AUDIT defect fixes | high-impact defects closed | done: all High/Medium rows Fixed | e8344ba, b31b0b2 |
 | P2-M7 | P2 | M7 | — | Research extensions (latency/queue/scenario depth) | — | not started (directive: only after P0 gates) | — |
 | P2-M9a | P1 | M9 | DocsCurrent (Opus 5.5) | Current-state docs | stale SHAs/claims replaced | done | — |
-| P2-M8 | P0 | M8 | lead | Merge phase 2 to main + deploy | `/status` reports new SHA | pending deploy | — |
-| P2-M9 | P0 | M9 | lead | Post-deploy production verification | smoke + journey | pending | — |
+| P2-M8 | P0 | M8 | lead | Merge phase 2 to main + deploy | `/status` reports new SHA | done | 96a3ccb |
+| P2-M9 | P0 | M9 | lead | Post-deploy production verification | smoke + journey | done: smoke 8/8, prod acceptance 7/7, keyed journey PASS | 96a3ccb |
 
 Known open items:
 - Panes built from stacked resizable panels on `/book/runs/…` and the order forensics page are very short at 390 px.

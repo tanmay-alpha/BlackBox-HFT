@@ -4,16 +4,14 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Production verified (2026-11-15); phase 2 merged on `phase2/ui`, release pending deploy.**
-Production: the API reports `git_sha=a665991` from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:212495fa…c659cc1`
-(Render deploy `dep-dbsmm76k1f9s739ng650` live), Vercel serves the console built from `5b1ea92`
-(docs-only on top of `a665991`), migrations through 0009, worker idle, no `BB_GIT_SHA` override.
-The authenticated production journey passed (job `01a1dea1`, run `e2321a7eec3e23e1`, ~7.2 s on the
-worker): [../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md) and
-`prod-research-evidence.json`. Earlier release records (`d85f743`, `1873f4d…`) are historical.
-Phase 2 (ITCH comparison, security dispositions, replay encoding fix, UI audit) is summarised in
-[../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) "Phase 2 (2026-11-15)"; its release SHA is
-pending deploy (lead records it here once `/status` reports it).
+**Phase 2 released and verified (2026-11-15 10:47 UTC).** `main` = `96a3ccb`. The API reports
+`git_sha=96a3ccb` from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:565fc404…c2d86` (Render deploy
+`dep-dbsoram7bikc73c2i3j0` live). Vercel production is built from `main`, migrations run through 0009, the worker
+is idle and there is no `BB_GIT_SHA` override. Smoke passed 8/8, anonymous acceptance 7/7, and the authenticated
+journey passed (run `b0f713f6a8cb46af`, 7.9 s on the worker). Evidence and rollback (`sha256:212495fa…`, release
+`a665991`): [../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md). Phase-2 summary:
+[../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) "Phase 2 (2026-11-15)". Earlier release records
+(`a665991`, `d85f743`, `1873f4d…`) are historical.
 
 Hosted system (the `BB_GIT_SHA` service env override was removed on 2026-11-15; the SHA now
 comes from the image):
@@ -81,9 +79,9 @@ acceptance criteria. All other rebuild agents ran on Opus 5.5.
 
 ## Open items
 
-Open items: [../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) "Phase 2 (2026-11-15)"
-(UI_AUDIT ranked defects, remaining Open items in SECURITY_DISPOSITIONS.md) and the phase-2
-release (pending deploy). Test counts: see CI, not this file.
+Open items: [../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) "Phase 2 (2026-11-15)" and the
+remaining Open rows of [../rebuild/SECURITY_DISPOSITIONS.md](../rebuild/SECURITY_DISPOSITIONS.md).
+Test counts: see CI, not this file. The paragraph below is the 2026-11-14 record.
 
 All ten ranked defects of `FINAL_AUDIT.md` §4 have source fixes on `main` (§7, with commits and
 tests). Source fixes do not establish deployment: re-check production after release
