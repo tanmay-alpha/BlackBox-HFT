@@ -1,11 +1,12 @@
 // The public latency experiment, the console's landing page (`/`): "What changes when a
-// market-making strategy receives and executes orders more slowly?" The stored answer comes
-// first as a three-measure result strip, then the synchronized replay (chart + book at one shared
-// time), the order lifecycle in both scenarios, the window orders and a compact four-step guide. All view state (step,
-// scenario filter, order, replay time) lives in the URL query, so leaving for the forensics page
-// and coming back restores the same view; the page's scroll position is restored too.
+// market-making strategy receives and executes orders more slowly?" A compact header (question,
+// data basis, scenario identity, one-line answer and the comparison row) keeps the synchronized
+// replay (chart and book at one shared time) above the fold; the order lifecycle in both scenarios
+// follows it, then the window orders and a compact four-step guide. All view state (step,
+// scenario filter, order, replay time, chart/book tab) lives in the URL query, so leaving for the
+// forensics page and coming back restores the same view; the page's scroll position is restored too.
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 
 import { Spinner, useAsync } from '../../components/ui';
@@ -53,6 +54,8 @@ function useViewState() {
   const order = orderRaw !== null && /^\d{1,9}$/.test(orderRaw) ? Number(orderRaw) : null;
   const tRaw = params.get('t');
   const t = tRaw !== null && /^\d{1,15}$/.test(tRaw) ? Number(tRaw) : null;
+  /** Narrow layouts show the chart or the book (a tab); wide layouts show both side by side. */
+  const pane: 'chart' | 'book' = params.get('pane') === 'book' ? 'book' : 'chart';
   const update = useCallback(
     (patch: Record<string, string | number | null>) =>
       setParams(
@@ -68,7 +71,7 @@ function useViewState() {
       ),
     [setParams],
   );
-  return { step, focus, order, t, update };
+  return { step, focus, order, t, pane, update };
 }
 
 export default function ExplorePage() {
@@ -200,7 +203,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
     knownPair ?? (view.order !== null && orderDecision !== null && pairIndex && pairsReady ? pairIndex.lookup(view.order, orderDecision) : null);
 
   // ----- focus and scroll after a jump -----
-  const replayRef = useRef<HTMLElement | null>(null);
+  const replayRef = useRef<HTMLDivElement | null>(null);
   const barRef = useRef<HTMLElement | null>(null);
   const lifeHeading = useRef<HTMLHeadingElement | null>(null);
   const [revealReq, setRevealReq] = useState(0);
@@ -340,9 +343,11 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
     return m;
   }, [first, firstOutcome]);
 
-  // Wide layouts show the lifecycle below the book (grid area `life`), so it goes after the
-  // orders in the DOM there; narrow layouts keep it right after the chart. DOM order = visual order.
-  const wide = useWide();
+  // Wide layouts put the book beside the chart; narrow ones show one of them under a tab. The
+  // lifecycle always follows the replay directly. DOM order = visual order.
+  const split = useSplit(scroller);
+  // The whole-run time slider sits in the sticky bar when wide, in the chart/book tab row when narrow.
+  const seek = <Seek t={t} end={end} stepNs={story.fast.run.config.strategy.interval_ns} onCommit={pick} />;
   const lifeSec = (
         <section className="ex-life-sec ex-panel" aria-labelledby="ex-life-title">
           <h2 id="ex-life-title" ref={lifeHeading} tabIndex={-1}>
@@ -374,21 +379,21 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
       <Header
         answer={
           <div className="ex-answer">
-            <ResultStrip story={story} names={names} />
-            <div className="ex-hero-action">
-              <button type="button" className="btn-primary ex-hero-cta" disabled={!first} onClick={() => first && selectOrder(first.order_id, first.decision_ts, 'jump')}>
-                Show the first divergence <span aria-hidden="true">↗</span>
-              </button>
-              <span className="ex-muted">Same strategy. Two latencies.</span>
-            </div>
-            <details className="ex-answer-detail">
-              <summary>Both scenarios lose money. Why?</summary>
-              <p><strong>{summary.headline}</strong> {summary.gap}</p>
-              <p className="ex-muted">
-                A smaller loss is still a loss. This is one strategy on one synthetic dataset, replayed without market impact; it does not show that
-                slower (or faster) execution is better in general.
+            <div className="ex-conclusion">
+              <p className="ex-ident">
+                <span className="ex-swatch ex-swatch-fast" aria-hidden="true" /> {names.fast} vs <span className="ex-swatch ex-swatch-slow" aria-hidden="true" />{' '}
+                {names.slow} order latency; same strategy, same market ({exp.dataset.title}).
               </p>
-            </details>
+              <p className="ex-headline">{summary.headline}</p>
+              <details className="ex-answer-detail">
+                <summary>Why?</summary>
+                <p>
+                  {summary.gap ?? ''} A smaller loss is still a loss. This is one strategy on one synthetic dataset, replayed without market impact;
+                  it does not show that slower (or faster) execution is better in general.
+                </p>
+              </details>
+            </div>
+            <ResultStrip story={story} names={names} />
           </div>
         }
         actions={
@@ -404,7 +409,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
       />
 
       <nav ref={barRef} className="ex-bar" aria-label="Replay controls">
-        <div className="ex-group" role="group" aria-label="Scenarios shown">
+        <div className="ex-group ex-segs" role="group" aria-label="Scenarios shown">
           <span className="ex-group-label">Scenario</span>
           {(['both', 'fast', 'slow'] as const).map((k) => (
             <button
@@ -428,7 +433,13 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
           ))}
         </div>
         <div className="ex-group" role="group" aria-label="Jump to a divergence">
-          <button type="button" disabled={!first} onClick={() => first && selectOrder(first.order_id, first.decision_ts, 'jump')} title="The earliest order whose timing or outcome differs">
+          <button
+            type="button"
+            className="btn-primary ex-first"
+            disabled={!first}
+            onClick={() => first && selectOrder(first.order_id, first.decision_ts, 'jump')}
+            title="The earliest order whose timing or outcome differs between the scenarios"
+          >
             First divergence{first ? ` · ${fmtSec(first.decision_ts, 3)}` : ''}
           </button>
         </div>
@@ -453,10 +464,10 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
           </button>
         </div>
         </details>
-        <Seek t={t} end={end} stepNs={story.fast.run.config.strategy.interval_ns} onCommit={pick} />
+        {split ? seek : null}
       </nav>
 
-      <div className="ex-stage">
+      <div className="ex-stage" data-split={split ? '' : undefined}>
         <ReplayPanel
           inst={inst}
           names={names}
@@ -470,8 +481,12 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
           onSelectOrder={selectFromReplay}
           onPick={pick}
           chartRef={replayRef}
-          between={wide ? null : lifeSec}
+          split={split}
+          pane={view.pane}
+          onPane={(p) => update({ pane: p === 'chart' ? null : p })}
+          seek={split ? null : seek}
         />
+        {lifeSec}
 
         <section className="ex-orders-sec ex-panel" aria-labelledby="ex-orders-title">
           <div className="ex-panel-head">
@@ -499,7 +514,6 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
             <p className="ex-muted">Waiting for the replay window.</p>
           )}
         </section>
-        {wide ? lifeSec : null}
       </div>
 
       <section className="ex-guide ex-panel" aria-labelledby="ex-guide-title">
@@ -576,16 +590,21 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
   );
 }
 
-const WIDE_QUERY = '(min-width: 1100px)';
-function useWide(): boolean {
-  return useSyncExternalStore(
-    (cb) => {
-      const mq = window.matchMedia(WIDE_QUERY);
-      mq.addEventListener('change', cb);
-      return () => mq.removeEventListener('change', cb);
-    },
-    () => window.matchMedia(WIDE_QUERY).matches,
-  );
+/** Page width (CSS px) from which the book sits beside the chart instead of under a tab. */
+const SPLIT_PX = 860;
+/** Whether the page itself (not the window: the rail and inspector take room) is wide enough. */
+function useSplit(scroller: RefObject<HTMLDivElement | null>): boolean {
+  const [split, setSplit] = useState(true);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const measure = () => setSplit(el.clientWidth >= SPLIT_PX);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [scroller]);
+  return split;
 }
 
 /** Whole-run time slider; commits after the thumb rests so dragging does not load every window. */

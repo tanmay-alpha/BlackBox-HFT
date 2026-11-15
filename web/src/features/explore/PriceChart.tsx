@@ -1,6 +1,7 @@
 // The replay chart: the observed best bid and ask of a ≤ 1 s window as step lines, with each
 // scenario's simulated exchange arrivals and fills as markers (scenario colour + shape), and a
-// vertical line at the shared replay time.
+// labelled vertical line at the shared replay time. Hovering shows a tooltip: the marker's
+// scenario, order, side, quantity, price and exchange-clock time, or the observed bid/ask there.
 //
 // Lightweight Charts spaces data points evenly and has a one-second time axis. To keep the
 // horizontal axis proportional to time, chart time counts 100 µs units after the dataset origin
@@ -22,7 +23,7 @@ import type {
 } from 'lightweight-charts';
 
 import type { InstrumentMeta } from '../../api/types';
-import { fmtPrice, stepDecimals } from '../../components/fmt';
+import { fmtPrice, fmtQty, stepDecimals } from '../../components/fmt';
 import { PlainError } from './PlainError';
 import type { Moment } from './story';
 import { shows, type Focus, type ScenarioKey } from './data';
@@ -31,7 +32,7 @@ import { shows, type Focus, type ScenarioKey } from './data';
 const UNIT_NS = 100_000;
 const toUnit = (ns: number) => Math.round(ns / UNIT_NS);
 
-/** Click distance (CSS px) within which a click selects a marker. */
+/** Pointer distance (CSS px) within which a click selects, and hover describes, a marker. */
 const HIT_PX = 10;
 
 function unitLabel(time: Time, digits: number): string {
@@ -46,10 +47,22 @@ function token(el: Element, name: string): string {
   return v;
 }
 
+/** What a marker stands for, for its tooltip. */
+interface MarkerInfo {
+  k: ScenarioKey;
+  orderId: number;
+  kind: 'arrival' | 'fill';
+  side: 'buy' | 'sell';
+  qty: number;
+  priceTick: number;
+  ts: number;
+}
+
 interface Built {
   bid: (LineData<Time> | WhitespaceData<Time>)[];
   ask: (LineData<Time> | WhitespaceData<Time>)[];
   markers: SeriesMarker<Time>[];
+  info: Map<string, MarkerInfo>;
   arrivals: Record<ScenarioKey, number>;
   fills: Record<ScenarioKey, number>;
 }
@@ -57,6 +70,7 @@ interface Built {
 function build(m: Moment, focus: Focus, inst: InstrumentMeta, selected: number | null, colors: Record<ScenarioKey, string>): Built {
   const { t0, t1 } = m.window;
   const markers: SeriesMarker<Time>[] = [];
+  const info = new Map<string, MarkerInfo>();
   const arrivals: Record<ScenarioKey, number> = { fast: 0, slow: 0 };
   const fills: Record<ScenarioKey, number> = { fast: 0, slow: 0 };
   const price = (tick: number) => tick * inst.tick_size;
@@ -70,8 +84,10 @@ function build(m: Moment, focus: Focus, inst: InstrumentMeta, selected: number |
       const at = o.exch_arrival_ts;
       if (at === null || at < t0 || at > t1) continue;
       arrivals[k] += 1;
+      const id = `o:${o.order_id}:${k}:arr`;
+      info.set(id, { k, orderId: o.order_id, kind: 'arrival', side: o.side, qty: o.qty, priceTick: o.price_tick, ts: at });
       markers.push({
-        id: `o:${o.order_id}:${k}:arr`,
+        id,
         time: toUnit(at) as UTCTimestamp,
         position: 'atPriceMiddle',
         price: price(o.price_tick),
@@ -83,8 +99,10 @@ function build(m: Moment, focus: Focus, inst: InstrumentMeta, selected: number |
     for (const f of tl.fills) {
       if (f.ts < t0 || f.ts > t1) continue;
       fills[k] += 1;
+      const id = `o:${f.order_id}:${k}:fill:${f.seq}`;
+      info.set(id, { k, orderId: f.order_id, kind: 'fill', side: f.side, qty: f.qty, priceTick: f.price_tick, ts: f.ts });
       markers.push({
-        id: `o:${f.order_id}:${k}:fill`,
+        id,
         time: toUnit(f.ts) as UTCTimestamp,
         position: f.side === 'buy' ? 'atPriceBottom' : 'atPriceTop',
         price: price(f.price_tick),
@@ -109,7 +127,7 @@ function build(m: Moment, focus: Focus, inst: InstrumentMeta, selected: number |
     bid.push(b === null ? { time } : { time, value: price(b) });
     ask.push(a === null ? { time } : { time, value: price(a) });
   }
-  return { bid, ask, markers, arrivals, fills };
+  return { bid, ask, markers, info, arrivals, fills };
 }
 
 export interface PriceChartProps {
@@ -128,12 +146,14 @@ export interface PriceChartProps {
 export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOrder, onPick }: PriceChartProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const cursorRef = useRef<HTMLDivElement | null>(null);
+  const cursorLabelRef = useRef<HTMLSpanElement | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<{ chart: IChartApi; bid: ISeriesApi<'Line'>; ask: ISeriesApi<'Line'>; markers: ISeriesMarkersPluginApi<Time> } | null>(null);
   const [failure, setFailure] = useState<Error | null>(null);
   const [colors, setColors] = useState<Record<ScenarioKey, string> | null>(null);
-  const handlers = useRef({ onSelectOrder, onPick });
-  handlers.current = { onSelectOrder, onPick };
-  const markersRef = useRef<SeriesMarker<Time>[]>([]);
+  const handlers = useRef({ onSelectOrder, onPick, names });
+  handlers.current = { onSelectOrder, onPick, names };
+  const markersRef = useRef<{ list: SeriesMarker<Time>[]; info: Map<string, MarkerInfo> }>({ list: [], info: new Map() });
   // The first unit of the window: its tick label would be cut in half by the left edge.
   const firstUnit = useRef(toUnit(moment.window.t0));
   firstUnit.current = toUnit(moment.window.t0);
@@ -149,6 +169,7 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
     const x = c.chart.timeScale().timeToCoordinate(toUnit(tRef.current) as UTCTimestamp);
     line.style.display = x === null ? 'none' : 'block';
     if (x !== null) line.style.transform = `translateX(${Math.round(x)}px)`;
+    if (cursorLabelRef.current) cursorLabelRef.current.textContent = `${(tRef.current / 1e9).toFixed(3)} s`;
   };
 
   useEffect(() => {
@@ -192,22 +213,48 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
       const bid = line(token(host, '--bid'), 'Best bid');
       const ask = line(token(host, '--ask'), 'Best ask');
       const markers = createSeriesMarkers(bid, [], { autoScale: true });
-      // Markers are small: a click selects the nearest one within HIT_PX, else moves the time.
-      const click = (p: MouseEventParams<Time>) => {
+      // Markers are small: the nearest one within HIT_PX of the pointer is the one meant.
+      const nearest = (point: { x: number; y: number }): string | null => {
         let best: { id: string; d: number } | null = null;
-        if (p.point) {
-          for (const mk of markersRef.current) {
-            const x = chart.timeScale().timeToCoordinate(mk.time);
-            const y = mk.price === undefined ? null : bid.priceToCoordinate(mk.price);
-            if (x === null || y === null || mk.id === undefined) continue;
-            const d = Math.hypot(x - p.point.x, y - p.point.y);
-            if (d <= HIT_PX && (!best || d < best.d)) best = { id: mk.id, d };
-          }
+        for (const mk of markersRef.current.list) {
+          const x = chart.timeScale().timeToCoordinate(mk.time);
+          const y = mk.price === undefined ? null : bid.priceToCoordinate(mk.price);
+          if (x === null || y === null || mk.id === undefined) continue;
+          const d = Math.hypot(x - point.x, y - point.y);
+          if (d <= HIT_PX && (!best || d < best.d)) best = { id: mk.id, d };
         }
-        if (best) handlers.current.onSelectOrder(Number(best.id.split(':')[1]));
+        return best?.id ?? null;
+      };
+      // A click selects the marker's order, else moves the replay time there.
+      const click = (p: MouseEventParams<Time>) => {
+        const id = p.point ? nearest(p.point) : null;
+        if (id) handlers.current.onSelectOrder(Number(id.split(':')[1]));
         else if (typeof p.time === 'number') handlers.current.onPick(p.time * UNIT_NS);
       };
       chart.subscribeClick(click);
+      // Hover: describe the marker under the pointer, else the observed bid/ask at that time.
+      const hover = (p: MouseEventParams<Time>) => {
+        const tip = tipRef.current;
+        if (!tip) return;
+        if (!p.point || typeof p.time !== 'number') {
+          tip.hidden = true;
+          return;
+        }
+        const id = nearest(p.point);
+        const m = id ? markersRef.current.info.get(id) : undefined;
+        const val = (s: ISeriesApi<'Line'>) => {
+          const d = p.seriesData.get(s);
+          return d && 'value' in d ? d.value.toFixed(decimals) : '—';
+        };
+        tip.textContent = m
+          ? `${handlers.current.names[m.k]} · order ${m.orderId}\n${m.kind === 'arrival' ? 'Reached the exchange' : 'Simulated fill'}: ${m.side === 'buy' ? 'buy' : 'sell'} ${fmtQty(m.qty, inst)} @ ${fmtPrice(m.priceTick, inst)}\n${(m.ts / 1e9).toFixed(6)} s, exchange clock`
+          : `${unitLabel(p.time, 4)}\nBid ${val(bid)} · Ask ${val(ask)} (observed)`;
+        tip.hidden = false;
+        const w = host.clientWidth;
+        const left = p.point.x + 14 + tip.offsetWidth > w ? p.point.x - 14 - tip.offsetWidth : p.point.x + 14;
+        tip.style.transform = `translate(${Math.max(0, Math.round(left))}px, ${Math.max(0, Math.round(p.point.y - tip.offsetHeight - 10))}px)`;
+      };
+      chart.subscribeCrosshairMove(hover);
       // The window always fits the width: refit when the layout resizes the chart.
       const refit = () => chart.timeScale().fitContent();
       const moved = () => placeCursor.current();
@@ -218,6 +265,7 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
       setFailure(null);
       return () => {
         chart.unsubscribeClick(click);
+        chart.unsubscribeCrosshairMove(hover);
         chart.timeScale().unsubscribeSizeChange(refit);
         chart.timeScale().unsubscribeVisibleLogicalRangeChange(moved);
         chart.remove();
@@ -237,7 +285,7 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
     c.bid.setData(built.bid);
     c.ask.setData(built.ask);
     c.markers.setMarkers(built.markers);
-    markersRef.current = built.markers;
+    markersRef.current = { list: built.markers, info: built.info };
     placeCursor.current();
   }, [built]);
 
@@ -263,17 +311,21 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
     <>
       {failure ? <PlainError error={failure} what="Chart" /> : null}
       <div className="ex-chart-host" ref={hostRef} role="img" aria-label={desc}>
-        <div ref={cursorRef} className="ex-chart-cursor" aria-hidden="true" />
+        <div ref={cursorRef} className="ex-chart-cursor" aria-hidden="true">
+          <span ref={cursorLabelRef} className="ex-chart-cursor-label ex-num" />
+        </div>
+        <div ref={tipRef} className="ex-chart-tip" aria-hidden="true" hidden />
       </div>
       <button
         type="button"
         className="ex-chart-reset"
+        title="Fit the whole replay window again after zooming or panning"
         onClick={() => {
           chartRef.current?.chart.timeScale().fitContent();
           placeCursor.current();
         }}
       >
-        Reset zoom
+        Reset view
       </button>
     </>
   );
