@@ -1,25 +1,25 @@
 {
-  "started_at": "2026-11-15T10:48:04.343Z",
-  "backend_git_sha": "96a3ccb4f804dc327e6297266bf445b7dae0e883",
-  "seed": 2026615003,
-  "job_id": "01a1ded2-4b4d-74b8-875a-baac7d2a45e1",
+  "started_at": "2026-11-15T13:23:54.780Z",
+  "backend_git_sha": "b8105d4634c7b09b2f85ba39941671c5556f9e61",
+  "seed": 2027102847,
+  "job_id": "01a1df60-f94b-782d-9332-6cf1e88ed3d9",
   "ui_states": [
     {
       "state": "running",
-      "at_ms": 3750
+      "at_ms": 1702
     },
     {
       "state": "completed",
-      "at_ms": 9940
+      "at_ms": 10466
     }
   ],
-  "run_id": "b0f713f6a8cb46af",
+  "run_id": "2bfae0fdd474731a",
   "job": {
     "state": "completed",
     "attempt": 1,
-    "queued_at_ns": "1794739686187442000",
-    "started_at_ns": "1794739686286362000",
-    "finished_at_ns": "1794739694212986000",
+    "queued_at_ns": "1794749036839961000",
+    "started_at_ns": "1794749036997044000",
+    "finished_at_ns": "1794749044617882000",
     "progress": {
       "done": 1201,
       "tape_events": 0,
@@ -38,7 +38,7 @@
   },
   "comparison": {
     "status": 201,
-    "id": "01a1ded2-8fa7-703a-aaea-54c30af343d7",
+    "id": "01a1df61-3e52-7427-8fab-205abadc931b",
     "eligibility": {
       "aligned": true,
       "like_for_like": true,
@@ -57,5 +57,5 @@
   "anonymous_run_status": 404,
   "reauth_ok": true,
   "page_errors": [],
-  "finished_at": "2026-11-15T10:48:26.693Z"
+  "finished_at": "2026-11-15T13:24:36.765Z"
 }
