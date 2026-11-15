@@ -606,25 +606,25 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       : `Loading window events ${fmtInt(progress.loaded)} / ${fmtInt(progress.total)}`;
 
   const speedControl = (
-    <>
+    <span className="term-field">
       <label className="book-field" htmlFor="term-speed">
         Speed
       </label>
-      <select id="term-speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
+      <select id="term-speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} title="Playback speed relative to recorded time">
         {SPEEDS.map((s) => (
           <option key={s} value={s}>
             {s}
-            {'\u00d7'} recorded time
+            {'\u00d7'}
           </option>
         ))}
       </select>
-    </>
+    </span>
   );
   const jumpForms = (
     <>
-      <form className="row" onSubmit={submitJump} aria-label="Jump to time">
+      <form className="row term-jump" onSubmit={submitJump} aria-label="Jump to time">
         <label className="book-field" htmlFor="term-jump">
-          Jump to time <span className="unit">s after origin</span>
+          Jump to time <span className="unit">s</span>
         </label>
         <input
           id="term-jump"
@@ -634,14 +634,14 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
           placeholder={secondsText(cur)}
           value={jumpText}
           onChange={(e) => setJumpText(e.target.value)}
-          size={12}
+          size={9}
           title="Seconds after the dataset origin (key J)"
         />
         <button type="submit" disabled={jumpNs === null}>
           Go
         </button>
       </form>
-      <form className="row" onSubmit={submitJumpOrder} aria-label="Jump to order">
+      <form className="row term-jump" onSubmit={submitJumpOrder} aria-label="Jump to order">
         <label className="book-field" htmlFor="term-jump-order">
           Jump to order
         </label>
@@ -653,7 +653,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
           placeholder="order id"
           value={jumpOrderText}
           onChange={(e) => setJumpOrderText(e.target.value)}
-          size={10}
+          size={7}
           title="Order id (key O)"
         />
         <button type="submit" disabled={!/^\d+$/.test(jumpOrderText.trim())}>
@@ -662,63 +662,77 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       </form>
     </>
   );
-  const links = (
-    <>
-      <BookModeRun datasetId={ds.id} query={marketQuery} />
-      <RunLinks runId={runId} />
-    </>
+  const runLinks = (
+    <details className="ws-more term-more">
+      <summary>{phone ? 'Speed, jump, links' : 'Run links'}</summary>
+      <div className="ws-more-body">
+        {phone ? speedControl : null}
+        {phone ? jumpForms : null}
+        {phone ? <BookModeRun datasetId={ds.id} query={marketQuery} /> : null}
+        <RunLinks runId={runId} />
+      </div>
+    </details>
   );
   const toolbar = (
     <>
-      <button type="button" className="btn-primary" aria-pressed={playing} onClick={togglePlay} disabled={!loaded}>
-        {playing ? 'Pause' : 'Play'}
-      </button>
-      <button type="button" onClick={() => step(-1)} disabled={!loaded} aria-label="Previous event">
-        {'\u2190'}
-        <span className="term-step-label"> Previous event</span>
-      </button>
-      <button type="button" onClick={() => step(1)} disabled={!loaded} aria-label="Next event">
-        <span className="term-step-label">Next event </span>
-        {'\u2192'}
-      </button>
+      <div className="term-group term-transport" role="group" aria-label="Playback">
+        <button
+          type="button"
+          className="btn-primary term-play"
+          aria-pressed={playing}
+          onClick={togglePlay}
+          disabled={!loaded}
+          title={playing ? 'Pause playback (Space)' : 'Play from the cursor (Space)'}
+        >
+          <span className="term-play-icon" aria-hidden="true">
+            {playing ? '\u275a\u275a' : '\u25b6'}
+          </span>
+          {playing ? 'Pause' : 'Play'}
+        </button>
+        <button type="button" onClick={() => step(-1)} disabled={!loaded} aria-label="Previous event" title={'Previous event (\u2190)'}>
+          {'\u2190'}
+          <span className="term-step-label"> Prev</span>
+        </button>
+        <button type="button" onClick={() => step(1)} disabled={!loaded} aria-label="Next event" title={'Next event (\u2192)'}>
+          <span className="term-step-label">Next </span>
+          {'\u2192'}
+        </button>
+      </div>
       {phone ? null : speedControl}
-      <label htmlFor="term-scrub" className="visually-hidden">
-        Cursor position in the dataset
-      </label>
-      <input
-        id="term-scrub"
-        className="book-scrub"
-        type="range"
-        min={ds.start}
-        max={ds.end}
-        step={1_000_000}
-        value={cur}
-        onChange={(e) => {
-          setPlaying(false);
-          setCursor(Number(e.target.value));
-        }}
-      />
-      <span className="book-cursor" title="Exchange clock">
-        cursor <ClockText ns={cursor === null ? null : Math.round(cursor)} /> <span className="dim">exch</span>
+      <span className={playing ? 'term-state is-playing' : 'term-state'} role="status">
+        {playing ? `Playing ${speed}\u00d7` : 'Paused'}
       </span>
+      <div className="term-group term-scrubber">
+        <label htmlFor="term-scrub" className="visually-hidden">
+          Cursor position in the dataset
+        </label>
+        <input
+          id="term-scrub"
+          className="book-scrub"
+          type="range"
+          min={ds.start}
+          max={ds.end}
+          step={1_000_000}
+          value={cur}
+          onChange={(e) => {
+            setPlaying(false);
+            setCursor(Number(e.target.value));
+          }}
+        />
+        <span className="book-cursor" title="Playback cursor on the exchange clock">
+          <ClockText ns={cursor === null ? null : Math.round(cursor)} /> <span className="term-clock-tag">exch</span>
+        </span>
+      </div>
       {loading ? <Spinner label={loadingLabel} /> : null}
-      {phone ? (
-        <details className="ws-more">
-          <summary>Speed, jump and links</summary>
-          <div className="ws-more-body">
-            {speedControl}
-            {jumpForms}
-            {links}
-          </div>
-        </details>
-      ) : (
+      {phone ? null : (
         <>
           <ToolbarDivider />
           {jumpForms}
           <ToolbarDivider />
-          {links}
+          <BookModeRun datasetId={ds.id} query={marketQuery} />
         </>
       )}
+      {runLinks}
     </>
   );
 
@@ -778,11 +792,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
         fill
         flush
         actions={<Badge kind="modeled">own orders modeled</Badge>}
-        caption={
-          rp.bbo_downsampled
-            ? `Observed L2 with own orders (modeled) · best bid/ask downsampled 1:${fmtDuration(rp.step_ns)}`
-            : 'Observed L2 with own orders (modeled)'
-        }
+        caption={rp.bbo_downsampled ? `Best bid/ask lines downsampled 1:${fmtDuration(rp.step_ns)}` : undefined}
       >
         <TerminalHeatmap
           win={rp}
@@ -794,24 +804,35 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
           follow={playing}
           focus={loaded.win === win ? focus : null}
           onCursor={moveCursor}
+          loadingLabel={loading ? loadingLabel : null}
         />
       </Panel>
     );
     const ladderPanel = (
       <Panel title="Depth at cursor" basis="observed" fill>
-        <dl className="kv ladder-bbo">
-          <dt>Best bid</dt>
-          <dd className="bid">
-            {bboIdx >= 0 && rp.bbo.bid_tick[bboIdx] !== null
-              ? `${fmtPrice(rp.bbo.bid_tick[bboIdx], inst)} \u00d7 ${fmtQty(rp.bbo.bid_qty[bboIdx], inst)}`
-              : DASH}
-          </dd>
-          <dt>Best ask</dt>
-          <dd className="ask">
-            {bboIdx >= 0 && rp.bbo.ask_tick[bboIdx] !== null
-              ? `${fmtPrice(rp.bbo.ask_tick[bboIdx], inst)} \u00d7 ${fmtQty(rp.bbo.ask_qty[bboIdx], inst)}`
-              : DASH}
-          </dd>
+        <dl className="term-bbo" aria-label="Best bid and ask at the cursor">
+          <div className="term-bbo-side term-bbo-bid">
+            <dt>Best bid</dt>
+            <dd>
+              <span className="term-bbo-px bid">
+                {bboIdx >= 0 && rp.bbo.bid_tick[bboIdx] !== null ? fmtPrice(rp.bbo.bid_tick[bboIdx], inst) : DASH}
+              </span>
+              <span className="term-bbo-qty">
+                {bboIdx >= 0 && rp.bbo.bid_tick[bboIdx] !== null ? `\u00d7 ${fmtQty(rp.bbo.bid_qty[bboIdx], inst)}` : ''}
+              </span>
+            </dd>
+          </div>
+          <div className="term-bbo-side term-bbo-ask">
+            <dt>Best ask</dt>
+            <dd>
+              <span className="term-bbo-px ask">
+                {bboIdx >= 0 && rp.bbo.ask_tick[bboIdx] !== null ? fmtPrice(rp.bbo.ask_tick[bboIdx], inst) : DASH}
+              </span>
+              <span className="term-bbo-qty">
+                {bboIdx >= 0 && rp.bbo.ask_tick[bboIdx] !== null ? `\u00d7 ${fmtQty(rp.bbo.ask_qty[bboIdx], inst)}` : ''}
+              </span>
+            </dd>
+          </div>
         </dl>
         <TerminalLadder
           frame={frame}
@@ -831,11 +852,15 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
               <Stat label="Position" value={fmtQty(sample.position, inst)} hint="From simulated fills" />
               <Stat label="Known to strategy" value={fmtQty(sample.known_position, inst)} />
               <Stat label="Open orders" value={fmtInt(sample.open_orders)} />
-              <Stat label="Realized" value={fmtPnl(sample.realized_pnl, 2)} hint="quote" />
-              <Stat label="Unrealized" value={fmtPnl(sample.unrealized_pnl, 2)} hint="quote" />
-              <Stat label="Fees" value={fmtPnl(sample.fees, 2)} hint="quote" />
-              <Stat label="Equity" value={fmtMoney(sample.equity, 2)} hint="quote" />
+              <Stat label="Realized" value={fmtPnl(sample.realized_pnl, 2)} hint="quote, before fees" />
+              <Stat label="Unrealized" value={fmtPnl(sample.unrealized_pnl, 2)} hint="quote, before fees" />
+              <Stat label="Fees" value={fmtMoney(sample.fees, 2)} hint="Quote currency; positive is charged, negative is a rebate." />
+              <Stat label={'Net P&L / equity'} value={fmtMoney(sample.equity, 2)} hint="quote" />
             </div>
+            <p className="note">
+              Exchange-truth fills marked at the local mid; realized + unrealized {'\u2212'} fees. {'\u2018'}Known to
+              strategy{'\u2019'} includes only received fill notifications.
+            </p>
             <p className="note">
               Last account sample at or before the cursor: <ClockText ns={sample.ts} /> on the local clock (strategy tick{' '}
               {fmtInt(sample.tick_no)}). Samples are periodic, so changes between samples are not shown here.
@@ -994,8 +1019,8 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
                       id="book.run.phone"
                       orientation="vertical"
                       panes={[
-                        { id: 'heatmap', label: 'Book heatmap', stackHeight: 'max(300px, 58dvh)', content: heatmapPanel },
-                        { id: 'ladder', label: 'Depth at cursor', stackHeight: 'max(300px, 50dvh)', content: ladderPanel },
+                        { id: 'heatmap', label: 'Book heatmap', stackHeight: 'max(360px, 64dvh)', content: heatmapPanel },
+                        { id: 'ladder', label: 'Depth at cursor', stackHeight: 'max(420px, 70dvh)', content: ladderPanel },
                         { id: 'account', label: 'Account at cursor', stackHeight: 360, content: accountPanel },
                       ]}
                     />
@@ -1013,28 +1038,28 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
               {
                 id: 'top',
                 label: 'Book',
-                defaultSize: '62%',
+                defaultSize: '66%',
                 minSize: '30%',
                 content: (
                   <SplitPane
                     id="book.run.top"
                     panes={[
-                      { id: 'heatmap', label: 'Book heatmap', defaultSize: '68%', minSize: '35%', stackHeight: 'max(280px, 55dvh)', content: heatmapPanel },
+                      { id: 'heatmap', label: 'Book heatmap', defaultSize: '70%', minSize: '35%', stackHeight: 'max(320px, 60dvh)', content: heatmapPanel },
                       {
                         id: 'side',
                         label: 'Depth and account',
-                        defaultSize: '32%',
+                        defaultSize: '30%',
                         minSize: 300,
                         content: (
                           <SplitPane
                             id="book.run.side"
                             orientation="vertical"
                             panes={[
-                              { id: 'ladder', label: 'Depth at cursor', defaultSize: '62%', minSize: '20%', content: ladderPanel },
+                              { id: 'ladder', label: 'Depth at cursor', defaultSize: '72%', minSize: '20%', content: ladderPanel },
                               {
                                 id: 'account',
                                 label: 'Account at cursor',
-                                defaultSize: '38%',
+                                defaultSize: '28%',
                                 minSize: '15%',
                                 collapsible: true,
                                 content: accountPanel,
@@ -1050,7 +1075,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
               {
                 id: 'bottom',
                 label: 'Events and orders',
-                defaultSize: '38%',
+                defaultSize: '34%',
                 minSize: '20%',
                 content: (
                   <SplitPane

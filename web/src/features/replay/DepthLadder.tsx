@@ -2,6 +2,7 @@
 // Side column, the quantity always printed and a decorative depth bar. The run view adds a column
 // of own simulated orders through `own`.
 
+import { useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 import type { DepthFrame, InstrumentMeta } from '../../api/types';
@@ -31,7 +32,32 @@ function spreadText(bestBid: number | null, bestAsk: number | null, inst: Instru
   return `spread ${ticks} tick${ticks === 1 ? '' : 's'} \u00b7 mid ${fmtPrice((bestAsk + bestBid) / 2, inst)}`;
 }
 
+/** The nearest ancestor inside the ladder's panel that scrolls vertically (never the page). */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  const stop = el.closest('.panel');
+  if (!stop) return null;
+  for (let p = el.parentElement; p && p !== stop; p = p.parentElement) {
+    const oy = getComputedStyle(p).overflowY;
+    if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight) return p;
+  }
+  return null;
+}
+
 export function DepthLadder({ frame, instrument, rows, caption, own }: DepthLadderProps) {
+  // The best bid and ask meet at the spread row: centre it once in the scrolling pane, so a short
+  // pane opens on the inside of the book instead of the far asks. Later scrolling is the user's.
+  const spreadRef = useRef<HTMLTableRowElement | null>(null);
+  const centred = useRef(false);
+  useLayoutEffect(() => {
+    const row = spreadRef.current;
+    if (centred.current || !row) return;
+    centred.current = true;
+    const sc = scrollParent(row);
+    if (!sc) return;
+    const r = row.getBoundingClientRect();
+    const s = sc.getBoundingClientRect();
+    sc.scrollTop += r.top + r.height / 2 - (s.top + s.height / 2);
+  });
   if (!frame) {
     return <Empty>No depth frame at or before the cursor in this window.</Empty>;
   }
@@ -91,8 +117,8 @@ export function DepthLadder({ frame, instrument, rows, caption, own }: DepthLadd
         </thead>
         <tbody>
           {asks.map((level, i) => row('ask', level, i === 0)).reverse()}
-          <tr className="ladder-spread">
-            <td colSpan={cols} className="mono dim">
+          <tr className="ladder-spread" ref={spreadRef}>
+            <td colSpan={cols}>
               {spreadText(bids.length > 0 ? bids[0][0] : null, asks.length > 0 ? asks[0][0] : null, instrument)}
             </td>
           </tr>

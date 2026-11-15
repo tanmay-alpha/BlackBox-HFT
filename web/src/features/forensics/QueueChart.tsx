@@ -228,7 +228,7 @@ export function QueueChart({
           height={HEIGHT}
           viewBox={`0 0 ${width} ${HEIGHT}`}
           role="img"
-          aria-label={`Modeled quantity ahead of the order on the exchange clock: ${fmtQty(first.ahead, instrument)} at entry, ${fmtQty(last.ahead, instrument)} at the last recorded update, over ${path.length} recorded points. ${geo.trades.length} market trades printed at the order's price.`}
+          aria-label={`Signed queue estimate (modeled, base units) on the exchange clock: ${fmtQty(first.ahead, instrument)} at entry, ${fmtQty(last.ahead, instrument)} at the last recorded update, over ${path.length} recorded points. Below zero: quantity beyond the modeled front; not the order's fill quantity. ${geo.trades.length} market trades printed at the order's price.`}
           onClick={() => onSelect(null)}
         >
           {geo.yTicks.map((t) => (
@@ -342,7 +342,8 @@ export function QueueChart({
       <ul className="fx-queue-legend">
         <li>
           <span className="fx-swatch fx-swatch-line" aria-hidden="true" />
-          quantity ahead of the order <Badge kind="modeled">modeled</Badge>
+          signed queue estimate (modeled, base units) <Badge kind="modeled">modeled</Badge>
+          <span className="dim"> {"\u00b7"} below zero: quantity beyond the modeled front; not the order's fill quantity</span>
         </li>
         <li>
           <span className="fx-swatch fx-swatch-bar" aria-hidden="true" />
