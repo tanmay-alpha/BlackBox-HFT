@@ -612,3 +612,14 @@
   flex-wrap: wrap;
   overflow-x: visible;
 }
+
+/* The Lab has no data tables, so the shell's row-density select would only read as a stray field. */
+.ws:has(.lab-stepper) .ws-density {
+  display: none;
+}
+
+.lab-problem-raw summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+}

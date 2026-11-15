@@ -29,7 +29,7 @@ import { ScriptedOrdersEditor } from './ScriptedOrdersEditor';
 import { buildSections, fieldProblem, startingConfig } from './fields';
 import type { Field, Section } from './fields';
 import { firstSentence, sizeEstimate, whyItMatters } from './review';
-import { configAdvisories, diffConfigs, validateRunConfig } from './validate';
+import { configAdvisories, diffConfigs, ruleFieldPaths, validateRunConfig } from './validate';
 import type { ConfigChange } from './validate';
 import './lab.css';
 
@@ -221,7 +221,11 @@ function ChangeList({
 }
 
 /** Job → Results → Replay → Forensics → Risk → Compare; links once a run exists. */
-function NextSteps({ submission, job }: { submission: Submission | null; job: Job | null }) {
+function NextSteps({ submission, job: polled }: { submission: Submission | null; job: Job | null }) {
+  // The submit response names the job; the poll only refreshes it (until the first poll lands,
+  // or while an earlier submission's job is still in state, the response's own job is shown).
+  const submitted = submission?.result.job ?? null;
+  const job = submitted && polled?.id === submitted.id ? polled : submitted;
   const runId = submission?.result.experiment.run_id ?? null;
   const ready = submission !== null && (submission.result.run !== null || job?.state === 'completed');
   const failed = job !== null && TERMINAL[job.state] === true && job.state !== 'completed';
@@ -252,8 +256,10 @@ function NextSteps({ submission, job }: { submission: Submission | null; job: Jo
             <Pill tone={job.state === 'completed' ? 'ok' : failed ? 'error' : 'info'}>{job.state}</Pill>
             {job.queue_position !== null && !TERMINAL[job.state] ? <span className="mono"> #{job.queue_position} in queue</span> : null}
           </span>
-        ) : (
+        ) : submission.result.run !== null ? (
           <span className="lab-next-what">not needed: this configuration was already simulated</span>
+        ) : (
+          <span className="lab-next-what">no job was returned for this submission</span>
         )}
       </li>
       {items.map((it) => (
@@ -369,7 +375,19 @@ export default function LabPage() {
     return m;
   }, [fieldProblems]);
 
-  const ruleProblems = useMemo(() => (config ? validateRunConfig(config) : []), [config]);
+  // A server rule about a field that already shows its own problem is the same mistake: keep the
+  // field's message (display units) and attach the rule's raw text to it instead of counting twice.
+  const { ruleProblems, rawByField } = useMemo(() => {
+    const rules: string[] = [];
+    const raw = new Map<string, string[]>();
+    const flagged = new Set(fieldProblems.map((p) => p.fieldId));
+    for (const text of config ? validateRunConfig(config) : []) {
+      const hit = ruleFieldPaths(text).filter((id) => flagged.has(id));
+      if (hit.length === 0) rules.push(text);
+      for (const id of hit) raw.set(id, [...(raw.get(id) ?? []), text]);
+    }
+    return { ruleProblems: rules, rawByField: raw };
+  }, [config, fieldProblems]);
   const advisories = useMemo(() => (config ? configAdvisories(config, instrument) : []), [config, instrument]);
 
   // List items carry no configuration; scenario A's comes from `GET /runs/{id}`.
@@ -533,7 +551,7 @@ export default function LabPage() {
     'lab-step-choose': origin.type === 'preset' ? 'preset' : origin.type === 'run' ? 'from run' : 'defaults',
     'lab-step-configure': `${originChanges.length} edit${originChanges.length === 1 ? '' : 's'}`,
     'lab-step-review': blocked ? `${problemCount} to fix` : 'valid',
-    'lab-step-run': submission ? 'submitted' : 'ready',
+    'lab-step-run': submission ? 'submitted' : blocked ? 'blocked' : 'ready',
   };
 
   const toolbar = (
@@ -829,6 +847,16 @@ export default function LabPage() {
                   <button type="button" className="btn-link" onClick={() => focusField(p.fieldId)}>
                     {p.text}
                   </button>
+                  {rawByField.has(p.fieldId) ? (
+                    <details className="lab-problem-raw">
+                      <summary>Server rule</summary>
+                      {rawByField.get(p.fieldId)?.map((t) => (
+                        <p key={t} className="mono">
+                          {t}
+                        </p>
+                      ))}
+                    </details>
+                  ) : null}
                 </li>
               ))}
               {ruleProblems.map((p, i) => (
