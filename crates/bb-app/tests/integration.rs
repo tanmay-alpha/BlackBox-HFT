@@ -1632,6 +1632,63 @@ fn v1_timeline_empty_window_has_no_cursor() {
     assert!(count["truncated_by"].is_null());
 }
 
+#[test]
+fn v1_timeline_identical_cursor_requests_are_idempotent() {
+    let (run, t0, t1) = paging_fixture();
+    let first = v1_page(run, &v1_query(*t0, *t1, Some(102)), NO_CAP).unwrap();
+    let q = V1TimelineQuery {
+        cursor: first["next_cursor"].as_str().map(str::to_string),
+        ..v1_query(*t0, *t1, Some(102))
+    };
+    let page = v1_page(run, &q, NO_CAP).unwrap();
+    for _ in 0..4 {
+        assert_eq!(v1_page(run, &q, NO_CAP).unwrap(), page);
+    }
+}
+
+#[test]
+fn v1_timeline_malformed_cursors_are_bad_requests() {
+    let (run, t0, t1) = paging_fixture();
+    for cursor in [
+        String::new(),
+        ".".into(),
+        "%%%.$$$".into(),
+        "e30.AA".into(),
+        "e30.AA.extra".into(),
+        "a".repeat(1025),
+    ] {
+        let q = V1TimelineQuery {
+            cursor: Some(cursor),
+            ..v1_query(*t0, *t1, None)
+        };
+        let err = v1_page(run, &q, NO_CAP).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.details["field"], "cursor");
+    }
+}
+
+#[test]
+fn v1_timeline_huge_window_is_bounded_and_orders_remain_sorted() {
+    let (run, _, _) = paging_fixture();
+    let mut run = run.clone();
+    run.orders.reverse();
+    let q = v1_query(0, i64::MAX, Some(50_000));
+    let cap = 1 << 20;
+    let pages = v1_all_pages(&run, &q, cap);
+    assert_eq!(all_seqs(&pages), (0..PAGING_EVENTS).collect::<Vec<_>>());
+    let ids: Vec<_> = pages[0]["orders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["order_id"].as_u64().unwrap())
+        .collect();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+    run.equity = vec![run.equity[0]; 100_000];
+    let err = v1_page(&run, &q, cap).unwrap_err();
+    assert_eq!(err.details["reason"], "window_too_large");
+    assert_eq!(err.details["limit_bytes"], cap);
+}
+
 async fn attachment(app: &Router, uri: &str, content_type: &str, filename: &str) -> Vec<u8> {
     let response = app.clone().oneshot(get(uri)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { RunTimeline } from '../../api/model';
 import type { FlightEvent } from '../../api/types';
-import { fetchTimelineWindow, mergeTimelinePages } from './timelinePaging';
+import { fetchTimelineWindow, findStep, mergeTimelinePages } from './timelinePaging';
 import type { TimelineProgress } from './timelinePaging';
 
 const RANGE = { t0: 100, t1: 200 };
@@ -118,5 +118,31 @@ describe('fetchTimelineWindow', () => {
     const s = server({ '': page([0, 1, 2, 3, 4], null) });
     await expect(fetchTimelineWindow(RANGE, s.fetchPage, ctl.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(s.calls).toEqual([]);
+  });
+});
+
+describe('findStep', () => {
+  const events = [event(0, 100), event(1, 101), event(2, 101), event(3, 102)];
+
+  it('reaches the first and last event and stops at both ends', () => {
+    expect(findStep(events, 99, 1)).toBe(events[0]);
+    expect(findStep(events, 101, 1)).toBe(events[3]);
+    expect(findStep(events, 102, 1)).toBeNull();
+    expect(findStep(events, 103, -1)).toBe(events[3]);
+    expect(findStep(events, 101, -1)).toBe(events[0]);
+    expect(findStep(events, 100, -1)).toBeNull();
+    expect(findStep([], 100, 1)).toBeNull();
+    expect(findStep([], 100, -1)).toBeNull();
+  });
+
+  it('steps across an equal-timestamp page boundary after merging the whole window', () => {
+    const merged = mergeTimelinePages([
+      page([0, 1, 2], 'a'),
+      page([3, 4], null),
+    ]);
+    expect(findStep(merged.events, 100, 1)?.seq).toBe(2);
+    expect(findStep(merged.events, 101, 1)?.seq).toBe(4);
+    expect(findStep(merged.events, 102, -1)?.seq).toBe(3);
+    expect(findStep(merged.events, 101, -1)?.seq).toBe(1);
   });
 });

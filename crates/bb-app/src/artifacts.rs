@@ -762,4 +762,35 @@ mod parsed_tests {
         assert_eq!(lru.get("a"), None);
         assert!(lru.entries.len() <= PARSED_RUNS && lru.bytes <= PARSED_BYTES);
     }
+
+    #[test]
+    fn parsed_runs_evict_by_count_and_refresh_recency() {
+        let mut lru = ParsedLru::new();
+        lru.insert("a", 1, 1);
+        lru.insert("b", 2, 1);
+        assert_eq!(lru.get("a"), Some(1));
+        lru.insert("c", 3, 1);
+        assert_eq!(lru.get("b"), None);
+        assert_eq!(lru.get("a"), Some(1));
+        assert_eq!(lru.get("c"), Some(3));
+        assert_eq!(lru.entries.len(), PARSED_RUNS);
+        assert_eq!(lru.bytes, 2);
+    }
+
+    #[test]
+    fn parsed_run_byte_eviction_drops_owned_values() {
+        use std::sync::Arc;
+
+        let mut lru = ParsedLru::new();
+        let a = Arc::new(1);
+        let b = Arc::new(2);
+        lru.insert("a", a.clone(), PARSED_BYTES / 2 + 1);
+        lru.insert("b", b.clone(), PARSED_BYTES / 2);
+        assert_eq!(Arc::strong_count(&a), 1, "eviction releases the cached run");
+        assert_eq!(lru.bytes, PARSED_BYTES / 2);
+        lru.insert("too-big", a.clone(), PARSED_BYTES + 1);
+        assert_eq!(Arc::strong_count(&a), 1);
+        assert_eq!(Arc::strong_count(&b), 2);
+        assert!(lru.get("b").is_some());
+    }
 }
