@@ -39,7 +39,8 @@ async function completedRun(page: Page): Promise<string> {
 
 test.describe('keyed research journey', () => {
   // Signing out leaves the page on private resources, which the API then answers with 404.
-  test.use({ allowStatus: [404] });
+  // 404: private resources after sign-out. 409: a cancel that lost the race to job completion.
+  test.use({ allowStatus: [404, 409] });
 
   test('guided setup, queue, forensics, comparison, cancel, reload, sign out', async ({ page }) => {
     const base = 1_000_000 + Math.floor(Math.random() * 1_000_000_000);
@@ -87,15 +88,16 @@ test.describe('keyed research journey', () => {
     await expect(page.getByTestId('job-detail')).toHaveAttribute('data-job-state', /created|queued|running|completed/);
     await shot(page, '09-workbench-job-submitted');
 
-    // A second job queues behind the first on the single worker slot; cancel it.
+    // A second job: cancel it. A queued job is cancelled at once; a running one stops at its next
+    // checkpoint (API_CONTRACT §8.5), so a small job may finish first. Both are valid outcomes.
     const jobB = await submitWithSeed(page, base + 1);
     expect(jobB).not.toBe(jobA);
     const detailB = page.getByTestId('job-detail');
     const stateB = await detailB.getAttribute('data-job-state');
     if (stateB !== 'completed') {
       await page.getByTestId('cancel-job').click();
-      await expect(detailB).toHaveAttribute('data-job-state', /cancelling|cancelled/);
-      await expect(detailB).toHaveAttribute('data-job-state', 'cancelled', { timeout: 120_000 });
+      const final = stateB === 'queued' || stateB === 'created' ? /^cancelled$/ : /^(cancelled|completed)$/;
+      await expect(detailB).toHaveAttribute('data-job-state', final, { timeout: 120_000 });
       await shot(page, '10-workbench-job-cancelled');
     }
 
