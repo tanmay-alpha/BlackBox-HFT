@@ -67,3 +67,18 @@ and never logged. Raw evidence: [prod-research-evidence.json](prod-research-evid
 
 Production state written: one experiment/job/run, one comparison, in workspace `research`. The test key was the
 existing research key (scopes `read,run`), so nothing was minted and nothing needs revoking.
+
+## Phase 2 release (2026-11-15 10:47 UTC)
+
+Commit `96a3ccb4f804dc327e6297266bf445b7dae0e883` (merge of `phase2/ui`). CI run 43704539393: all 8 jobs green.
+Image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:565fc4041b13789b069e6a793d2200ad5bced103b33e7991f090cded294c2d86`,
+Render deploy `dep-dbsoram7bikc73c2i3j0` live; `/status` `git_sha=96a3ccb…`, worker idle, `readyz` migrations 0009.
+Vercel production `blackbox-4dpe08p88…` Ready. Smoke 8/8 PASS. Anonymous acceptance 7/7 PASS.
+Authenticated journey PASS again: job `01a1ded2-4b4d-74b8-875a-baac7d2a45e1`, run `b0f713f6a8cb46af`, started→finished
+7.93 s on the worker, comparison 201, report 200, anonymous read 404, re-auth OK, 0 page errors. The result sha256
+`bb34d8c5…` is identical to run `e2321a7eec3e23e1` under the previous release `a665991`. The only config difference is
+the seed, and the touch-maker strategy uses no random draws. The phase-2 backend changes therefore did not change
+simulation output.
+
+Rollback for this release: redeploy `sha256:212495fa724420186e871fdea9a44cbf09b647661a0e451de3e442cc3c659cc1`
+(release `a665991`). No migration was added.

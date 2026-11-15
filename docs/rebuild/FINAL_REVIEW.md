@@ -197,4 +197,7 @@ Earlier sections are the historical phase-1 record; test counts and SHAs there a
 - Replay verification: REPLAY_VERIFICATION.md (`2e78f11`), byte-budgeted encoding fix; 12,000-tick
   run, 60,382 events, 19 pages, p50/p95 55/421 ms, peak WS 86 MiB (local).
 - UI audit: UI_AUDIT.md, 21 ranked defects (`e8344ba`, `b31b0b2`).
-- Release of phase 2 (`phase2/ui`): **pending deploy** — SHA: _to be filled by lead_.
+- Release of phase 2: `96a3ccb` live 2026-11-15 10:47 UTC (image `sha256:565fc404…`). Smoke 8/8, anonymous
+  acceptance 7/7, authenticated journey PASS (run `b0f713f6a8cb46af`, same result hash as run
+  `e2321a7eec3e23e1` under `a665991`). Workspace tests 472 passed / 0 failed / 3 ignored; vitest 114; local
+  Playwright 7/7; CI run 43704539393 green.
