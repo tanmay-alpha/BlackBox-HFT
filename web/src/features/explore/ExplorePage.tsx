@@ -1,7 +1,7 @@
 // The public latency experiment, the console's landing page (`/`): "What changes when a
 // market-making strategy receives and executes orders more slowly?" The stored answer comes
-// first, then the synchronized replay (chart + book at one shared time), the order lifecycle in
-// both scenarios, the orders of the replay window and a four-step guide. All view state (step,
+// first as a three-measure result strip, then the synchronized replay (chart + book at one shared
+// time), the order lifecycle in both scenarios, the window orders and a compact four-step guide. All view state (step,
 // scenario filter, order, replay time) lives in the URL query, so leaving for the forensics page
 // and coming back restores the same view; the page's scroll position is restored too.
 
@@ -31,6 +31,7 @@ import {
 import { LifecyclePanel } from './LifecyclePanel';
 import { PlainError } from './PlainError';
 import { ReplayPanel } from './ReplayPanel';
+import { ResultStrip } from './Results';
 import { StepGuide, STEPS } from './StepGuide';
 import { WindowOrders } from './WindowOrders';
 import './explore.css';
@@ -113,7 +114,12 @@ function Header({ answer, actions }: { answer?: ReactNode; actions?: ReactNode }
           <span className="ex-flag">Simulated historical replay</span>
           <span className="ex-flag">No market impact</span>
         </p>
-        {actions ? <div className="ex-head-actions">{actions}</div> : null}
+        {actions ? (
+          <details className="ex-head-actions">
+            <summary>Research views</summary>
+            <div>{actions}</div>
+          </details>
+        ) : null}
       </div>
       <h1 className="ex-question">{QUESTION}</h1>
       {answer}
@@ -346,7 +352,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
             <div className="ex-empty">
               <p>No order selected yet. Start with the first order whose handling differs between the scenarios, or pick any order in the replay.</p>
               {first ? (
-                <button type="button" className="btn-primary ex-cta" onClick={() => selectOrder(first.order_id, first.decision_ts, 'jump')}>
+                <button type="button" className="ex-cta" onClick={() => selectOrder(first.order_id, first.decision_ts, 'jump')}>
                   Show the first divergence (order {first.order_id})
                 </button>
               ) : (
@@ -368,13 +374,21 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
       <Header
         answer={
           <div className="ex-answer">
-            <p>
-              <strong>{summary.headline}</strong> {summary.gap}
-            </p>
-            <p className="ex-muted">
-              A smaller loss is still a loss. This is one strategy on one synthetic dataset, replayed without market impact; it does not show that
-              slower (or faster) execution is better in general.
-            </p>
+            <ResultStrip story={story} names={names} />
+            <div className="ex-hero-action">
+              <button type="button" className="btn-primary ex-hero-cta" disabled={!first} onClick={() => first && selectOrder(first.order_id, first.decision_ts, 'jump')}>
+                Show the first divergence <span aria-hidden="true">↗</span>
+              </button>
+              <span className="ex-muted">Same strategy. Two latencies.</span>
+            </div>
+            <details className="ex-answer-detail">
+              <summary>Both scenarios lose money. Why?</summary>
+              <p><strong>{summary.headline}</strong> {summary.gap}</p>
+              <p className="ex-muted">
+                A smaller loss is still a loss. This is one strategy on one synthetic dataset, replayed without market impact; it does not show that
+                slower (or faster) execution is better in general.
+              </p>
+            </details>
           </div>
         }
         actions={
@@ -414,9 +428,13 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
           ))}
         </div>
         <div className="ex-group" role="group" aria-label="Jump to a divergence">
-          <button type="button" className="btn-primary" disabled={!first} onClick={() => first && selectOrder(first.order_id, first.decision_ts, 'jump')} title="The earliest order whose timing or outcome differs">
+          <button type="button" disabled={!first} onClick={() => first && selectOrder(first.order_id, first.decision_ts, 'jump')} title="The earliest order whose timing or outcome differs">
             First divergence{first ? ` · ${fmtSec(first.decision_ts, 3)}` : ''}
           </button>
+        </div>
+        <details className="ex-replay-tools">
+          <summary>Replay tools</summary>
+          <div className="ex-group" role="group" aria-label="Other divergences">
           <button
             type="button"
             disabled={!firstOutcome}
@@ -434,6 +452,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
             Next order →
           </button>
         </div>
+        </details>
         <Seek t={t} end={end} stepNs={story.fast.run.config.strategy.interval_ns} onCommit={pick} />
       </nav>
 
@@ -506,7 +525,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
                   </span>
                   <span>
                     <span className="ex-step-title">{s.title}</span>
-                    <span className="ex-step-hint">{s.hint}</span>
+                    <span className="visually-hidden">{s.hint}</span>
                   </span>
                 </button>
               </li>
@@ -541,7 +560,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
               </button>
             ) : null}
             {view.step < 4 ? (
-              <button type="button" className="btn-primary" onClick={() => goStep(view.step + 1)}>
+              <button type="button" onClick={() => goStep(view.step + 1)}>
                 Next: {STEPS[view.step].title} &rarr;
               </button>
             ) : null}

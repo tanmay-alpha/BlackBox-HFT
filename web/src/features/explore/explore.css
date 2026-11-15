@@ -5,7 +5,7 @@
 
 .ex {
   --ex-fast: var(--accent);
-  --ex-slow: var(--modeled);
+  --ex-slow: var(--fg-1);
   container: ex / inline-size;
   /* Contains absolutely positioned descendants (visually hidden captions and headings); without
      it they extend the document below the 100vh shell and a focus or scroll call can shift the
@@ -105,9 +105,9 @@
 /* ----- header ------------------------------------------------------------------------- */
 
 .ex-head {
-  padding: var(--sp-3) var(--sp-5);
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-1);
+  padding: var(--sp-6) var(--sp-6) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-0);
 }
 
 .ex-head-top {
@@ -131,9 +131,9 @@
 }
 
 .ex-flag {
-  padding: 0 var(--sp-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-2);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   color: var(--fg-1);
   white-space: nowrap;
 }
@@ -144,32 +144,140 @@
 }
 
 .ex-head-actions {
+  color: var(--fg-1);
+}
+
+.ex-head-actions summary {
+  cursor: pointer;
+}
+
+.ex-head-actions > div {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-2);
+  gap: var(--sp-2) var(--sp-4);
+  padding-top: var(--sp-2);
+}
+
+.ex .ex-head-actions .btn {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-1);
+}
+
+.ex .ex-head-actions .btn:hover {
+  color: var(--fg-0);
 }
 
 .ex-question {
-  margin-top: var(--sp-2);
-  font-size: 22px;
-  line-height: 28px;
-  font-weight: 600;
-  max-width: 70ch;
+  margin-top: var(--sp-4);
+  max-width: 42ch;
+  font-size: clamp(24px, 2.5vw, 34px);
+  line-height: 1.22;
+  font-weight: 500;
+  letter-spacing: -0.035em;
   text-wrap: balance;
 }
 
 .ex-answer {
+  margin-top: var(--sp-5);
+}
+
+.ex-result-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-5);
+  max-width: 1020px;
+  margin: 0;
+}
+
+.ex-result {
+  min-width: 0;
+}
+
+.ex-result + .ex-result {
+  padding-left: var(--sp-5);
+  border-left: 1px solid var(--border-subtle);
+}
+
+.ex-result dt {
+  margin-bottom: var(--sp-2);
+  color: var(--fg-1);
+}
+
+.ex-result dd {
+  margin: 0;
+}
+
+.ex-result-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+}
+
+.ex-result-value {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.ex-result-scenario {
+  color: var(--fg-1);
+  white-space: nowrap;
+}
+
+.ex-result-value strong {
+  font-size: clamp(22px, 2.5vw, 32px);
+  line-height: 1.2;
+  letter-spacing: -0.045em;
+  font-weight: 500;
+}
+
+.ex-result-fast strong {
+  color: var(--accent);
+}
+
+.ex-result-delta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--sp-2);
   margin-top: var(--sp-2);
-  max-width: 120ch;
+  color: var(--fg-1);
 }
 
-.ex-answer > p:first-child {
-  font-size: 15px;
-  line-height: 22px;
+.ex-hero-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-5);
 }
 
-.ex-answer > p + p {
-  margin-top: var(--sp-1);
+.ex .ex-hero-cta {
+  min-height: 42px;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius-2);
+  font-weight: 600;
+}
+
+.ex-hero-cta span {
+  margin-left: var(--sp-4);
+}
+
+.ex-answer-detail {
+  margin-top: var(--sp-3);
+  color: var(--fg-1);
+}
+
+.ex-answer-detail summary,
+.ex-chart-note summary {
+  cursor: pointer;
+}
+
+.ex-answer-detail p {
+  max-width: 100ch;
+  margin-top: var(--sp-2);
 }
 
 /* ----- controls bar ------------------------------------------------------------------- */
@@ -179,9 +287,27 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2) var(--sp-5);
-  padding: var(--sp-2) var(--sp-5);
+  padding: var(--sp-3) var(--sp-6);
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-1);
+  background: var(--bg-0);
+}
+
+.ex-replay-tools {
+  color: var(--fg-1);
+}
+
+.ex-replay-tools summary {
+  cursor: pointer;
+  padding: 6px 0;
+}
+
+.ex-replay-tools[open] {
+  flex-basis: 100%;
+}
+
+.ex-replay-tools[open] .ex-group {
+  display: inline-flex;
+  margin: var(--sp-2) var(--sp-3) 0 0;
 }
 
 .ex-group {
@@ -245,16 +371,24 @@
 .ex-stage {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-5) 0;
+  gap: var(--sp-5);
+  padding: var(--sp-5) var(--sp-6) 0;
 }
 
 .ex-replay-chart,
 .ex-book,
 .ex-panel {
   min-width: 0;
-  padding: var(--sp-3);
-  border: 1px solid var(--border);
+  padding: var(--sp-3) 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  background: transparent;
+}
+
+.ex-replay-chart {
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-3);
   background: var(--bg-1);
 }
 
@@ -283,8 +417,8 @@
 
 .ex-chart-wrap {
   position: relative;
-  height: 400px;
-  border: 1px solid var(--border-subtle);
+  height: 360px;
+  border: 0;
 }
 
 .ex-chart-wrap.is-stale .ex-chart-host {
@@ -381,7 +515,12 @@
 }
 
 .ex-chart-note {
-  margin-top: var(--sp-1);
+  margin-top: var(--sp-3);
+  color: var(--fg-1);
+}
+
+.ex-chart-note p {
+  margin-top: var(--sp-2);
 }
 
 .ex-book > h2 {
@@ -705,10 +844,10 @@
 /* ----- guide ------------------------------------------------------------------------------- */
 
 .ex-guide {
-  margin: var(--sp-3) var(--sp-5) 0;
+  margin: var(--sp-6) var(--sp-6) 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--sp-3);
+  gap: var(--sp-4);
 }
 
 .ex-steps {
@@ -717,7 +856,7 @@
   list-style: none;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--sp-2);
+  gap: 0;
 }
 
 .ex .ex-step {
@@ -725,19 +864,21 @@
   height: 100%;
   min-height: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: flex-start;
   gap: var(--sp-2);
-  padding: var(--sp-2);
-  border: 1px solid var(--border);
+  padding: var(--sp-3) var(--sp-2);
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
   background: none;
   text-align: left;
   white-space: normal;
 }
 
 .ex .ex-step[aria-current='step'] {
-  border-color: var(--accent);
-  background: var(--bg-selected);
+  border-bottom-color: var(--accent);
+  background: none;
 }
 
 .ex-step-n {
@@ -747,7 +888,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-subtle);
   border-radius: 50%;
   font-family: var(--font-mono);
 }
@@ -762,10 +903,6 @@
   font-weight: 600;
 }
 
-.ex-step-hint {
-  display: block;
-  color: var(--fg-1);
-}
 
 .ex-kbd-hint {
   display: none;
@@ -828,9 +965,6 @@
   border-top: 1px solid var(--border-subtle);
 }
 
-.ex-guide-nav .btn-primary {
-  margin-left: auto;
-}
 
 .ex-more {
   margin-top: var(--sp-2);
@@ -851,8 +985,9 @@
   flex-direction: column;
   gap: var(--sp-2);
   padding: var(--sp-3);
-  border: 1px solid var(--border);
-  background: var(--bg-2);
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
 }
 
 .ex-pair[data-selected] {
@@ -922,8 +1057,9 @@
 
 .ex-details {
   margin-top: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border);
+  padding: var(--sp-2) 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .ex-details summary {
@@ -1062,7 +1198,7 @@
 
   .ex-stage {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 420px;
+    grid-template-columns: minmax(0, 1fr) 300px;
     grid-template-areas:
       'chart book'
       'orders life';
@@ -1165,12 +1301,70 @@
   }
 
   .ex-question {
-    font-size: 19px;
-    line-height: 25px;
+    font-size: 24px;
+    line-height: 30px;
   }
 
-  .ex-answer > p:first-child {
-    font-size: 14px;
+  .ex-head {
+    padding-top: var(--sp-4);
+  }
+
+  .ex-question {
+    margin-top: var(--sp-3);
+  }
+
+  .ex-answer {
+    margin-top: var(--sp-4);
+  }
+
+  .ex-result-strip {
+    gap: var(--sp-2);
+  }
+
+  .ex-result + .ex-result {
+    padding-left: var(--sp-2);
+  }
+
+  .ex-result-pair {
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+
+
+  .ex-result-delta {
+    flex-direction: column;
+  }
+
+
+  .ex-result-value {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 2px;
+  }
+
+  .ex-result-value strong {
+    font-size: 19px;
+  }
+
+  .ex-result-delta > span:last-child {
+    display: none;
+  }
+
+  .ex-hero-action {
+    margin-top: var(--sp-4);
+  }
+
+  .ex-hero-action > .ex-muted {
+    display: none;
+  }
+
+  .ex-hero-cta {
+    width: 100%;
+  }
+
+  .ex-replay-chart {
+    border-radius: 0;
   }
 
   .ex-bar {
@@ -1178,12 +1372,9 @@
   }
 
   .ex-steps {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .ex-step-hint {
-    display: none;
-  }
 
   .ex-chart-wrap {
     height: 300px;

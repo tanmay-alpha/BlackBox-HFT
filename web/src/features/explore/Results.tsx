@@ -48,6 +48,35 @@ function delta(m: ScenarioMetric): string {
   }
 }
 
+/** The three headline measures, using the same stored values and formatting as the full table. */
+export function ResultStrip({ story, names }: { story: LatencyStory; names: Record<ScenarioKey, string> }) {
+  const rows = scenarioMetrics(story);
+  return (
+    <dl className="ex-result-strip" aria-label={`Whole-run results, ${names.fast} versus ${names.slow}`}>
+      {KEYS.slice(0, 3).map(({ key, label, hint }) => {
+        const m = metric(rows, key);
+        if (!m) return null;
+        return (
+          <div key={key} className="ex-result">
+            <dt title={hint}>{label}</dt>
+            <dd>
+              <div className="ex-result-pair">
+                {(['fast', 'slow'] as const).map((s) => (
+                  <span key={s} className={`ex-result-value ex-result-${s}`}>
+                    <span className="ex-result-scenario">{names[s]}</span>
+                    <strong className="ex-num">{value(m, m[s])}</strong>
+                  </span>
+                ))}
+              </div>
+              <span className="ex-result-delta"><span className="ex-num">Δ {delta(m)}</span> <span>{names.slow} − {names.fast}</span></span>
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
+
 export function Results({ story, names, focus }: { story: LatencyStory; names: Record<ScenarioKey, string>; focus: Focus }) {
   const [all, setAll] = useState(false);
   const rows = scenarioMetrics(story);

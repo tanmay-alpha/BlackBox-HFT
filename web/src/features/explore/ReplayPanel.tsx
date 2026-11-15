@@ -106,14 +106,14 @@ export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, f
             <span className="ex-key-line ex-key-cursor" aria-hidden="true" /> replay time
           </li>
         </ul>
-        <p className="ex-muted ex-chart-note">
-          Drag or scroll to zoom. Click a marker to open its order; click anywhere else to move the replay time there. The book and trades are the
-          recorded synthetic market; simulated orders never change it, so it is identical in both scenarios. Chart drawn with{' '}
-          <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">
-            TradingView Lightweight Charts
-          </a>
-          .
-        </p>
+        <details className="ex-chart-note">
+          <summary>How to read this replay</summary>
+          <p className="ex-muted">
+            Drag or scroll to zoom. Click a marker to open its order; click anywhere else to move the replay time there. The book and trades are the
+            recorded synthetic market; simulated orders never change it, so it is identical in both scenarios. Chart drawn with{' '}
+            <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts</a>.
+          </p>
+        </details>
       </section>
       {between}
       <section className="ex-book" aria-labelledby="ex-book-title">
