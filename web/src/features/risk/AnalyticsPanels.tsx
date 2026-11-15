@@ -87,7 +87,16 @@ export function RiskAnalytics({ risk }: { risk: RiskReport }) {
     { key: 'sample', label: 'Equity sample interval', value: risk.sample_interval_ns },
   ];
   return (
-    <Panel title="Risk analytics" basis="derived" flush caption={`bb-analytics ${risk.analytics_version}. Path statistics use the equity series' mark: ${risk.mark}.`}>
+    <Panel
+      title="Risk analytics"
+      basis="derived"
+      flush
+      caption={
+        <span title={`bb-analytics ${risk.analytics_version}`}>
+          Computed by the analytics engine (version {risk.analytics_version}). Path statistics use the equity series&apos; mark: {risk.mark}.
+        </span>
+      }
+    >
       <ValueTable label="Risk analytics" rows={rows} />
       <Caveats list={risk.caveats} />
     </Panel>
@@ -183,7 +192,12 @@ export function ExecutionAnalytics({ execution: e }: { execution: ExecutionRepor
         title="Execution analytics: spreads and markouts"
         basis="derived"
         flush
-        caption={`bb-analytics ${e.analytics_version}; ${fmtInt(e.order_count)} orders, ${fmtInt(e.unassociated_fills)} fills not associated with an order. Fills and queue position are MODELED.`}
+        caption={
+          <span title={`bb-analytics ${e.analytics_version}`}>
+            Computed by the analytics engine (version {e.analytics_version}); {fmtInt(e.order_count)} orders, {fmtInt(e.unassociated_fills)} fills not associated
+            with an order. Fills and queue position are MODELED.
+          </span>
+        }
       >
         {(['all', 'maker', 'taker'] as const).map((side) => (
           <section key={side} className="col">

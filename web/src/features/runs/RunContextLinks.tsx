@@ -39,14 +39,21 @@ export function runViews(omit: readonly RunView[]): RunView[] {
   return ORDER.filter((v) => !omit.includes(v));
 }
 
-export function RunContextLinks({ runId, omit, order }: { runId: string; omit: readonly RunView[]; order?: number | null }) {
+/** `disabled`: the run could not be read (e.g. 404), so the views are shown but not offered. */
+export function RunContextLinks({ runId, omit, order, disabled }: { runId: string; omit: readonly RunView[]; order?: number | null; disabled?: boolean }) {
   return (
     <>
-      {runViews(omit).map((v) => (
-        <Link key={v} className="btn" to={runViewPath(v, runId, order)} data-run-view={v}>
-          {LABEL[v]}
-        </Link>
-      ))}
+      {runViews(omit).map((v) =>
+        disabled ? (
+          <button key={v} type="button" className="btn" disabled data-run-view={v}>
+            {LABEL[v]}
+          </button>
+        ) : (
+          <Link key={v} className="btn" to={runViewPath(v, runId, order)} data-run-view={v}>
+            {LABEL[v]}
+          </Link>
+        ),
+      )}
     </>
   );
 }

@@ -77,7 +77,7 @@ function build(m: Moment, focus: Focus, inst: InstrumentMeta, selected: number |
         price: price(o.price_tick),
         shape: k === 'fast' ? 'circle' : 'square',
         color: tone(k, o.order_id),
-        size: o.order_id === selected ? 2 : 0.8,
+        size: o.order_id === selected ? 2.5 : 1.5,
       });
     }
     for (const f of tl.fills) {
@@ -90,7 +90,7 @@ function build(m: Moment, focus: Focus, inst: InstrumentMeta, selected: number |
         price: price(f.price_tick),
         shape: f.side === 'buy' ? 'arrowUp' : 'arrowDown',
         color: tone(k, f.order_id),
-        size: f.order_id === selected ? 2 : 1,
+        size: f.order_id === selected ? 2.5 : 1.5,
       });
     }
   }
@@ -176,6 +176,8 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
           secondsVisible: true,
           minBarSpacing: 0.01,
           rightOffset: 0,
+          // Room for the last time-axis label, which would otherwise clip at the right edge.
+          rightOffsetPixels: 36,
           tickMarkFormatter: (time: Time) => (time === firstUnit.current ? '' : unitLabel(time, 3)),
         },
         handleScroll: { vertTouchDrag: false },
@@ -263,6 +265,16 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
       <div className="ex-chart-host" ref={hostRef} role="img" aria-label={desc}>
         <div ref={cursorRef} className="ex-chart-cursor" aria-hidden="true" />
       </div>
+      <button
+        type="button"
+        className="ex-chart-reset"
+        onClick={() => {
+          chartRef.current?.chart.timeScale().fitContent();
+          placeCursor.current();
+        }}
+      >
+        Reset zoom
+      </button>
     </>
   );
 }

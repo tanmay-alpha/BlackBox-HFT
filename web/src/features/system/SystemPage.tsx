@@ -17,7 +17,7 @@ import { Empty, ErrorBox, Notice, Panel, Pill, Spinner, useAsync } from '../../c
 import { useAccess } from '../../shell/access';
 import { useHealth } from '../../shell/health';
 import { paths } from '../../shell/paths';
-import { RESEARCH_BANNER, useNow, workerHealth } from '../../shell/StatusBar';
+import { RESEARCH_BANNER, useNow, WORKER_MODE, workerHealth } from '../../shell/StatusBar';
 import { Workspace } from '../../shell/Workspace';
 import { fmtSeconds } from '../sim/JobViews';
 import './system.css';
@@ -99,7 +99,7 @@ function HealthTab() {
       component: 'Worker',
       state: w.label,
       tone: w.tone,
-      detail: `${s.worker.mode} \u00b7 busy ${s.worker.busy}/${s.worker.slots} \u00b7 ${w.heartbeatAgeS === null ? 'no heartbeat yet' : `heartbeat ${fmtSeconds(w.heartbeatAgeS)} ago`} (expected every ${Math.round(s.worker.heartbeat_interval_ms / 1000)} s; not responding after ${Math.round((3 * s.worker.heartbeat_interval_ms) / 1000)} s without one)`,
+      detail: `${WORKER_MODE[s.worker.mode] ?? `${s.worker.mode} worker`} \u00b7 ${s.worker.busy} of ${s.worker.slots} slots busy \u00b7 ${w.heartbeatAgeS === null ? 'no heartbeat yet' : `heartbeat ${fmtSeconds(w.heartbeatAgeS)} ago`} (expected every ${Math.round(s.worker.heartbeat_interval_ms / 1000)} s; not responding after ${Math.round((3 * s.worker.heartbeat_interval_ms) / 1000)} s without one)`,
       checked,
     });
     rows.push({
@@ -147,7 +147,7 @@ function HealthTab() {
   const workerColumns = useMemo<Column<WorkerHeartbeat>[]>(
     () => [
       { id: 'id', header: 'Worker', rowHeader: true, cell: (r) => <span className="mono">{r.worker_id}</span> },
-      { id: 'mode', header: 'Mode', cell: (r) => r.mode },
+      { id: 'mode', header: 'Mode', cell: (r) => <span title={r.mode}>{WORKER_MODE[r.mode] ?? r.mode}</span> },
       { id: 'platform', header: 'Platform', cell: (r) => <span className="mono">{r.platform}</span> },
       { id: 'version', header: 'Version', cell: (r) => <span className="mono">{r.blackbox_version}</span> },
       { id: 'slots', header: 'Slots', numeric: true, cell: (r) => fmtInt(r.slots) },

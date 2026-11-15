@@ -83,6 +83,18 @@ function RunOverview({ runId }: { runId: string }) {
   const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
   const access = useAccess();
   const label = run.data?.label ?? '';
+  // Until the run is read (and when it is not found) its actions have nothing to act on.
+  const off = !run.data;
+  const action = (to: string, text: string, primary = false) =>
+    off ? (
+      <button type="button" className={primary ? 'btn btn-primary' : 'btn'} disabled>
+        {text}
+      </button>
+    ) : (
+      <Link className={primary ? 'btn btn-primary' : 'btn'} to={to}>
+        {text}
+      </Link>
+    );
   return (
     <Workspace
       context={label || runId}
@@ -94,12 +106,12 @@ function RunOverview({ runId }: { runId: string }) {
             <HashText hash={runId} />
             {label ? <span className="run-context-label">{label}</span> : null}
           </span>
-          <Link className="btn btn-primary" to={paths.bookRun(runId)}>Open in Order Book Replay</Link>
-          <DownloadButtons runId={runId} />
-          <Link className="btn" to={paths.comparePair(runId)}>Compare with…</Link>
-          <RunContextLinks runId={runId} omit={['overview', 'replay', 'compare']} />
-          <Link className="btn" to={paths.sweepForm(runId)}>Sweep from this run</Link>
-          <Link className="btn" to={paths.strategy({ from: runId })}>Open in Strategy Lab</Link>
+          {action(paths.bookRun(runId), 'Open in Order Book Replay', true)}
+          <DownloadButtons runId={runId} disabled={off} />
+          {action(paths.comparePair(runId), 'Compare with\u2026')}
+          <RunContextLinks runId={runId} omit={['overview', 'replay', 'compare']} disabled={off} />
+          {action(paths.sweepForm(runId), 'Sweep from this run')}
+          {action(paths.strategy({ from: runId }), 'Open in Strategy Lab')}
           <button type="button" onClick={run.reload} disabled={run.loading}>Reload run</button>
         </>
       }
@@ -119,7 +131,7 @@ function RunOverview({ runId }: { runId: string }) {
 }
 
 /** Report and bundle downloads: reads, allowed anonymously; the key travels as a header, never in a URL. */
-function DownloadButtons({ runId }: { runId: string }) {
+function DownloadButtons({ runId, disabled }: { runId: string; disabled: boolean }) {
   const [pending, setPending] = useState<'report' | 'export' | null>(null);
   const [error, setError] = useState<unknown>(null);
   const download = async (what: 'report' | 'export') => {
@@ -136,10 +148,10 @@ function DownloadButtons({ runId }: { runId: string }) {
   };
   return (
     <>
-      <button type="button" onClick={() => void download('report')} disabled={pending !== null}>
+      <button type="button" onClick={() => void download('report')} disabled={disabled || pending !== null}>
         {pending === 'report' ? 'Downloading report\u2026' : 'Download report (.md)'}
       </button>
-      <button type="button" onClick={() => void download('export')} disabled={pending !== null}>
+      <button type="button" onClick={() => void download('export')} disabled={disabled || pending !== null}>
         {pending === 'export' ? 'Downloading run\u2026' : 'Download run (.bbz)'}
       </button>
       {error !== null ? <ErrorBox error={error} /> : null}

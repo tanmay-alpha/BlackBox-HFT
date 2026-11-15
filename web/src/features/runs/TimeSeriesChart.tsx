@@ -91,7 +91,8 @@ export function TimeSeriesChart({ series, formatValue, ariaLabel }: TimeSeriesCh
           textColor: cssVar('--fg-2'),
           fontFamily: cssVar('--font-mono'),
           fontSize: 11,
-          attributionLogo: true,
+          // The logo overlapped the plot's lower-left corner; the credit is a text link under the key.
+          attributionLogo: false,
         },
         grid: {
           vertLines: { color: border },
@@ -145,6 +146,12 @@ export function TimeSeriesChart({ series, formatValue, ariaLabel }: TimeSeriesCh
             {s.label}
           </li>
         ))}
+        <li className="chart-credit">
+          Chart drawn with{' '}
+          <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">
+            TradingView Lightweight Charts
+          </a>
+        </li>
       </ul>
     </div>
   );

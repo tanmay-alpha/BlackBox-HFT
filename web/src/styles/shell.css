@@ -524,6 +524,13 @@
   white-space: normal;
 }
 
+/* Long text in a fixed-width column: one line, ellipsis, full text in the cell's title. */
+.dt-table td.cell-ellipsis {
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .dt-sort {
   min-height: 0;
   height: var(--h-row);
@@ -1215,13 +1222,23 @@
     flex: none;
   }
 
-  .topbar > .badge {
-    max-width: 92px;
+  /* One line: the badge drops its detail (kept in the title) and "Sign out" stays beside it. */
+  .topbar .badge-detail {
+    display: none;
+  }
+
+  .topbar > .badge,
+  .topbar .access-badge .badge {
     min-height: var(--h-control);
-    white-space: normal;
-    text-align: center;
+    white-space: nowrap;
     justify-content: center;
     font-size: 10px;
+  }
+
+  .topbar .access-badge {
+    flex-wrap: nowrap;
+    flex: none;
+    white-space: nowrap;
   }
 
   .nav-menu-button {

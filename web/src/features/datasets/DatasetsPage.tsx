@@ -53,12 +53,15 @@ import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import './datasets.css';
 
-const LEVEL_TEXT: Record<DataLevel, string> = {
-  l2_mbp_with_trades: 'L2 Market-By-Price + trades \u2014 individual orders not visible',
+// Plain wording for the server's level codes; the raw code stays in the cell's tooltip.
+const LEVEL_TEXT: Record<string, string | undefined> = {
+  l2_mbp: 'Order book by price level (L2) \u2014 individual orders not visible',
+  l2_mbp_with_trades: 'Order book by price level (L2) with trades \u2014 individual orders not visible',
 };
 
-const LEVEL_SHORT: Record<DataLevel, string> = {
-  l2_mbp_with_trades: 'L2 MBP + trades',
+const LEVEL_SHORT: Record<string, string | undefined> = {
+  l2_mbp: 'Price-level book',
+  l2_mbp_with_trades: 'Price-level book + trades',
 };
 
 const LOCAL_TS: Record<LocalTsProvenance, { badge: BadgeKind; label: string; meaning: string }> = {
@@ -144,7 +147,7 @@ const DATASET_COLUMNS: Column<DatasetSummary>[] = [
   {
     id: 'level',
     header: 'Level',
-    cell: (d) => (LEVEL_SHORT as Record<string, string | undefined>)[d.level] ?? d.level,
+    cell: (d) => <span title={d.level}>{LEVEL_SHORT[d.level] ?? d.level}</span>,
     sortValue: (d) => d.level,
   },
   {
@@ -267,7 +270,7 @@ function IdentityTab({ ds, version }: { ds: DatasetManifest; version: DatasetVer
             v{version.version} <span className="dim">(normalization v{version.normalization_version}, contract v{version.contract_version})</span>
           </dd>
           <dt>Data level</dt>
-          <dd className="prose">{LEVEL_TEXT[ds.level]}</dd>
+          <dd className="prose" title={ds.level}>{LEVEL_TEXT[ds.level] ?? ds.level}</dd>
           <dt>Span</dt>
           <dd>
             <ClockText ns={ds.start} /> {'\u2192'} <ClockText ns={ds.end} />{' '}

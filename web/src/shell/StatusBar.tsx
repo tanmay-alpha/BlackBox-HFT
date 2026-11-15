@@ -46,7 +46,7 @@ export interface WorkerHealth {
   running: number;
 }
 
-const WORKER_MODE: Record<string, string> = { in_process: 'in-process worker', standalone: 'standalone worker' };
+export const WORKER_MODE: Record<string, string> = { in_process: 'in-process worker', standalone: 'standalone worker' };
 
 /** The worker facts of a status response, aged to `nowMs`. Nothing is inferred beyond them. */
 export function workerHealth(status: Status, checkedAt: number | null, nowMs: number): WorkerHealth {

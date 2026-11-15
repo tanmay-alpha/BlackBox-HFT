@@ -201,7 +201,7 @@ function AccessBadge() {
           title={`Research access: workspace ${w.workspace.name} (${w.workspace.slug}), scopes ${w.key?.scopes.join(', ') ?? ''}. Activate to change the key.`}
           onClick={access.openKeyDialog}
         >
-          RESEARCH {'\u00b7'} key {w.key?.display_prefix}
+          RESEARCH<span className="badge-detail"> {'\u00b7'} key {w.key?.display_prefix}</span>
         </button>
         <button type="button" className="btn-link small" onClick={access.signOut}>
           Sign out
@@ -217,7 +217,13 @@ function AccessBadge() {
       title={access.mode === 'demo' ? 'Public demo workspace, read-only. Activate to enter an API key.' : 'Access not known yet. Activate to enter an API key.'}
       onClick={access.openKeyDialog}
     >
-      {access.mode === 'demo' ? 'DEMO \u00b7 read-only' : 'ACCESS \u2026'}
+      {access.mode === 'demo' ? (
+        <>
+          DEMO<span className="badge-detail"> {'\u00b7'} read-only</span>
+        </>
+      ) : (
+        'ACCESS \u2026'
+      )}
     </button>
   );
 }

@@ -36,13 +36,13 @@ Sev: **H** wrong or missing result / unusable; **M** hard to use or misleading w
 | 12 | M | Replay "Depth at cursor" | 1280–1920 | Column "Own orders (order qty)" and the caption are cut at the pane edge. | `audit-replay-1440.webp` | Fixed: header "Own orders", caption wraps |
 | 13 | M | Cross-workspace context | all | Run views do not link each other: Replay links only to the run overview; Risk lacks Replay/Compare; Report lacks Replay/Compare; order forensics lacks Risk/Report/Compare; Run overview lacks Risk/Report. Breadcrumbs exist only on run overview, replay and order pages. | — | Fixed: `RunContextLinks` (Run overview · Replay · Risk & P&L · Report · Compare with…, carrying the run id, current view omitted) on Run overview, Replay, Order forensics, Risk, Report; breadcrumbs added for `/risk/<run>`, `/reports/<run>`, `/compare/pair?a&b`, `/sim/jobs/<job>`, `/sim/sweep?base` |
 | 14 | L | All docked workspaces | < 960 | "Reset layout" shown although panes are not resizable below 960 px; row density takes a toolbar row on phones. | `audit-before-replay-390.webp` | Fixed: hidden below 960 / 600 px |
-| 15 | M | Explore replay chart | 1920 | Last time-axis label clipped at the right edge ("0.6("). Markers are small (size 0.8–1). Replay slider reads `0.1 / 120.0 s` while the chart header shows 6 decimals. Zoom (wheel/drag) has no reset control except loading a new window. | `audit-explore-1920.webp` | Open |
-| 16 | M | Strategy Lab advanced | 1280, 1440 | Section tab row overflows ("Feed latenc…") with no scroll affordance; dataset select text truncated. | `audit-lab-advanced-1440.webp` | Open |
-| 17 | L | Comparisons set | 1440 | Run table "Execution assumptions" column cut; stray dashed rule under the baseline row. | `audit-compare-set-1440.webp` | Open |
-| 18 | L | Risk | all | Caption "bb-analytics 1.0.0 …", Lightweight Charts logo overlaps the plot's lower-left corner. | `audit-after-risk-1440.webp` | Open |
-| 19 | L | System | 1440 | Worker detail "in_process · busy 0/1"; Datasets list Level column `l2_mbp`; run labels from sweeps carry `order_latency_ns=` (server-generated). | `audit-system-1440.webp` | Open |
-| 20 | L | Top bar | 390 | Access badge wraps "Sign out" under it; workspace switcher label ellipsised ("Order Bo…"). | `audit-after-replay-390.webp` | Open |
-| 21 | L | Error routes | all | Toolbar actions (Open in Order Book Replay, Download report, Compare with…) stay enabled for a run that 404s. | `audit-error-404-1440.webp` | Open |
+| 15 | M | Explore replay chart | 1920 | Last time-axis label clipped at the right edge ("0.6("). Markers are small (size 0.8–1). Replay slider reads `0.1 / 120.0 s` while the chart header shows 6 decimals. Zoom (wheel/drag) has no reset control except loading a new window. | `audit-explore-1920.webp` | Fixed: `rightOffsetPixels: 36` (1920: last label "0.660 s" whole), markers 1.5 / 2.5 selected, slider and header both `0.100 s` (3 decimals, exact ns in `title`; lifecycle keeps ns detail), "Reset zoom" button refits |
+| 16 | M | Strategy Lab advanced | 1280, 1440 | Section tab row overflows ("Feed latenc…") with no scroll affordance; dataset select text truncated. | `audit-lab-advanced-1440.webp` | Fixed: `.lab-tabs` wraps onto a second row; all nine sections visible at 1440 |
+| 17 | L | Comparisons set | 1440 | Run table "Execution assumptions" column cut; stray dashed rule under the baseline row. | `audit-compare-set-1440.webp` | Fixed: run-set pane 38 % (both rows visible), assumptions column 320 px with ellipsis and full text in `title` |
+| 18 | L | Risk | all | Caption "bb-analytics 1.0.0 …", Lightweight Charts logo overlaps the plot's lower-left corner. | `audit-after-risk-1440.webp` | Fixed: "Computed by the analytics engine (version 1.0.0)", raw name in `title`; logo off, text credit in the series key |
+| 19 | L | System | 1440 | Worker detail "in_process · busy 0/1"; Datasets list Level column `l2_mbp`; run labels from sweeps carry `order_latency_ns=` (server-generated). | `audit-system-1440.webp` | Fixed (UI labels): "in-process worker · 0 of 1 slots busy", Mode column plain; Level "Price-level book" (raw code in `title`). Sweep run labels are server data, unchanged |
+| 20 | L | Top bar | 390 | Access badge wraps "Sign out" under it; workspace switcher label ellipsised ("Order Bo…"). | `audit-after-replay-390.webp` | Fixed: below 600 px the badge shows "DEMO"/"RESEARCH" on one line (detail in `title`), switcher reads "Latency experiment" in full |
+| 21 | L | Error routes | all | Toolbar actions (Open in Order Book Replay, Download report, Compare with…) stay enabled for a run that 404s. | `audit-error-404-1440.webp` | Fixed: run overview actions are disabled buttons until the run loads (404: all off except All runs / Reload) |
 
 ## Keyboard (Tab order)
 
@@ -51,9 +51,10 @@ Research views → "Both scenarios lose money" → scenario buttons → First di
 → replay time → chart note → orders table → guided steps. With the comparison found (fix 1) the
 lifecycle CTA follows the orders table, matching the visual order of the wide grid (book has no
 focusable control); the e2e keyboard path (Tab to "First divergence", Enter, Tab into the
-lifecycle) is unchanged. Order forensics: the glossary terms of the order card receive focus out of
-visual order (Queue ahead, Fees, latency, Feed latency, Fees); open (L). No focus trap or
-invisible focus stop found.
+lifecycle) is unchanged. Order forensics: the glossary terms of the order card take focus in
+document order, which is the visual order (unscrolled y: Queue ahead 649, Fees 753, latency 1327,
+Feed latency 1375, Fees 1403); the earlier report came from coordinates read while the pane
+scrolled. Verified, no change needed. No focus trap or invisible focus stop found.
 
 ## Files changed
 

@@ -556,6 +556,7 @@ export default function LabPage() {
           ) : (
             <Tabs
               label="Configuration sections"
+              className="lab-tabs"
               active={active.id}
               onChange={setActiveSection}
               tabs={sections.map((s) => {
