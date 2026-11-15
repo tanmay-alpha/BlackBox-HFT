@@ -9,7 +9,7 @@ import type {
 } from '../../api/types';
 import { JsonBlock, Pager, QuantileTable } from '../../components/data';
 import { DataTable, type Column } from '../../components/DataTable';
-import { ORDER_OUTCOMES, OUTCOME_MEANING, tifLabel } from '../../components/describe';
+import { latencyLabel, ORDER_OUTCOMES, OUTCOME_MEANING, strategyName, tifLabel } from '../../components/describe';
 import {
   DASH, fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtQty, fmtTicks, words,
 } from '../../components/fmt';
@@ -27,6 +27,7 @@ import { useAccess } from '../../shell/access';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { outcomeTone } from '../forensics/labels';
+import { CopyableHash } from './CopyableHash';
 import { RunContextLinks } from './RunContextLinks';
 import { lastPerSecond, TimeSeriesChart } from './TimeSeriesChart';
 import type { ChartSeries } from './TimeSeriesChart';
@@ -103,8 +104,13 @@ function RunOverview({ runId }: { runId: string }) {
         <>
           <Link className="btn" to={paths.runs()}>All runs</Link>
           <span className="run-context">
-            <HashText hash={runId} />
             {label ? <span className="run-context-label">{label}</span> : null}
+            {run.data ? (
+              <span className="run-context-meta dim">
+                {`${strategyName(run.data.strategy_kind)} \u00b7 ${run.data.dataset.id} v${run.data.dataset.version} \u00b7 latency ${latencyLabel(run.data.config.execution.order_latency)}`}
+              </span>
+            ) : null}
+            <HashText hash={runId} />
           </span>
           {action(paths.bookRun(runId), 'Open in Order Book Replay', true)}
           <DownloadButtons runId={runId} disabled={off} />
@@ -254,9 +260,9 @@ function Manifest({ run, dataset }: { run: RunDetail; dataset: AsyncResult<Datas
       <div className="col">
         <dl className="kv">
           <dt>Label</dt><dd>{run.label ?? <span className="dim">unlabelled</span>}</dd>
-          <dt>Run id</dt><dd className="mono wrap-anywhere">{run.run_id}</dd>
-          <dt>Config fingerprint</dt><dd className="mono wrap-anywhere">{run.fingerprint}</dd>
-          <dt>Result SHA-256</dt><dd className="mono wrap-anywhere">{run.result_sha256}</dd>
+          <dt>Run id</dt><dd><CopyableHash value={run.run_id} label="run id" /></dd>
+          <dt>Config fingerprint</dt><dd><CopyableHash value={run.fingerprint} label="config fingerprint" /></dd>
+          <dt>Result SHA-256</dt><dd><CopyableHash value={run.result_sha256} label="result SHA-256" /></dd>
           <dt>Summary SHA-256</dt><dd className="mono wrap-anywhere">{run.summary_sha256}</dd>
           <dt>Bundle SHA-256</dt><dd className="mono wrap-anywhere">{run.bundle?.sha256 ?? 'no bundle recorded'}</dd>
           <dt>BlackBox / contract</dt><dd className="mono">{run.blackbox_version} / v{run.contract_version}</dd>

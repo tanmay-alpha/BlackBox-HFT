@@ -42,7 +42,7 @@ const VALUE_COLUMNS: Column<ValueRow>[] = [
   { id: 'value', header: 'Value', numeric: true, cell: (r) => <ValueCell v={r.value} />, raw: (r) => (r.value.status === 'available' ? String(r.value.value) : r.value.reason) },
   { id: 'unit', header: 'Unit', cell: (r) => <span className="dim">{unitOf(r.value)}</span> },
   { id: 'n', header: 'Observations', cell: (r) => <span className="mono dim">{counts(r.value)}</span> },
-  { id: 'note', header: 'Note', cell: (r) => (r.note ? <span className="note">{r.note}</span> : DASH) },
+  { id: 'note', header: 'Note', className: () => 'wrap', cell: (r) => (r.note ? <span className="note">{r.note}</span> : DASH) },
 ];
 
 function ValueTable({ label, rows }: { label: string; rows: ValueRow[] }) {
@@ -118,7 +118,7 @@ const PRICE_COLUMNS: Column<PriceRow>[] = [
   { id: 'ticks', header: 'Ticks', numeric: true, cell: (r) => <ValueCell v={r.m.ticks} /> },
   { id: 'bps', header: 'bp', numeric: true, cell: (r) => <ValueCell v={r.m.bps} /> },
   { id: 'n', header: 'Observations', cell: (r) => <span className="mono dim">{counts(r.m.price)}</span> },
-  { id: 'note', header: 'Note', cell: (r) => (r.note ? <span className="note">{r.note}</span> : DASH) },
+  { id: 'note', header: 'Note', className: () => 'wrap', cell: (r) => (r.note ? <span className="note">{r.note}</span> : DASH) },
 ];
 
 function spreadRows(s: SpreadMetrics): PriceRow[] {
@@ -167,7 +167,7 @@ function pnlRows(side: string, p: PnlDecomposition): ValueRow[] {
     { key: `${side}-edge`, label: `${side}: edge`, value: p.edge },
     { key: `${side}-drift`, label: `${side}: drift`, value: p.drift },
     { key: `${side}-fees`, label: `${side}: fees`, value: p.fees },
-    { key: `${side}-net`, label: `${side}: net`, value: p.net },
+    { key: `${side}-net`, label: `${side}: net at exchange end mid`, value: p.net },
   ];
 }
 
@@ -222,16 +222,21 @@ export function ExecutionAnalytics({ execution: e }: { execution: ExecutionRepor
           ]}
         />
       </Panel>
-      <Panel title="P&L decomposition" basis="derived" flush caption={`Edge, drift and fees on one mark; exchange end mid ${fmtValue(e.exchange_end_mid)}.`}>
+      <Panel
+        title="P&L decomposition"
+        basis="derived"
+        flush
+        caption={`Edge + drift − fees at exchange end mid (${fmtValue(e.exchange_end_mid)}); may differ from run Net P&L marked at local mid.`}
+      >
         <ValueTable label="P&L decomposition" rows={[...pnlRows('all', e.pnl.all), ...pnlRows('maker', e.pnl.maker), ...pnlRows('taker', e.pnl.taker)]} />
       </Panel>
       <Panel title="Fill timing and cancels" basis="modeled" flush>
         <ValueTable
           label="Fill timing and cancels"
           rows={[
-            ...distributionRows('ff', 'Time to first fill (observed)', e.first_fill.observed_ns),
+            ...distributionRows('ff', 'Time to first simulated fill (uncensored)', e.first_fill.observed_ns),
             ...kmRows('ffkm', 'First fill', e.first_fill.km),
-            ...distributionRows('cf', 'Time to complete fill (observed)', e.complete_fill.observed_ns),
+            ...distributionRows('cf', 'Time to complete simulated fill (uncensored)', e.complete_fill.observed_ns),
             ...kmRows('cfkm', 'Complete fill', e.complete_fill.km),
             ...distributionRows('cx', 'Cancel to exchange', e.cancels.to_exchange_ns),
             ...distributionRows('crt', 'Cancel round trip', e.cancels.round_trip_ns),

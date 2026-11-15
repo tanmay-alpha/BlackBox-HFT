@@ -1,29 +1,168 @@
-/* Risk & Performance (UI_DESIGN_SPEC.md §11.7). */
+/* Risk & Performance (UI_DESIGN_SPEC.md §11.7): answer, charts, then every metric. */
 
 .risk-body {
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  max-width: 1440px;
+}
+
+.risk-identity {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ----- answer ----- */
+
+.risk-answer {
+  display: flex;
+  flex-direction: column;
   gap: var(--sp-3);
-  padding: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  background: var(--bg-1);
 }
 
-.risk-kpis {
+.risk-answer-title {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: var(--text-lg);
+  line-height: var(--lh-lg);
+  font-weight: 600;
+}
+
+.risk-answer-lead {
+  margin: 0;
+  max-width: 80ch;
+  color: var(--fg-1);
+  font-size: var(--text-md);
+  line-height: var(--lh-md);
+}
+
+.risk-figures {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-1) var(--sp-4);
+  margin: 0;
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Label, value and detail rows line up across a row of figures even when a label wraps. */
+.risk-figure {
+  display: grid;
+  grid-row: span 3;
+  grid-template-rows: subgrid;
+  align-items: end;
+  min-width: 0;
+  padding-bottom: var(--sp-3);
+}
+
+.risk-figure-detail {
+  align-self: start;
+}
+
+.risk-figure dt {
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
 }
 
-.risk-grid {
+.risk-figure dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.risk-figure-value {
+  color: var(--fg-0);
+  font-size: var(--text-xl);
+  line-height: var(--lh-xl);
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+.risk-figure-unit {
+  color: var(--fg-1);
+}
+
+.risk-figure-detail {
+  color: var(--fg-2);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.risk-caveat {
+  margin: 0;
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.risk-caveat-tag {
+  margin-right: var(--sp-1);
+  color: var(--modeled);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.risk-answer-compare {
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.risk-compare-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.risk-compare-links li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 32px;
+}
+
+/* ----- charts ----- */
+
+.risk-charts {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--sp-3);
-  align-items: start;
 }
 
-@media (max-width: 1199px) {
-  .risk-grid {
+@media (max-width: 1023px) {
+  .risk-charts {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-.risk-charts {
-  gap: var(--sp-3);
+@media (max-width: 599px) {
+  .risk-body {
+    padding: var(--sp-3);
+  }
+
+  .risk-answer {
+    padding: var(--sp-3);
+  }
+
+  .risk-figures {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .risk-compare-links li {
+    min-height: 40px;
+  }
 }
 
 .risk-gaps {
@@ -40,4 +179,11 @@
   max-width: 32ch;
   white-space: normal;
   text-align: left;
+}
+
+/* "How it is measured" wraps; it never pushes the unit column out of view. */
+.dt-table td.wrap {
+  min-width: 24ch;
+  max-width: none;
+  padding-block: var(--sp-1);
 }
