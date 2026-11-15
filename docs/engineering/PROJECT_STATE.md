@@ -4,13 +4,15 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Rebuild integrated on `rebuild/explore`; release pending.** The product rebuild (public latency
-experiment at `/`, five navigation sections, event-complete replay, ITCH local reconstruction) is
-merged on `rebuild/explore` (HEAD `b71a46a`); release and production verification are task T12 in
-[../rebuild/IMPLEMENTATION_TRACKER.md](../rebuild/IMPLEMENTATION_TRACKER.md). Review:
-[../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md).
+**Rebuild released (2026-11-15).** `main` = `d85f743` is live: the API reports `git_sha=d85f743`
+from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:1d35116c…`, Vercel serves the console built
+from `main`, smoke passed 8/8 and `npm run test:prod` passed 7/7. Evidence and rollback:
+[../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md). Review:
+[../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md). Later UI polish commits on
+`rebuild/explore` are released only when `/status` reports their SHA.
 
-Hosted system (pre-rebuild source) live since 2026-11-14:
+Hosted system (the `BB_GIT_SHA` service env override was removed on 2026-11-15; the SHA now
+comes from the image):
 
 | Component | Where | Notes |
 |---|---|---|

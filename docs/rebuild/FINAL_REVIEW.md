@@ -155,29 +155,29 @@ See the Lead section. The rebuild adds no service, database or paid resource
 
 ---
 
-## Lead section: release and production (to be completed)
+## Lead section: release and production (2026-11-15)
 
-> **PENDING — filled after release.** Nothing below has been observed yet.
+Details and rollback: [PRODUCTION_ACCEPTANCE.md](PRODUCTION_ACCEPTANCE.md).
 
 ### H. Infrastructure
 
 | Item | Result |
 |---|---|
-| Released commit / image digest | PENDING — filled after release |
-| Render service deploy | PENDING — filled after release |
-| Vercel production deployment | PENDING — filled after release |
-| Migrations / `readyz` | PENDING — filled after release |
-| `demo seed` on production | PENDING — filled after release |
-| Neon / Blob quota usage | PENDING — filled after release |
+| Released commit / image digest | `d85f743` / `ghcr.io/tanmay-alpha/blackbox-hft@sha256:1d35116c…b237` (publish run 43692117407, attested) |
+| Render service deploy | `dep-dbsmfrjl550s738ssrmg` live on the existing free service. Removed a stale manual `BB_GIT_SHA` env override |
+| Vercel production deployment | `blackbox-do96bv953…` Ready (built from `main` 07:48 UTC) |
+| Migrations / `readyz` | `migrations 0009`, db ok, blob configured (no new migration in this release) |
+| `demo seed` on production | not needed: the simulation crates are unchanged and the 5 curated comparisons are served |
+| Neon / Blob quota usage | not measured (no dashboard read) |
 
 ### Production results
 
 | Check | Result |
 |---|---|
-| `/api/v1/status` `git_sha` | PENDING — filled after release |
-| `scripts/deploy/smoke.sh` | PENDING — filled after release |
-| Anonymous journey at `/` in a clean browser profile (1440, 768, 390) | PENDING — filled after release |
-| Anonymous replay window loads completely (no 500) | PENDING — filled after release |
-| Keyed submit → complete → compare | PENDING — filled after release |
-| Public page API bytes per fresh visit (production) | PENDING — filled after release |
-| Full test suite on the released commit (`cargo test`, vitest, Playwright) | PENDING — filled after release |
+| `/api/v1/status` `git_sha` | `d85f743719ae9d46d29c7c9e0df58f476e8bff42`; worker idle, heartbeat 5.6 s / 15 s |
+| `scripts/deploy/smoke.sh` | 8/8 PASS |
+| Anonymous journey at `/` (1440, 768, 390) | `npm run test:prod`, 7/7 PASS: numbers equal the API, first-divergence jump, forensics and back, no overflow at 768/390 |
+| Anonymous replay window loads completely (no 500) | PASS (`/book/runs/253bbc23b342f373`) |
+| Keyed submit → complete → compare | verified locally and in CI Playwright `research.spec.ts`; not exercised against production (budget) |
+| Public page API bytes per fresh visit | 236,675 B measured locally with the same API data; not remeasured on production |
+| Full test suite on the released commit | `cargo test --workspace` 458 passed / 0 failed; vitest 111/111; CI e2e Playwright green (run 43691546229) |
