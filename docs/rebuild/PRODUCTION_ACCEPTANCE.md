@@ -45,3 +45,25 @@ Commit `a665991` (refined design tokens and shell; calmer Explore hero with a th
 CI run 43693354372 all green; image `sha256:212495fa…c659cc1` deployed to Render (`live`); smoke 8/8
 PASS; `/status` reports `git_sha=a665991…`; Vercel production `blackbox-ju4q5fzqt…` Ready;
 `npm run test:prod` 7/7 PASS. Local Playwright 7/7, vitest 111/111, `tsc` clean.
+
+## Authenticated production research journey (2026-11-15 09:54–09:55 UTC)
+
+Spec: `web/e2e-prod/research.prod.spec.ts`; the key is taken from `PROD_RESEARCH_KEY`, typed into the access dialog
+and never logged. Raw evidence: [prod-research-evidence.json](prod-research-evidence.json). Screenshots: `img/prodj-0*.png`.
+1 passed (26.4 s). Backend `a665991`.
+
+| Step | Result |
+|---|---|
+| Strategy Lab, key sign-in, `synthetic-demo`, preset "Touch maker: baseline", entry latency 5 ms, seed 2026839111 | validation `valid`; changed-vs-preset shows `5 ms` |
+| Submit → job `01a1dea1-7627-79c1-a2e4-263821cc0a6b` | UI states: running (1.2 s) → completed (10.0 s); API: queued→started 0.20 s, started→finished 7.17 s, attempt 1, 1,201/1,201 ticks, worker platform `linux-x86_64+libm-53154a4e` |
+| Run `e2321a7eec3e23e1` | `GET /runs/{id}` (bundle-verified detail read) 200; result sha256 `bb34d8c567022f805414e125430c9eb45cac0a7758d21a2ef7539e1ab865164c`; 2,051 orders, 1,182 fills, net P&L −71.169 (simulated) |
+| Order blotter, one order's forensics, Order Book Replay | rendered; replay showed "Depth at cursor" with no error box |
+| Comparison vs demo run `253bbc23b342f373` | 201, id `01a1dea1-bd3b-765f-…`, aligned and like-for-like; diffs `execution.order_latency.entry_ns`, `seed` |
+| Report `GET /runs/{id}/report` | 200, 25,426 B, research report title |
+| Reload | key kept in the tab; run still shown |
+| Sign out | badge DEMO; UI "Run … was not found"; anonymous `GET /runs/{id}` → 404 |
+| Sign in again | blotter visible again |
+| Page errors | none |
+
+Production state written: one experiment/job/run, one comparison, in workspace `research`. The test key was the
+existing research key (scopes `read,run`), so nothing was minted and nothing needs revoking.

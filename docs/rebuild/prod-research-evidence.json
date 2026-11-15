@@ -1,0 +1,61 @@
+{
+  "started_at": "2026-11-15T09:54:41.229Z",
+  "backend_git_sha": "a665991ba154d193ce74efd2342ee5913ca88a1c",
+  "seed": 2026839111,
+  "job_id": "01a1dea1-7627-79c1-a2e4-263821cc0a6b",
+  "ui_states": [
+    {
+      "state": "running",
+      "at_ms": 1235
+    },
+    {
+      "state": "completed",
+      "at_ms": 10024
+    }
+  ],
+  "run_id": "e2321a7eec3e23e1",
+  "job": {
+    "state": "completed",
+    "attempt": 1,
+    "queued_at_ns": "1794736485872456000",
+    "started_at_ns": "1794736486070402000",
+    "finished_at_ns": "1794736493242266000",
+    "progress": {
+      "done": 1201,
+      "tape_events": 0,
+      "total": 1201,
+      "unit": "ticks"
+    },
+    "platform": "linux-x86_64+libm-53154a4e"
+  },
+  "run": {
+    "status": 200,
+    "result_sha256": "bb34d8c567022f805414e125430c9eb45cac0a7758d21a2ef7539e1ab865164c",
+    "platform": "linux-x86_64+libm-53154a4e",
+    "fills": 1182,
+    "orders": 2051,
+    "net_pnl": -71.16903619999852
+  },
+  "comparison": {
+    "status": 201,
+    "id": "01a1dea1-bd3b-765f-a05a-3044b21eff6a",
+    "eligibility": {
+      "aligned": true,
+      "like_for_like": true,
+      "reasons": []
+    },
+    "diffs": [
+      "execution.order_latency.entry_ns",
+      "seed"
+    ]
+  },
+  "report": {
+    "status": 200,
+    "bytes": 25426,
+    "has_title": true
+  },
+  "anonymous_run_status": 404,
+  "reauth_ok": true,
+  "page_errors": [],
+  "finished_at": "2026-11-15T09:55:07.437Z"
+}
