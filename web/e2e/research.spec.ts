@@ -15,7 +15,7 @@ async function advanced(page: Page): Promise<void> {
   await page.getByRole('group', { name: 'Form mode' }).getByRole('button', { name: 'Advanced' }).click();
 }
 
-/** Sets the seed (a new experiment identity) and submits; returns the job id from the URL. */
+/** Sets the seed (a new experiment identity), submits and opens the job; returns its id from the URL. */
 async function submitWithSeed(page: Page, seed: number): Promise<string> {
   await page.goto('/strategy');
   await advanced(page);
@@ -24,6 +24,7 @@ async function submitWithSeed(page: Page, seed: number): Promise<string> {
   await field.fill(String(seed));
   await field.blur();
   await page.getByTestId('lab-submit').click();
+  await page.getByTestId('lab-next-job').click();
   await page.waitForURL(/\/sim\/jobs\//);
   return page.url().split('/sim/jobs/')[1].split(/[?#]/)[0];
 }
@@ -51,7 +52,7 @@ test.describe('keyed research journey', () => {
 
     // Guided mode (the default): a preset plus the essentials, edited in plain units.
     await page.goto('/strategy?dataset=synthetic-demo');
-    await page.locator('#lab-preset').selectOption({ label: 'Touch maker: baseline' });
+    await page.getByRole('radio', { name: 'Touch maker: baseline', exact: true }).check();
     const modes = page.getByRole('group', { name: 'Form mode' });
     await expect(modes.getByRole('button', { name: 'Guided' })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByRole('tab', { name: /Seed/ })).toHaveCount(0);
@@ -79,6 +80,8 @@ test.describe('keyed research journey', () => {
     await page.getByLabel('Seed', { exact: true }).and(page.locator('input')).fill(String(base));
     await page.getByLabel('Run label').fill(`e2e guided ${base}`);
     await page.getByTestId('lab-submit').click();
+    // The Lab stays on the page and links the next steps; the first is the job.
+    await page.getByTestId('lab-next-job').click();
     await page.waitForURL(/\/sim\/jobs\//);
     const jobA = page.url().split('/sim/jobs/')[1].split(/[?#]/)[0];
     await expect(page.getByTestId('job-detail')).toHaveAttribute('data-job-state', /created|queued|running|completed/);
@@ -123,7 +126,7 @@ test.describe('keyed research journey', () => {
     // Idempotent resubmission returns the stored run instead of a new job.
     await page.goto('/strategy');
     await advanced(page);
-    await page.locator('#lab-preset').selectOption({ label: 'Touch maker: baseline' });
+    await page.getByRole('radio', { name: 'Touch maker: baseline', exact: true }).check();
     await page.getByRole('tab', { name: /Order latency/ }).click();
     await page.getByLabel('Entry latency', { exact: true }).fill('5');
     await page.getByRole('tab', { name: /Fees/ }).click();
@@ -132,6 +135,8 @@ test.describe('keyed research journey', () => {
     await page.getByRole('tab', { name: /Seed/ }).click();
     await page.getByLabel('Seed', { exact: true }).and(page.locator('input')).fill(String(base));
     await page.getByTestId('lab-submit').click();
+    await expect(page.getByRole('region', { name: 'Next steps' })).toContainText(`stored run ${runId}`);
+    await page.getByTestId('lab-next-forensics').click();
     await expect(page).toHaveURL(new RegExp(`/forensics/${runId}`));
 
     // Reload: the key survives in this tab (sessionStorage) and research data stays readable.
