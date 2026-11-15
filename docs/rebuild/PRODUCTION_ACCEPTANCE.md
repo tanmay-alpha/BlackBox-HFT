@@ -38,3 +38,10 @@ To roll the frontend back, promote the previous Vercel production deployment. No
 
 - Keyed submission → result was verified locally (RESEARCH_JOURNEY.md, Playwright `research.spec.ts` in CI), not against production, to save free-tier budget.
 - Render cold start was not measured: the instance was warm.
+
+## Second release: UI polish (2026-11-15)
+
+Commit `a665991` (refined design tokens and shell; calmer Explore hero with a three-metric result strip).
+CI run 43693354372 all green; image `sha256:212495fa…c659cc1` deployed to Render (`live`); smoke 8/8
+PASS; `/status` reports `git_sha=a665991…`; Vercel production `blackbox-ju4q5fzqt…` Ready;
+`npm run test:prod` 7/7 PASS. Local Playwright 7/7, vitest 111/111, `tsc` clean.
