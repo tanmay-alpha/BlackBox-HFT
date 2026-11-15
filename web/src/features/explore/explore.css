@@ -431,6 +431,21 @@
   height: 100%;
 }
 
+.ex-chart-reset {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 4;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-0);
+  background: var(--bg-1, Canvas);
+  border: 1px solid var(--border, currentColor);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
 .ex-chart-cursor {
   position: absolute;
   top: 0;

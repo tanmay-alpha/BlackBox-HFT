@@ -196,7 +196,7 @@ export default function LatencyLabPage() {
   const comparisons = useAsync(async (signal): Promise<PairLookup | null> => {
     if (ids.length < 2) return null;
     const base = ids[0];
-    const list = await api.comparisons({ signal });
+    const list = await api.readableComparisons({ signal });
     const entries = await Promise.all(
       ids.slice(1).map(async (other): Promise<PairEntry> => {
         const id = createdIds[`${base}|${other}`] ?? list.items.find((c) => c.run_a === base && c.run_b === other)?.id;
@@ -399,11 +399,11 @@ export default function LatencyLabPage() {
           id="compare.set.main"
           orientation="vertical"
           panes={[
-            { id: 'top', label: 'Run set and experiment', defaultSize: '30%', minSize: '12%', content: top },
+            { id: 'top', label: 'Run set and experiment', defaultSize: '38%', minSize: '12%', content: top },
             {
               id: 'middle',
               label: 'Configuration and metrics',
-              defaultSize: '38%',
+              defaultSize: '34%',
               minSize: '12%',
               content: (
                 <SplitPane
@@ -430,7 +430,7 @@ export default function LatencyLabPage() {
             {
               id: 'bottom',
               label: 'Alignment and interpretation',
-              defaultSize: '32%',
+              defaultSize: '28%',
               minSize: '12%',
               content: <SplitPane id={demoId === 'gross_vs_net' ? 'compare.set.bottom3' : 'compare.set.bottom'} panes={bottom} />,
             },
@@ -523,6 +523,8 @@ function RunSetPanel({
     {
       id: 'assumptions',
       header: 'Execution assumptions',
+      width: 320,
+      className: () => 'cell-ellipsis',
       cell: (r) => {
         if (!r.run?.ok) return DASH;
         const text = assumptionsLabel(r.run.value.config);

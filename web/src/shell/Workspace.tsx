@@ -75,8 +75,8 @@ export function Workspace({ context, toolbar, layout = false, children, scroll =
         </label>
         {layout ? (
           <>
-            <ToolbarDivider />
-            <button type="button" onClick={resetLayout} title="Restore the default pane sizes of this workspace">
+            <ToolbarDivider className="ws-reset" />
+            <button type="button" className="ws-reset" onClick={resetLayout} title="Restore the default pane sizes of this workspace">
               Reset layout
             </button>
           </>

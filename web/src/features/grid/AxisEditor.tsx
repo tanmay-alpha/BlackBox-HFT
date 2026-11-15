@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 
 import type { RunDetail } from "../../api/model";
 import { baseEntryNs, baseResponseNs, type RunConfig } from "../../api/types";
-import { exchangeModelLabel, fractionToBps, latencyLabel, queueModelLabel } from "../../components/describe";
+import { exchangeModelLabel, fractionToBps, latencyLabel, queueModelLabel, strategyName } from "../../components/describe";
 import { fmtDurationExact } from "../../components/fmt";
 import { Term } from "../../components/Tooltip";
 import { BasisBadge, HashText } from "../../components/ui";
@@ -26,7 +26,7 @@ export function BaseSummary({ run }: { run: RunDetail }) {
       </dd>
       <dt>Strategy</dt>
       <dd>
-        {run.strategy_kind ?? 'strategy not reported'}, every {run.interval_ns === null ? 'interval not reported' : fmtDurationExact(run.interval_ns)}
+        {run.strategy_kind === null ? 'strategy not reported' : strategyName(run.strategy_kind)}, every {run.interval_ns === null ? 'interval not reported' : fmtDurationExact(run.interval_ns)}
       </dd>
       <dt>Dataset</dt>
       <dd>

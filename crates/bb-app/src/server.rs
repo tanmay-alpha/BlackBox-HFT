@@ -566,38 +566,39 @@ pub struct TimelineContext {
     pub orders: Vec<OrderRecord>,
 }
 
-pub fn timeline_context(run: &RunResult, w: TimelineWindow) -> TimelineContext {
-    let TimelineWindow {
-        t0, t1, run_end, ..
-    } = w;
-    let start = run.equity.partition_point(|s| s.ts < t0);
-    let end = run.equity.partition_point(|s| s.ts <= t1);
-    let equity = run.equity[start.saturating_sub(1)..end].to_vec();
-    let mut orders: Vec<_> = run
-        .orders
+/// Borrowed context lets capped API reads stop before cloning or encoding the whole window.
+pub fn timeline_equity(run: &RunResult, w: TimelineWindow) -> &[EquitySample] {
+    let start = run.equity.partition_point(|s| s.ts < w.t0);
+    let end = run.equity.partition_point(|s| s.ts <= w.t1);
+    &run.equity[start.saturating_sub(1)..end]
+}
+
+pub fn timeline_fills(run: &RunResult, w: TimelineWindow) -> impl Iterator<Item = &FillRecord> {
+    run.fills
         .iter()
-        .filter(|order| {
-            let last_ts = order.terminal_ts.unwrap_or_else(|| {
-                run.tape
-                    .get(order.last_seq as usize)
-                    .filter(|event| {
-                        event.seq == order.last_seq && event.order_id == Some(order.order_id)
-                    })
-                    .map_or(run_end, |event| event.ts)
-            });
-            order.decision_ts <= t1 && last_ts >= t0
-        })
-        .cloned()
-        .collect();
+        .filter(move |fill| (w.t0..=w.t1).contains(&fill.ts))
+}
+
+pub fn timeline_orders(run: &RunResult, w: TimelineWindow) -> impl Iterator<Item = &OrderRecord> {
+    run.orders.iter().filter(move |order| {
+        let last_ts = order.terminal_ts.unwrap_or_else(|| {
+            run.tape
+                .get(order.last_seq as usize)
+                .filter(|event| {
+                    event.seq == order.last_seq && event.order_id == Some(order.order_id)
+                })
+                .map_or(w.run_end, |event| event.ts)
+        });
+        order.decision_ts <= w.t1 && last_ts >= w.t0
+    })
+}
+
+pub fn timeline_context(run: &RunResult, w: TimelineWindow) -> TimelineContext {
+    let mut orders: Vec<_> = timeline_orders(run, w).cloned().collect();
     orders.sort_unstable_by_key(|order| order.order_id);
     TimelineContext {
-        fills: run
-            .fills
-            .iter()
-            .filter(|fill| (t0..=t1).contains(&fill.ts))
-            .cloned()
-            .collect(),
-        equity,
+        fills: timeline_fills(run, w).cloned().collect(),
+        equity: timeline_equity(run, w).to_vec(),
         orders,
     }
 }

@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom';
 
 import type { OrderDetail } from '../../api/model';
 import type { DecisionOutcome, InstrumentMeta, OrderPair, PairClass } from '../../api/types';
-import { EXCHANGE_MODEL_INFO, QUEUE_MODEL_INFO, STRATEGY_INFO, fractionToBps, latencyLabel } from '../../components/describe';
+import { EXCHANGE_MODEL_INFO, QUEUE_MODEL_INFO, STRATEGY_INFO, fractionToBps, latencyLabel, tifLabel } from '../../components/describe';
 import { DASH, fmtDuration, fmtDurationExact, fmtInt, fmtNum, fmtPrice, fmtQty, fmtSigned, humanizeNsText, words } from '../../components/fmt';
 import { BasisBadge, HashText, Notice, Spinner, type AsyncResult } from '../../components/ui';
 import { paths } from '../../shell/paths';
@@ -15,7 +15,7 @@ import { divergences, PNL_IDENTITY_TOLERANCE } from './story';
 import { EquityPanel } from './EquityPanel';
 import { PlainError } from './PlainError';
 import { Results } from './Results';
-import { fmtSec, pairClassText, pairSides, TIF_TEXT, type AnswerSummary, type Experiment, type Focus, type ScenarioKey } from './data';
+import { fmtSec, pairClassText, pairSides, type AnswerSummary, type Experiment, type Focus, type ScenarioKey } from './data';
 
 export const STEPS = [
   { n: 1, title: 'Result', hint: 'Fills, fees and P&L in both scenarios' },
@@ -158,7 +158,7 @@ function PairCard({ exp, pair, title, names, selected, onSelect }: { exp: Experi
       <h3 className="ex-h3">{title}</h3>
       <p>
         <strong>Order {pair.order_id}</strong>, decided at {fmtSec(pair.decision_ts, 3)}
-        {any ? `: ${any.side} ${fmtQty(any.qty, inst)} at ${fmtPrice(any.price_tick, inst)} (${TIF_TEXT[any.tif] ?? any.tif})` : ''}.
+        {any ? `: ${any.side} ${fmtQty(any.qty, inst)} at ${fmtPrice(any.price_tick, inst)} (${tifLabel(any.tif)})` : ''}.
       </p>
       <p className="ex-pair-class">{pairClassText(exp.story, pair.class)}</p>
       <dl className="ex-dl">

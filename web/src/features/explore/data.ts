@@ -266,13 +266,6 @@ export function differenceWords(field: string): string {
   return DIFFERENCE_WORDS[field] ?? words(field.replace(/_ts$/, ' time'));
 }
 
-export const TIF_TEXT: Record<string, string> = {
-  gtc: 'good till cancel',
-  gtx: 'post-only',
-  ioc: 'immediate or cancel',
-  fok: 'fill or kill',
-};
-
 /**
  * The stored comparison's order pairs, read page by page only as far as a view needs them.
  * The comparison stores the non-identical pairs in decision order (`Alignment.pairs`), so once the

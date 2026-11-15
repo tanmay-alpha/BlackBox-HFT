@@ -181,3 +181,20 @@ Details and rollback: [PRODUCTION_ACCEPTANCE.md](PRODUCTION_ACCEPTANCE.md).
 | Keyed submit → complete → compare | verified locally and in CI Playwright `research.spec.ts`; not exercised against production (budget) |
 | Public page API bytes per fresh visit | 236,675 B measured locally with the same API data; not remeasured on production |
 | Full test suite on the released commit | `cargo test --workspace` 458 passed / 0 failed; vitest 111/111; CI e2e Playwright green (run 43691546229) |
+
+## Phase 2 (2026-11-15)
+
+Earlier sections are the historical phase-1 record; test counts and SHAs there are not current.
+
+- Production verified 2026-11-15: API `git_sha=a665991` from image `sha256:212495fa…c659cc1`
+  (Render deploy `dep-dbsmm76k1f9s739ng650` live); Vercel built from `5b1ea92` (docs-only on top
+  of `a665991`); migrations through 0009; worker idle; no `BB_GIT_SHA` override.
+- Authenticated production journey PASSED (keyed submit exercised on production): job `01a1dea1`,
+  run `e2321a7eec3e23e1`, ~7.2 s on the worker — PRODUCTION_ACCEPTANCE.md, `prod-research-evidence.json`.
+- ITCH independent comparison vs `itch-book`: 0 differences over 9,766,139 messages
+  (EXPERIMENT_VALIDATION.md, `efd3694`).
+- Security dispositions: SECURITY_DISPOSITIONS.md (`ed64dd4`); remaining Open items are listed there.
+- Replay verification: REPLAY_VERIFICATION.md (`2e78f11`), byte-budgeted encoding fix; 12,000-tick
+  run, 60,382 events, 19 pages, p50/p95 55/421 ms, peak WS 86 MiB (local).
+- UI audit: UI_AUDIT.md, 21 ranked defects (`e8344ba`, `b31b0b2`).
+- Release of phase 2 (`phase2/ui`): **pending deploy** — SHA: _to be filled by lead_.

@@ -146,7 +146,7 @@ test('guided journey: answer from the API, first divergence, assumptions, forens
   const slowSide = s.comparison.run_a === s.fast.runId ? first!.b : first!.a;
   if (fastSide?.exch_arrival_ts != null) await expect(arrival).toContainText(sec(fastSide.exch_arrival_ts, 6));
   if (slowSide?.exch_arrival_ts != null) await expect(arrival).toContainText(sec(slowSide.exch_arrival_ts, 6));
-  await expect(page.locator('.ex-time')).toContainText(sec(first!.decision_ts, 6));
+  await expect(page.locator('.ex-time')).toContainText(sec(first!.decision_ts, 3));
   const bookAt = await page.locator('.ex-ladder .ex-num').first().innerText();
   expect(Number.parseFloat(bookAt)).toBeLessThanOrEqual(ns(first!.decision_ts) / 1e9);
 

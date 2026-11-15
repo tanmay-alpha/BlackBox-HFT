@@ -220,7 +220,7 @@ export function ErrorBox({ error, onRetry }: { error: unknown; onRetry?: () => v
       ) : null}
       {view.action ? <div className="error-box-action">{view.action}</div> : null}
       <div className="error-box-actions">
-        {onRetry ? (
+        {onRetry && view.state !== 'not_found' ? (
           <button type="button" onClick={onRetry}>
             Retry
           </button>

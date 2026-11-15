@@ -42,6 +42,8 @@ pub const DECISIONS: &[&str] = &[
     "A row whose message timestamp is below the previous row of its stock is emitted at that \
      previous timestamp (l2.timestamp_held_back), so the rows stay in exchange-time order; the \
      book itself follows file order.",
+    "A row with an overflowing epoch timestamp or a quantity above the exact f64 integer range \
+     is refused and reported (l2.invalid_value); no wrapped timestamp or rounded size is emitted.",
     "The displayed book excludes hidden and reserve interest, which ITCH does not publish.",
 ];
 
@@ -69,6 +71,7 @@ pub struct L2Normalizer {
     /// Stream index per locate.
     by_locate: Vec<Option<usize>>,
     streams: Vec<L2Stream>,
+    pub(crate) invalid_values: Finding,
 }
 
 impl L2Normalizer {
@@ -79,6 +82,7 @@ impl L2Normalizer {
             midnight_epoch_ns,
             by_locate: Vec::new(),
             streams: Vec::new(),
+            invalid_values: Finding::default(),
         }
     }
 
@@ -121,6 +125,24 @@ impl L2Normalizer {
                 continue;
             };
             let stream = &mut self.streams[*index];
+            let Some(ts) = i64::try_from(timestamp_ns)
+                .ok()
+                .and_then(|ts| self.midnight_epoch_ns.checked_add(ts))
+            else {
+                self.invalid_values.hit(|| {
+                    format!("locate {locate}: epoch timestamp overflows i64 at {timestamp_ns}")
+                });
+                continue;
+            };
+            let shares = match change {
+                Change::Level { shares, .. } => *shares,
+                Change::Print(p) => p.shares,
+            };
+            if shares > (1u64 << 53) - 1 {
+                self.invalid_values
+                    .hit(|| format!("locate {locate}: quantity {shares} exceeds 2^53-1"));
+                continue;
+            }
             match *change {
                 Change::Level {
                     side,
@@ -128,7 +150,7 @@ impl L2Normalizer {
                     shares,
                     ..
                 } => {
-                    let ts = stream.timestamp(self.midnight_epoch_ns, timestamp_ns);
+                    let ts = stream.timestamp(ts);
                     stream.events.push(make_event(
                         DEPTH_EVENT | side_flag(side) | EXCH_EVENT,
                         ts,
@@ -138,7 +160,7 @@ impl L2Normalizer {
                     ));
                     stream.depth_rows += 1;
                 }
-                Change::Print(p) => stream.print(self.midnight_epoch_ns, timestamp_ns, &p),
+                Change::Print(p) => stream.print(ts, &p),
             }
         }
     }
@@ -163,15 +185,12 @@ impl L2Normalizer {
 
 impl L2Stream {
     /// The row timestamp for a message: held at the previous row's when the message's is earlier.
-    fn timestamp(&mut self, midnight_epoch_ns: i64, timestamp_ns: u64) -> i64 {
-        // 48-bit values always fit an i64.
-        let ts = midnight_epoch_ns + timestamp_ns as i64;
+    fn timestamp(&mut self, ts: i64) -> i64 {
         match self.last_ts {
             Some(last) if ts < last => {
                 let symbol = &self.symbol;
-                self.held_back.hit(|| {
-                    format!("{symbol}: message at {timestamp_ns} ns emitted at {last} (exch_ts)")
-                });
+                self.held_back
+                    .hit(|| format!("{symbol}: message at {ts} ns emitted at {last} (exch_ts)"));
                 last
             }
             _ => {
@@ -181,7 +200,7 @@ impl L2Stream {
         }
     }
 
-    fn print(&mut self, midnight_epoch_ns: i64, timestamp_ns: u64, p: &Print) {
+    fn print(&mut self, ts: i64, p: &Print) {
         let side = match p.kind {
             PrintKind::Execution {
                 printable: false, ..
@@ -196,7 +215,7 @@ impl L2Stream {
             PrintKind::Execution { resting, .. } => side_flag(resting.opposite()),
             PrintKind::NonCross | PrintKind::Cross { .. } => 0,
         };
-        let ts = self.timestamp(midnight_epoch_ns, timestamp_ns);
+        let ts = self.timestamp(ts);
         self.events.push(make_event(
             TRADE_EVENT | side | EXCH_EVENT,
             ts,

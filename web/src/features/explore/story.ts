@@ -4,7 +4,7 @@
 // comparison between them. Nothing is simulated or recomputed in the browser; the only
 // arithmetic is the explicit P&L identity check in `pnlBreakdown`, which states its inputs.
 
-import { api } from '../../api/client';
+import { api, DEMO_WORKSPACE } from '../../api/client';
 import type { Comparison, Demo, OrderDetail, RunDetail, RunTimeline } from '../../api/model';
 import { fetchTimelineWindow } from '../terminal/timelinePaging';
 import type { MetricRow, OrderPair, ReplayWindow } from '../../api/types';
@@ -57,7 +57,9 @@ export async function loadLatencyStory(signal: AbortSignal): Promise<LatencyStor
   scenarios.sort((x, y) => x.entryNs + x.responseNs - (y.entryNs + y.responseNs));
   const [fast, slow] = scenarios;
 
-  const list = await api.comparisons({ signal });
+  // The latency demo's comparison lives in the public demo workspace; a keyed caller's default
+  // list holds only its own workspace, so ask for the demo workspace explicitly.
+  const list = await api.comparisons({ signal, workspace: DEMO_WORKSPACE });
   const stored = list.items.find(
     (c) => (c.run_a === fast.runId && c.run_b === slow.runId) || (c.run_a === slow.runId && c.run_b === fast.runId),
   );

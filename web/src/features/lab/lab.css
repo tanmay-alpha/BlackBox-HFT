@@ -88,3 +88,9 @@
   grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: var(--sp-1) var(--sp-6);
 }
+
+/* Advanced section tabs wrap onto a second row rather than hiding sections off the edge. */
+.lab-tabs > .tablist {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}

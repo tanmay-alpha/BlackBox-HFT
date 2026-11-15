@@ -114,6 +114,15 @@ describe('error envelope mapping', () => {
       expect.arrayContaining(['a must be > 0', 'b too large']),
     );
   });
+
+  it('tells the user what a 404 means instead of offering a pointless retry', () => {
+    const body = JSON.stringify(envelope('not_found', 'run not found', { resource: 'run' }));
+    const view = describeError(errorFromResponse(json(404, JSON.parse(body)), body, 'GET /api/v1/runs/x'));
+    expect(view.state).toBe('not_found');
+    expect(view.facts).toContain('resource: run');
+    expect(view.action).toMatch(/Check the id in the address/);
+    expect(view.action).toMatch(/retrying will not help/);
+  });
 });
 
 describe('cold start (WAKING) detection', () => {

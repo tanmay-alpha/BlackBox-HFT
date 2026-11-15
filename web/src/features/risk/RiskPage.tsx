@@ -12,12 +12,14 @@ import { api } from '../../api/client';
 import { isBucketed, type EquityBucket, type EquityPage, type Run } from '../../api/model';
 import type { EquitySample, Metrics } from '../../api/types';
 import { DataTable, type Column } from '../../components/DataTable';
+import { strategyName } from '../../components/describe';
 import { QuantileTable } from '../../components/data';
 import { DASH, fmtDuration, fmtInt, fmtNum, fmtPct, fmtPnl, fmtTicks } from '../../components/fmt';
 import { cssVar } from '../../components/theme';
 import { Empty, ErrorBox, Notice, Panel, Spinner, Stat, useAsync } from '../../components/ui';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
+import { RunContextLinks } from '../runs/RunContextLinks';
 import { lastPerSecond, TimeSeriesChart, type ChartSeries } from '../runs/TimeSeriesChart';
 import { ExecutionAnalytics, RiskAnalytics } from './AnalyticsPanels';
 import './risk.css';
@@ -42,7 +44,7 @@ function RunPicker() {
     () => [
       { id: 'run', header: 'Run', rowHeader: true, cell: (r) => <Link className="mono" to={paths.riskRun(r.run_id)}>{r.run_id}</Link>, raw: (r) => r.run_id },
       { id: 'label', header: 'Label', cell: (r) => r.label || <span className="dim">unlabelled</span>, sortValue: (r) => r.label ?? '' },
-      { id: 'strategy', header: 'Strategy', cell: (r) => <span className="mono">{r.strategy_kind} every {fmtDuration(r.interval_ns)}</span> },
+      { id: 'strategy', header: 'Strategy', cell: (r) => <span>{strategyName(r.strategy_kind)} every {fmtDuration(r.interval_ns)}</span> },
       { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.dataset.id} v{r.dataset.version}</span> },
       { id: 'net', header: 'Net P&L', unit: 'quote', numeric: true, cell: (r) => fmtPnl(r.metrics.net_pnl), sortValue: (r) => r.metrics.net_pnl },
       { id: 'dd', header: 'Max drawdown', unit: 'quote', numeric: true, cell: (r) => fmtNum(r.metrics.max_drawdown, 4), sortValue: (r) => r.metrics.max_drawdown },
@@ -204,9 +206,8 @@ function RunRisk({ runId }: { runId: string }) {
   const toolbar = (
     <>
       <span className="mono">{runId}</span>
-      {r ? <span className="note">{`${r.label || 'unlabelled'} \u00b7 ${r.strategy_kind} \u00b7 ${r.dataset.id} v${r.dataset.version}`}</span> : null}
-      <Link to={paths.run(runId)}>Forensics</Link>
-      <Link to={paths.report(runId)}>Report</Link>
+      {r ? <span className="note">{`${r.label || 'unlabelled'} \u00b7 ${strategyName(r.strategy_kind)} \u00b7 ${r.dataset.id} v${r.dataset.version}`}</span> : null}
+      <RunContextLinks runId={runId} omit={['risk']} />
       <Link to={paths.risk()}>Other run</Link>
     </>
   );

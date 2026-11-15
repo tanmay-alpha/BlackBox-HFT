@@ -59,7 +59,7 @@ export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, f
             Market replay{moment ? ` ${fmtSec(moment.window.t0, 3)} – ${fmtSec(moment.window.t1, 3)}` : ''}
           </h2>
           <span className="ex-time">
-            Replay time <span className="ex-num">{fmtSec(t, 6)}</span>
+            Replay time <span className="ex-num" title={`${Math.round(t)} ns`}>{fmtSec(t, 3)}</span>
           </span>
           {loading ? <Spinner label="Loading the market around this time" /> : null}
         </div>
@@ -109,7 +109,7 @@ export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, f
         <details className="ex-chart-note">
           <summary>How to read this replay</summary>
           <p className="ex-muted">
-            Drag or scroll to zoom. Click a marker to open its order; click anywhere else to move the replay time there. The book and trades are the
+            Drag or scroll to zoom; Reset zoom fits the whole window again. Click a marker to open its order; click anywhere else to move the replay time there. The book and trades are the
             recorded synthetic market; simulated orders never change it, so it is identical in both scenarios. Chart drawn with{' '}
             <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts</a>.
           </p>

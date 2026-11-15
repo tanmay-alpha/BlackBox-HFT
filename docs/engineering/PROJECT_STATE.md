@@ -4,12 +4,16 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Rebuild released (2026-11-15).** `main` = `d85f743` is live: the API reports `git_sha=d85f743`
-from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:1d35116c…`, Vercel serves the console built
-from `main`, smoke passed 8/8 and `npm run test:prod` passed 7/7. Evidence and rollback:
-[../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md). Review:
-[../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md). Later UI polish commits on
-`rebuild/explore` are released only when `/status` reports their SHA.
+**Production verified (2026-11-15); phase 2 merged on `phase2/ui`, release pending deploy.**
+Production: the API reports `git_sha=a665991` from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:212495fa…c659cc1`
+(Render deploy `dep-dbsmm76k1f9s739ng650` live), Vercel serves the console built from `5b1ea92`
+(docs-only on top of `a665991`), migrations through 0009, worker idle, no `BB_GIT_SHA` override.
+The authenticated production journey passed (job `01a1dea1`, run `e2321a7eec3e23e1`, ~7.2 s on the
+worker): [../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md) and
+`prod-research-evidence.json`. Earlier release records (`d85f743`, `1873f4d…`) are historical.
+Phase 2 (ITCH comparison, security dispositions, replay encoding fix, UI audit) is summarised in
+[../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) "Phase 2 (2026-11-15)"; its release SHA is
+pending deploy (lead records it here once `/status` reports it).
 
 Hosted system (the `BB_GIT_SHA` service env override was removed on 2026-11-15; the SHA now
 comes from the image):
@@ -77,9 +81,9 @@ acceptance criteria. All other rebuild agents ran on Opus 5.5.
 
 ## Open items
 
-Rebuild open items: [../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) §J (narrow split panes
-at 390 px, Explore Tab order on wide screens, raw `net_pnl` in sweep caveats) and the pending
-release (T12).
+Open items: [../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) "Phase 2 (2026-11-15)"
+(UI_AUDIT ranked defects, remaining Open items in SECURITY_DISPOSITIONS.md) and the phase-2
+release (pending deploy). Test counts: see CI, not this file.
 
 All ten ranked defects of `FINAL_AUDIT.md` §4 have source fixes on `main` (§7, with commits and
 tests). Source fixes do not establish deployment: re-check production after release

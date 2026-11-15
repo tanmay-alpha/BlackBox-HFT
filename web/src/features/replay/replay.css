@@ -258,6 +258,12 @@
   table-layout: auto;
 }
 
+/* The caption wraps to the pane instead of widening the table past it. */
+.ladder > caption {
+  white-space: normal;
+  text-align: left;
+}
+
 .ladder-side {
   width: 40px;
   font-family: var(--font-mono);

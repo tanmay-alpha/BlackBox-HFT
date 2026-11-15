@@ -10,6 +10,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, PAGE_LIMIT, saveDownload, saveText } from '../../api/client';
 import type { Report, Run, RunDetail } from '../../api/model';
 import { DataTable, type Column } from '../../components/DataTable';
+import { strategyName } from '../../components/describe';
 import { RouteTabs } from '../../components/Tabs';
 import { Markdown, MarkdownBlocks, sectionOf } from '../../components/Markdown';
 import { DASH, fmtBytes, fmtDuration, fmtNum, fmtPnl } from '../../components/fmt';
@@ -19,6 +20,7 @@ import { GatedButton } from '../../shell/access';
 import { useAnnounce } from '../../shell/announce';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
+import { RunContextLinks } from '../runs/RunContextLinks';
 import './reports.css';
 
 function ReportsTabs() {
@@ -52,7 +54,7 @@ function ReportsIndex() {
     () => [
       { id: 'run', header: 'Run', rowHeader: true, cell: (r) => <Link className="mono" to={paths.report(r.run_id)}>{r.run_id}</Link>, raw: (r) => r.run_id },
       { id: 'label', header: 'Label', cell: (r) => r.label || <span className="dim">unlabelled</span>, sortValue: (r) => r.label ?? '' },
-      { id: 'strategy', header: 'Strategy', cell: (r) => <span className="mono">{r.strategy_kind} every {fmtDuration(r.interval_ns)}</span> },
+      { id: 'strategy', header: 'Strategy', cell: (r) => <span>{strategyName(r.strategy_kind)} every {fmtDuration(r.interval_ns)}</span> },
       { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.dataset.id} v{r.dataset.version}</span> },
       { id: 'created', header: 'Created (UTC)', cell: (r) => <span className="mono">{fmtNsUtc(r.created_at_ns, 0)}</span>, sortValue: (r) => BigInt(r.created_at_ns) },
       { id: 'net', header: 'Net P&L', unit: 'quote', numeric: true, cell: (r) => fmtPnl(r.metrics.net_pnl), sortValue: (r) => r.metrics.net_pnl },
@@ -200,8 +202,7 @@ function RunReport({ runId }: { runId: string }) {
       >
         Save snapshot
       </GatedButton>
-      <Link to={paths.run(runId)}>Forensics</Link>
-      <Link to={paths.riskRun(runId)}>Risk</Link>
+      <RunContextLinks runId={runId} omit={['report']} />
     </>
   );
 

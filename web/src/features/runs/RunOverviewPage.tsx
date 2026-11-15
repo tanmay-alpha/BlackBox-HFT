@@ -9,7 +9,7 @@ import type {
 } from '../../api/types';
 import { JsonBlock, Pager, QuantileTable } from '../../components/data';
 import { DataTable, type Column } from '../../components/DataTable';
-import { ORDER_OUTCOMES, OUTCOME_MEANING } from '../../components/describe';
+import { ORDER_OUTCOMES, OUTCOME_MEANING, tifLabel } from '../../components/describe';
 import {
   DASH, fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtQty, fmtTicks, words,
 } from '../../components/fmt';
@@ -27,6 +27,7 @@ import { useAccess } from '../../shell/access';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { outcomeTone } from '../forensics/labels';
+import { RunContextLinks } from './RunContextLinks';
 import { lastPerSecond, TimeSeriesChart } from './TimeSeriesChart';
 import type { ChartSeries } from './TimeSeriesChart';
 import './runs.css';
@@ -82,6 +83,18 @@ function RunOverview({ runId }: { runId: string }) {
   const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
   const access = useAccess();
   const label = run.data?.label ?? '';
+  // Until the run is read (and when it is not found) its actions have nothing to act on.
+  const off = !run.data;
+  const action = (to: string, text: string, primary = false) =>
+    off ? (
+      <button type="button" className={primary ? 'btn btn-primary' : 'btn'} disabled>
+        {text}
+      </button>
+    ) : (
+      <Link className={primary ? 'btn btn-primary' : 'btn'} to={to}>
+        {text}
+      </Link>
+    );
   return (
     <Workspace
       context={label || runId}
@@ -93,11 +106,12 @@ function RunOverview({ runId }: { runId: string }) {
             <HashText hash={runId} />
             {label ? <span className="run-context-label">{label}</span> : null}
           </span>
-          <Link className="btn btn-primary" to={paths.bookRun(runId)}>Open in Order Book Replay</Link>
-          <DownloadButtons runId={runId} />
-          <Link className="btn" to={paths.comparePair(runId)}>Compare with…</Link>
-          <Link className="btn" to={paths.sweepForm(runId)}>Sweep from this run</Link>
-          <Link className="btn" to={paths.strategy({ from: runId })}>Open in Strategy Lab</Link>
+          {action(paths.bookRun(runId), 'Open in Order Book Replay', true)}
+          <DownloadButtons runId={runId} disabled={off} />
+          {action(paths.comparePair(runId), 'Compare with\u2026')}
+          <RunContextLinks runId={runId} omit={['overview', 'replay', 'compare']} disabled={off} />
+          {action(paths.sweepForm(runId), 'Sweep from this run')}
+          {action(paths.strategy({ from: runId }), 'Open in Strategy Lab')}
           <button type="button" onClick={run.reload} disabled={run.loading}>Reload run</button>
         </>
       }
@@ -117,7 +131,7 @@ function RunOverview({ runId }: { runId: string }) {
 }
 
 /** Report and bundle downloads: reads, allowed anonymously; the key travels as a header, never in a URL. */
-function DownloadButtons({ runId }: { runId: string }) {
+function DownloadButtons({ runId, disabled }: { runId: string; disabled: boolean }) {
   const [pending, setPending] = useState<'report' | 'export' | null>(null);
   const [error, setError] = useState<unknown>(null);
   const download = async (what: 'report' | 'export') => {
@@ -134,10 +148,10 @@ function DownloadButtons({ runId }: { runId: string }) {
   };
   return (
     <>
-      <button type="button" onClick={() => void download('report')} disabled={pending !== null}>
+      <button type="button" onClick={() => void download('report')} disabled={disabled || pending !== null}>
         {pending === 'report' ? 'Downloading report\u2026' : 'Download report (.md)'}
       </button>
-      <button type="button" onClick={() => void download('export')} disabled={pending !== null}>
+      <button type="button" onClick={() => void download('export')} disabled={disabled || pending !== null}>
         {pending === 'export' ? 'Downloading run\u2026' : 'Download run (.bbz)'}
       </button>
       {error !== null ? <ErrorBox error={error} /> : null}
@@ -448,7 +462,7 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
     { id: 'side', header: 'Side', cell: (o) => <SideBadge side={o.side} />, sortValue: (o) => o.side },
     { id: 'price', header: 'Price', unit: priceUnit, numeric: true, cell: (o) => price(o.price_tick, instrument), sortValue: (o) => o.price_tick },
     { id: 'qty', header: 'Qty', unit: qtyUnit, numeric: true, cell: (o) => quantity(o.qty, instrument), sortValue: (o) => o.qty },
-    { id: 'tif', header: 'TIF', cell: (o) => <span className="mono">{o.tif}</span>, sortValue: (o) => o.tif },
+    { id: 'tif', header: 'Time in force', cell: (o) => tifLabel(o.tif), sortValue: (o) => o.tif },
     { id: 'outcome', header: 'Outcome', cell: (o) => <Pill tone={outcomeTone(o.outcome)} title={OUTCOME_MEANING[o.outcome]}>{words(o.outcome)}</Pill>, sortValue: (o) => o.outcome },
     { id: 'filled', header: 'Filled', unit: qtyUnit, numeric: true, cell: (o) => quantity(o.filled_qty, instrument), sortValue: (o) => o.filled_qty },
     { id: 'qentry', header: 'Queue ahead at entry', unit: qtyUnit, term: 'queue_position', numeric: true, cell: (o) => quantity(o.queue_ahead_at_entry, instrument), sortValue: (o) => o.queue_ahead_at_entry },

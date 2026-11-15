@@ -175,7 +175,7 @@ struct ItchArgs {
     /// Epoch nanoseconds of the session's midnight (US Eastern), added to every ITCH timestamp.
     #[arg(long, default_value_t = 0)]
     midnight_epoch_ns: i64,
-    /// Write the manifest as JSON to this file.
+    /// Write the manifest as JSON to a new file (existing files are never overwritten).
     #[arg(long)]
     out: Option<PathBuf>,
     /// Only frame and decode, without any book: a quick scan, or a timing of the decoder alone.
@@ -619,7 +619,12 @@ fn cmd_itch_reconstruct(args: ItchArgs) -> Result<()> {
             );
         }
         if let Some(out) = &args.out {
-            std::fs::write(out, serde_json::to_vec_pretty(&m)?)
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(out)
+                .with_context(|| format!("creating {}", out.display()))?;
+            serde_json::to_writer_pretty(&mut file, &m)
                 .with_context(|| format!("writing {}", out.display()))?;
             println!("manifest  : {}", out.display());
         }
@@ -1602,4 +1607,51 @@ fn cmd_demo_seed(data_dir: &Path, platform: Option<String>, wait: bool) -> Resul
         rt.db.pool().close().await;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn itch_manifest_output_never_overwrites_input_or_existing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("source.itch");
+        // One hand-built System Event 'O', no licensed input data.
+        let bytes = [0, 12, b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O'];
+        std::fs::write(&input, bytes).unwrap();
+        let existing = dir.path().join("existing.json");
+        std::fs::write(&existing, b"keep me").unwrap();
+        let alias = dir.path().join("alias.itch");
+        std::fs::hard_link(&input, &alias).unwrap();
+        for out in [&input, &alias, &existing, dir.path()] {
+            assert!(
+                cmd_itch_reconstruct(ItchArgs {
+                    file: input.clone(),
+                    max_messages: None,
+                    symbols: Vec::new(),
+                    midnight_epoch_ns: 0,
+                    out: Some(out.to_path_buf()),
+                    decode_only: false,
+                })
+                .is_err()
+            );
+        }
+        assert_eq!(std::fs::read(&input).unwrap(), bytes);
+        assert_eq!(std::fs::read(&alias).unwrap(), bytes);
+        assert_eq!(std::fs::read(&existing).unwrap(), b"keep me");
+        let output = dir.path().join("new.json");
+        cmd_itch_reconstruct(ItchArgs {
+            file: input,
+            max_messages: None,
+            symbols: Vec::new(),
+            midnight_epoch_ns: 0,
+            out: Some(output.clone()),
+            decode_only: false,
+        })
+        .unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+        assert_eq!(manifest["frames"], 1);
+    }
 }

@@ -147,3 +147,20 @@
   overflow: auto;
   padding: var(--sp-2);
 }
+
+/* The loaded-window line on a phone: the span stays, the counts open on demand. */
+details.book-window > summary {
+  cursor: pointer;
+}
+
+@media (max-width: 599px) {
+  /* Arrow-only step buttons; their accessible names stay "Previous event" / "Next event". */
+  .term-step-label {
+    display: none;
+  }
+
+  .ws-toolbar .book-scrub {
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+}

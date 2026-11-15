@@ -610,11 +610,11 @@ function Seek({ t, end, stepNs, onCommit }: { t: number; end: number; stepNs: nu
         max={end}
         step={stepNs}
         value={Math.min(end, Math.max(0, shown))}
-        aria-valuetext={`${(shown / 1e9).toFixed(1)} seconds of ${(end / 1e9).toFixed(1)}`}
+        aria-valuetext={`${(shown / 1e9).toFixed(3)} seconds of ${(end / 1e9).toFixed(3)}`}
         onChange={(e) => setDraft(Number(e.target.value))}
       />
-      <output htmlFor="ex-seek" className="ex-num">
-        {(shown / 1e9).toFixed(1)} / {(end / 1e9).toFixed(1)} s
+      <output htmlFor="ex-seek" className="ex-num" title={`${Math.round(shown)} ns`}>
+        {(shown / 1e9).toFixed(3)} / {(end / 1e9).toFixed(3)} s
       </output>
     </div>
   );

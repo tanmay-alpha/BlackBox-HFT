@@ -4,6 +4,16 @@
 // a partial window is never shown as complete.
 
 import type { RunTimeline } from '../../api/model';
+import type { FlightEvent } from '../../api/types';
+import { lastEventAtOrBefore } from './EventLog';
+
+/** The first event after `t` (forward) or last before it (backward), on the sorted time axis. */
+export function findStep(events: FlightEvent[], t: number, dir: 1 | -1): FlightEvent | null {
+  let i = lastEventAtOrBefore(events, t);
+  if (dir === 1) return events[i + 1] ?? null;
+  while (i >= 0 && events[i].ts >= t) i -= 1;
+  return i >= 0 ? events[i] : null;
+}
 
 export interface TimelineWindowRange {
   t0: number;

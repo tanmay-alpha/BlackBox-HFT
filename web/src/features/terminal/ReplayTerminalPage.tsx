@@ -14,9 +14,10 @@ import type { DatasetManifest, FlightEvent, OrderDetail, OrderRecord, ReplayWind
 import type { RunTimeline } from '../../api/model';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
-import { assumptionsLabel, OUTCOME_MEANING, strategyLabel } from '../../components/describe';
+import { assumptionsLabel, OUTCOME_MEANING, strategyLabel, tifLabel } from '../../components/describe';
 import { DASH, fmtDuration, fmtInt, fmtMoney, fmtPnl, fmtPrice, fmtQty, words } from '../../components/fmt';
 import { digitsForUnit } from '../../components/ns';
+import { PaneTabs, usePhone } from '../../components/PaneTabs';
 import { SplitPane } from '../../components/SplitPane';
 import { Tabs } from '../../components/Tabs';
 import { Toolbar, ToolbarDivider } from '../../components/Toolbar';
@@ -45,11 +46,12 @@ import { TwoClockTimeline } from '../forensics/TwoClockTimeline';
 import { BookModeRun } from '../replay/BookMode';
 import { frameIndexAt, seriesIndexAt } from '../replay/heatmap';
 import { parseSeconds, secondsText } from '../replay/seconds';
-import { EventLog, lastEventAtOrBefore } from './EventLog';
+import { RunContextLinks } from '../runs/RunContextLinks';
+import { EventLog } from './EventLog';
 import { ordersRestingAt } from './overlay';
 import { TerminalHeatmap } from './TerminalHeatmap';
 import { TerminalLadder } from './TerminalLadder';
-import { fetchTimelineWindow } from './timelinePaging';
+import { fetchTimelineWindow, findStep } from './timelinePaging';
 import type { TimelineProgress } from './timelinePaging';
 import '../replay/replay.css';
 import './terminal.css';
@@ -91,6 +93,8 @@ interface Loaded {
 }
 
 type BottomTab = 'events' | 'orders' | 'provenance';
+/** Panes of the phone layout (below 600 px), one at a time. */
+type PhoneTab = 'book' | 'events' | 'order';
 
 function intParam(raw: string | null): number | null {
   if (raw === null || raw.trim() === '') return null;
@@ -102,14 +106,6 @@ function intParam(raw: string | null): number | null {
 function windowAt(t: number, lead: number, ds: DatasetManifest): Win {
   const t0 = Math.round(Math.max(ds.start, Math.min(t - lead, ds.end - WINDOW_NS)));
   return { t0, t1: Math.round(Math.min(ds.end, t0 + WINDOW_NS)) };
-}
-
-/** The first event after `t` (`dir` 1) or the last event before it (`dir` -1). */
-function findStep(events: FlightEvent[], t: number, dir: 1 | -1): FlightEvent | null {
-  let i = lastEventAtOrBefore(events, t);
-  if (dir === 1) return events[i + 1] ?? null;
-  while (i >= 0 && events[i].ts >= t) i -= 1;
-  return i >= 0 ? events[i] : null;
 }
 
 function RunLinks({ runId }: { runId: string }) {
@@ -128,9 +124,7 @@ function RunLinks({ runId }: { runId: string }) {
   };
   return (
     <>
-      <Link className="btn" to={paths.run(runId)}>
-        Run overview
-      </Link>
+      <RunContextLinks runId={runId} omit={['replay']} />
       <button type="button" onClick={() => void download()} disabled={pending}>
         {pending ? 'Downloading report\u2026' : 'Download report (.md)'}
       </button>
@@ -250,6 +244,8 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
   const jumpOrderRef = useRef<HTMLInputElement | null>(null);
   const [focus, setFocus] = useState<{ t: number; key: number } | null>(null);
   const [tab, setTab] = useState<BottomTab>('events');
+  const phone = usePhone();
+  const [phoneTab, setPhoneTab] = useState<PhoneTab>('book');
 
   // ----- window loading ------------------------------------------------------------------
   // No time or order requested: start at the run start, learned from a count-only timeline call
@@ -609,17 +605,8 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       ? `Loading ${loaded ? 'window' : 'the first window'}`
       : `Loading window events ${fmtInt(progress.loaded)} / ${fmtInt(progress.total)}`;
 
-  const toolbar = (
+  const speedControl = (
     <>
-      <button type="button" className="btn-primary" aria-pressed={playing} onClick={togglePlay} disabled={!loaded}>
-        {playing ? 'Pause' : 'Play'}
-      </button>
-      <button type="button" onClick={() => step(-1)} disabled={!loaded}>
-        {'\u2190'} Previous event
-      </button>
-      <button type="button" onClick={() => step(1)} disabled={!loaded}>
-        Next event {'\u2192'}
-      </button>
       <label className="book-field" htmlFor="term-speed">
         Speed
       </label>
@@ -631,27 +618,10 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
           </option>
         ))}
       </select>
-      <label htmlFor="term-scrub" className="visually-hidden">
-        Cursor position in the dataset
-      </label>
-      <input
-        id="term-scrub"
-        className="book-scrub"
-        type="range"
-        min={ds.start}
-        max={ds.end}
-        step={1_000_000}
-        value={cur}
-        onChange={(e) => {
-          setPlaying(false);
-          setCursor(Number(e.target.value));
-        }}
-      />
-      <span className="book-cursor" title="Exchange clock">
-        cursor <ClockText ns={cursor === null ? null : Math.round(cursor)} /> <span className="dim">exch</span>
-      </span>
-      {loading ? <Spinner label={loadingLabel} /> : null}
-      <ToolbarDivider />
+    </>
+  );
+  const jumpForms = (
+    <>
       <form className="row" onSubmit={submitJump} aria-label="Jump to time">
         <label className="book-field" htmlFor="term-jump">
           Jump to time <span className="unit">s after origin</span>
@@ -690,9 +660,65 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
           Go
         </button>
       </form>
-      <ToolbarDivider />
+    </>
+  );
+  const links = (
+    <>
       <BookModeRun datasetId={ds.id} query={marketQuery} />
       <RunLinks runId={runId} />
+    </>
+  );
+  const toolbar = (
+    <>
+      <button type="button" className="btn-primary" aria-pressed={playing} onClick={togglePlay} disabled={!loaded}>
+        {playing ? 'Pause' : 'Play'}
+      </button>
+      <button type="button" onClick={() => step(-1)} disabled={!loaded} aria-label="Previous event">
+        {'\u2190'}
+        <span className="term-step-label"> Previous event</span>
+      </button>
+      <button type="button" onClick={() => step(1)} disabled={!loaded} aria-label="Next event">
+        <span className="term-step-label">Next event </span>
+        {'\u2192'}
+      </button>
+      {phone ? null : speedControl}
+      <label htmlFor="term-scrub" className="visually-hidden">
+        Cursor position in the dataset
+      </label>
+      <input
+        id="term-scrub"
+        className="book-scrub"
+        type="range"
+        min={ds.start}
+        max={ds.end}
+        step={1_000_000}
+        value={cur}
+        onChange={(e) => {
+          setPlaying(false);
+          setCursor(Number(e.target.value));
+        }}
+      />
+      <span className="book-cursor" title="Exchange clock">
+        cursor <ClockText ns={cursor === null ? null : Math.round(cursor)} /> <span className="dim">exch</span>
+      </span>
+      {loading ? <Spinner label={loadingLabel} /> : null}
+      {phone ? (
+        <details className="ws-more">
+          <summary>Speed, jump and links</summary>
+          <div className="ws-more-body">
+            {speedControl}
+            {jumpForms}
+            {links}
+          </div>
+        </details>
+      ) : (
+        <>
+          <ToolbarDivider />
+          {jumpForms}
+          <ToolbarDivider />
+          {links}
+        </>
+      )}
     </>
   );
 
@@ -911,15 +937,32 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       </Tabs>
     );
 
+    const windowRest = (
+      <>
+        {fmtInt(tl.events_total)} tape events · {fmtInt(tl.fills.length)} simulated fills · {fmtInt(tl.orders.length)} orders alive ·{' '}
+        {fmtInt(rp.depth.length)} depth frames · {fmtInt(rp.trades.ts.length)} market trades · run span <ClockText ns={tl.run_start} />{' '}
+        {'\u2192'} <ClockText ns={tl.run_end} />
+      </>
+    );
+    const windowSpan = (
+      <>
+        window <ClockText ns={tl.t0} /> {'\u2192'} <ClockText ns={tl.t1} />
+        {cursorInWindow ? '' : ' · cursor outside the loaded window, fetching'}
+      </>
+    );
+    const selectedOrderPane = <SelectedOrder runId={runId} orderId={selectedOrder} detail={detail} onCursor={moveCursor} />;
     body = (
       <div className="book-body">
-        <p className="book-window">
-          window <ClockText ns={tl.t0} /> {'\u2192'} <ClockText ns={tl.t1} /> · {fmtInt(tl.events_total)} tape events ·{' '}
-          {fmtInt(tl.fills.length)} simulated fills · {fmtInt(tl.orders.length)} orders alive · {fmtInt(rp.depth.length)}{' '}
-          depth frames · {fmtInt(rp.trades.ts.length)} market trades · run span <ClockText ns={tl.run_start} /> {'\u2192'}{' '}
-          <ClockText ns={tl.run_end} />
-          {cursorInWindow ? '' : ' · cursor outside the loaded window, fetching'}
-        </p>
+        {phone ? (
+          <details className="book-window">
+            <summary>{windowSpan}</summary>
+            {windowRest}
+          </details>
+        ) : (
+          <p className="book-window">
+            {windowSpan} · {windowRest}
+          </p>
+        )}
         {notice ? (
           <p className="book-window" role="status">
             {notice}
@@ -937,6 +980,32 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
           <Notice tag="DOWNSAMPLED">Best bid/ask lines are downsampled to one entry per {fmtDuration(rp.step_ns)}.</Notice>
         ) : null}
         <div className="book-panes">
+          {phone ? (
+            <PaneTabs<PhoneTab>
+              label="Order Book Replay panes"
+              active={phoneTab}
+              onChange={setPhoneTab}
+              tabs={[
+                {
+                  id: 'book',
+                  label: 'Book',
+                  content: (
+                    <SplitPane
+                      id="book.run.phone"
+                      orientation="vertical"
+                      panes={[
+                        { id: 'heatmap', label: 'Book heatmap', stackHeight: 'max(300px, 58dvh)', content: heatmapPanel },
+                        { id: 'ladder', label: 'Depth at cursor', stackHeight: 'max(300px, 50dvh)', content: ladderPanel },
+                        { id: 'account', label: 'Account at cursor', stackHeight: 360, content: accountPanel },
+                      ]}
+                    />
+                  ),
+                },
+                { id: 'events', label: 'Events', count: fmtInt(filtered.length), content: tabs },
+                { id: 'order', label: selectedOrder === null ? 'Order' : `Order ${selectedOrder}`, content: selectedOrderPane },
+              ]}
+            />
+          ) : (
           <SplitPane
             id="book.run"
             orientation="vertical"
@@ -993,7 +1062,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
                         label: 'Selected order',
                         defaultSize: '38%',
                         minSize: 280,
-                        content: <SelectedOrder runId={runId} orderId={selectedOrder} detail={detail} onCursor={moveCursor} />,
+                        content: selectedOrderPane,
                       },
                     ]}
                   />
@@ -1001,6 +1070,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
               },
             ]}
           />
+          )}
         </div>
       </div>
     );
@@ -1043,7 +1113,7 @@ function OrderHead({ d }: { d: OrderDetail }) {
     <div className="row">
       <SideBadge side={d.order.side} />
       <span className="mono">
-        {fmtQty(d.order.qty, d.instrument)} @ {fmtPrice(d.order.price_tick, d.instrument)} · {d.order.tif} ·{' '}
+        {fmtQty(d.order.qty, d.instrument)} @ {fmtPrice(d.order.price_tick, d.instrument)} · {tifLabel(d.order.tif)} ·{' '}
         {d.order.ord_type}
       </span>
       <Badge kind={outcomeKind(d.order.outcome)} title={OUTCOME_MEANING[d.order.outcome]}>
