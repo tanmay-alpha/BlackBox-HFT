@@ -129,8 +129,8 @@ dependency (only `proptest` as a dev-dependency, already used by `bb-sim` and `b
   only; no code was copied.
 - Test fixtures are bytes built in `tests.rs` from the specification's layouts. No NASDAQ byte is
   in the repository.
-- This is not an exchange certification. Agreement with another reconstruction (for example a
-  vendor's L3 product) has not been measured.
+- This is not an exchange certification. The independent local comparison below measures
+  agreement with itch-book on the available sample prefix, not with a vendor's full-day L3 feed.
 
 ### Decoder
 
@@ -335,9 +335,9 @@ is reported as `itch.framing` (error) with stop reason `truncated`, as intended 
 
 ### Limitations
 
-- Not an exchange certification. Agreement with an independent L3 reconstruction (a vendor's
-  XNAS.ITCH product or itch-book run locally) has not been measured; zero quarantines and no
-  crossed book while trading are consistency evidence, not proof of correctness.
+- Not an exchange certification. The independent comparison below covers this prefix only;
+  agreement between two implementations is stronger than internal consistency, but cannot
+  rule out a shared interpretation error or certify exchange behavior.
 - Only a prefix of one day was run: 03:04 to 09:31 ET on 2019-12-30. No closing cross, broken
   trade or mid-day halt was in the input, so those paths are covered by fixtures only.
 - Throughput is one machine, one thread, warm cache, a shared machine; memory was not measured.
@@ -348,3 +348,151 @@ is reported as `itch.framing` (error) with stop reason `truncated`, as intended 
   MPID attribution is decoded but not kept in the book.
 - Crossed and locked books are judged per stock after each same-timestamp batch; a state that
   exists only inside one batch is not reported, by design.
+
+## ITCH independent comparison
+
+Measured 2026-11-15, locally only. **No BlackBox reconstruction defect found.** Built the
+independent C++ [itch-book](https://github.com/groovg/itch-book) implementation at
+`b502b002abf650760b79c010b3ae3a8f82896ae8` with MinGW GCC 16.2.0, C++23, Release.
+Its pinned fixed-decimal dependency (`a25e1580…`, archive SHA-256 verified by CMake) was the
+only download; no additional market data was downloaded. CMake's bundled TLS client had no
+trust anchors, so Python's verified HTTPS client fetched the pinned archive into CMake's
+cache; certificate verification was not disabled. No Python reconstruction fallback was needed.
+
+### Method and reproducibility
+
+Reused both files from the preceding local experiment: the exact first 5,000,000 messages
+(149,652,744 bytes, SHA-256 above), and the existing decompressed prefix (332,473,876 bytes).
+The second comparison extends through the opening cross: both readers consumed the same
+9,766,139 complete messages / 332,473,864 bytes and left the same 12-byte partial final frame.
+No input, per-event output, per-order state or derived stream is committed or uploaded.
+Local adapters and comparison evidence remain in `D:/bbwt-research/itch-validate/`:
+`compare.cpp`, `rust/`, `summarize.py`, `verify_cli.py`, and `aggregate-comparison.json`.
+
+The C++ adapter calls itch-book's decoder and `BookManager` unchanged; it does not implement
+its own order-maintenance logic. The Rust adapter calls BlackBox's decoder and `OrderBooks`,
+then independently runs `reconstruct_file` for the manifest. Both start empty at message 1,
+apply every complete message in file order, and select AAPL, MSFT and QQQ for BBO sampling.
+The comparison checks exact integer values, not float tolerances:
+
+- Counts of every message type and successful adds, cancellations, deletes, replaces and
+  executions; final live-order count and each implementation's rejection counters.
+- Every price/size BBO change for the three symbols, including message index and timestamp.
+- Every disseminated trade across **all** stocks: message index, timestamp, locate, source
+  type, resting side where known, integer price, shares, match number and cross type.
+- Every level's price, shares and order count for the three symbols after each millionth
+  message, and **all stocks'** complete aggregated depth at each input's end.
+- Crossed/locked episodes and total durations, judged after each stock's complete
+  same-timestamp batch, with Trading Action state forwarded to the reference manager.
+  Structural book invariants are checked at checkpoints/end.
+
+Windows C++ text output uses CRLF and Rust uses LF; comparison normalizes line endings only.
+All canonical record values and ordering must otherwise match exactly. `summarize.py`
+asserts zero unequal records. The CLI manifests are also compared with the corresponding
+`reconstruct_file` manifests, including decode-only counts and a gzip run capped at 5M.
+
+```text
+cmake -S D:/bbwt-research/itch-book -B D:/bbwt-research/itch-validate/build \
+  -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER=C:/Users/TANMAY/.blackbox/mingw64/bin/g++.exe \
+  -DCMAKE_MAKE_PROGRAM=C:/Users/TANMAY/.blackbox/mingw64/bin/mingw32-make.exe
+cmake --build D:/bbwt-research/itch-validate/build --target itch-replay
+g++ -std=c++23 -O3 -static -I../itch-book/include \
+  -Ibuild/_deps/fixed_decimal-src/cpp/include compare.cpp -o compare.exe
+cargo build --release --manifest-path D:/bbwt-research/itch-validate/rust/Cargo.toml \
+  --target-dir "D:/black box/target"
+compare.exe ../itch-data/12302019.first5M.raw reference5M.txt
+itch-independent-comparison.exe ../itch-data/12302019.first5M.raw \
+  blackbox5M.txt blackbox5M.manifest.json
+compare.exe ../itch-data/12302019.prefix.raw reference-prefix.txt
+itch-independent-comparison.exe ../itch-data/12302019.prefix.raw \
+  blackbox-prefix.txt blackbox-prefix.manifest.json
+python summarize.py
+cargo build --release -p bb-app --locked --target-dir "D:/black box/target"
+blackbox itch-reconstruct INPUT --symbol AAPL --symbol MSFT --symbol QQQ --out cli.json
+blackbox itch-reconstruct INPUT --decode-only
+blackbox itch-reconstruct ../itch-data/12302019.NASDAQ_ITCH50.gz.prefix-120MiB \
+  --max-messages 5000000 --symbol AAPL --symbol MSFT --symbol QQQ --out gzip5M.json
+python verify_cli.py "D:/black box/target/release/blackbox.exe"
+```
+
+Adapter commands run from the local validation directory; Cargo runs from the worktree to
+pick up its machine-local GNU toolchain/linker configuration. The harness executable is
+in `D:/black box/target/release/`. For the CLI commands, `INPUT` is either
+`../itch-data/12302019.first5M.raw` or `../itch-data/12302019.prefix.raw`. Compiler executables
+are in the MinGW directory above; the original reference executable needs that directory on
+Windows `PATH`. The comparison adapter is statically linked.
+
+### Aggregate results (BlackBox = reference)
+
+| Measure | First 5M | Whole available prefix |
+|---|---:|---:|
+| Complete messages | 5,000,000 | 9,766,139 |
+| Adds (A + F) | 2,106,674 | 4,421,019 |
+| Cancels (X) | 503,012 | 533,176 |
+| Deletes (D) | 1,861,525 | 2,744,774 |
+| Replaces (U) | 257,236 | 651,636 |
+| Executions (E + C) | 24,571 | 72,991 |
+| Disseminated execution prints (E + printable C) | 24,571 | 72,119 |
+| Non-cross prints (P) | 5,185 | 18,739 |
+| Cross prints (Q, including zero shares) | 0 | 8,906 |
+| Compared trade records, all stocks | 29,756 | 99,764 |
+| BBO changes, AAPL / MSFT / QQQ | 1,779 / 791 / 88,618 | 6,401 / 4,074 / 103,216 |
+| Compared level records (checkpoints + end) | 150,297 | 712,605 |
+| End-state levels, all stocks | 148,460 | 696,610 |
+| End-state live orders | 231,866 | 1,627,978 |
+| Invalid / unknown frames | 0 / 0 | 0 / 0 |
+| BlackBox quarantines; reference missing / duplicate / rejected / clamped | all 0 | all 0 |
+| Unequal canonical records | **0 of 271,258** | **0 of 926,080** |
+| Crossed / locked episodes | 2 / 0 | 6 / 1 |
+| Crossed duration, summed stock-nanoseconds | 7,356,160,509,518 | 8,780,225,713,695 |
+| Locked duration, summed stock-nanoseconds | 0 | 108,576,177,718 |
+| Crossed / locked entries while trading (`T`) | 0 / 0 | 0 / 0 |
+
+First-5M message counts match those listed above. Whole-prefix counts match independently
+for all 17 types: A 3,641,817; C 1,765; D 2,744,774; E 71,226; F 779,202; H 8,901;
+I 1,073,085; K 3; L 215,089; P 18,739; Q 8,906; R 8,906; S 3; U 651,636; V 1;
+X 533,176; Y 8,910. The first-5M checkpoint at 5M and end-state pass intentionally both
+include the selected symbols (929 duplicated level checks); the whole-prefix million-message
+checkpoints contribute 15,995 level checks before the final all-stock pass.
+
+### Differences investigated and classification
+
+- **Market phase, not a defect:** both reconstructions find the same 2 crossed episodes in
+  the first 5M and 6 crossed / 1 locked episodes through the opening. All begin under `H`
+  (halted), not continuous trading; no book is repaired or discarded.
+- **Reference reporting, not an order-book defect:** unmodified `itch-replay`'s count observer
+  lacks `on_trading_action`, so its printed type table omits H although its total includes
+  those messages. Its example book driver also omits Trading Action and trade callbacks.
+  The adapter explicitly counts every frame and forwards those callbacks. Its `crossed()`
+  predicate includes equality; the comparison separates strict crosses from locks.
+- **Protocol/output semantics, not lost trades:** the whole prefix has 872 non-printable C
+  executions. Both reduce displayed depth but exclude them from disseminated trade comparison.
+  All 8,906 Q messages are compared as raw prints, including 5,820 zero-share crosses.
+  BlackBox intentionally emits no L2 trade row for zero-share Q or non-printable C. P and Q
+  carry no inferred aggressor side; E/C reference resting side is opposite BlackBox L2 side.
+- **Intentionally incomplete input, not invalid complete messages:** the prefix ends 12 bytes
+  into a 38-byte frame. The reference leaves those bytes unconsumed; BlackBox reports
+  `itch.framing` / `truncated`. The first-5M file ends cleanly. Missing end-of-session markers
+  are expected for both prefixes, not reconstruction anomalies.
+- **BlackBox defects / reference reconstruction defects:** none observed after aligning the
+  reporting conventions above. No production code fix or new synthetic regression fixture
+  was necessary; existing CI-safe synthetic fixtures remain the regression coverage.
+
+This validates agreement on the available premarket/opening sample, not the rest of the day,
+closing crosses, broken trades (none present), hidden liquidity, arrival-time latency or
+exchange certification. End-state comparison covers all aggregated levels and live-order
+counts, not an exhaustive per-order identity/queue-priority comparison.
+
+### Acceptance checks
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy -p bb-data --all-targets --locked -- -D warnings`: passed.
+- `cargo test -p bb-data --locked`: **89 passed**, 0 failed; doc tests: 0.
+- `cargo build --release -p bb-app --locked`: passed; `verify_cli.py`: both raw manifests
+  exactly match the library, both decode-only count tables match, and gzip-at-5M differs
+  only in source/options/stop. The debug build initially could not replace the existing
+  running `blackbox.exe`; the release build avoided that file without stopping any service.
+
+Builds used the target directories specified above; bb-data clippy/tests used the isolated
+worktree's `target/`. No production requests, deployment changes or database access were needed.
