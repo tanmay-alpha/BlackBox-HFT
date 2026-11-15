@@ -14,7 +14,7 @@ import { relParts, type NsDigits, type NsInput } from './ns';
 
 export interface PanelProps {
   title: ReactNode;
-  /** Right-aligned header controls (24 px buttons, links). */
+  /** Right-aligned header controls. */
   actions?: ReactNode;
   children?: ReactNode;
   className?: string;
@@ -30,7 +30,7 @@ export interface PanelProps {
   collapsible?: boolean;
 }
 
-/** A titled region: 28 px header, optional caption, body on `--bg-1`. */
+/** A titled region with a quiet header, optional caption and body on `--bg-1`. */
 export function Panel({ title, actions, children, className, caption, basis, flush, fill, collapsible }: PanelProps) {
   const [collapsed, setCollapsed] = useState(false);
   const bodyId = useId();

@@ -155,20 +155,20 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
           className={`sb-seg sb-worker sb-${worker.tone === 'info' ? 'neutral' : worker.tone}`}
           tabIndex={0}
           data-testid="sb-worker"
-          title={`Worker and queue as reported by GET /api/v1/status: ${worker.text}, heartbeat ${worker.heartbeatAgeS === null ? 'not reported yet' : `${worker.heartbeatAgeS} s ago`} (expected every ${Math.round((s?.worker.heartbeat_interval_ms ?? 0) / 1000)} s; flagged as not responding after 3 missed).`}
+          title={`Worker: ${worker.label}; queued ${worker.queueDepth}; running ${worker.running}. Reported by GET /api/v1/status: ${worker.text}, heartbeat ${worker.heartbeatAgeS === null ? 'not reported yet' : `${worker.heartbeatAgeS} s ago`} (expected every ${Math.round((s?.worker.heartbeat_interval_ms ?? 0) / 1000)} s; flagged as not responding after 3 missed).`}
         >
           <span className="sb-dot" aria-hidden="true" />
-          Worker: {worker.label} {'\u00b7'} queued {worker.queueDepth} {'\u00b7'} running {worker.running}
+          <span className="sb-worker-text">Worker: {worker.label} {'\u00b7'} queued {worker.queueDepth} {'\u00b7'} running {worker.running}</span>
         </span>
       ) : null}
       {build ? (
         <button
           type="button"
           className="sb-seg sb-build"
-          title="Build: BlackBox version, git commit, API contract, simulation engine. Activate to copy."
+          title={`Build: ${build}. Activate to copy.`}
           onClick={() => void navigator.clipboard?.writeText(build).then(() => setCopied(true))}
         >
-          {copied ? 'copied' : build}
+          <span className="sb-build-text">{copied ? 'copied' : build}</span>
         </button>
       ) : null}
       <button

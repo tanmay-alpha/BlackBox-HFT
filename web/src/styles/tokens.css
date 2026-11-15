@@ -9,27 +9,27 @@
 :root {
   color-scheme: dark;
 
-  /* Surfaces: charcoal -> graphite. Lighter = closer to the user. */
-  --bg-0: #0E0F11;
-  --bg-1: #141518;
-  --bg-2: #1B1D21;
-  --bg-3: #23262B;
-  --bg-selected: #1A2636;
+  /* Soft charcoal surfaces; depth comes from spacing, not bright outlines. */
+  --bg-0: #111316;
+  --bg-1: #171A1E;
+  --bg-2: #1E2228;
+  --bg-3: #282E36;
+  --bg-selected: #202E40;
 
   /* Lines */
-  --border-subtle: #25282D;
-  --border: #30343A;
-  --border-strong: #454B53;
-  --border-control: #646B74;
+  --border-subtle: #262C33;
+  --border: #333B45;
+  --border-strong: #495563;
+  --border-control: #46515F;
 
   /* Text */
-  --fg-0: #E4E6E9;
-  --fg-1: #A9AFB7;
-  --fg-2: #868D96;
-  --fg-disabled: #5B6169;
+  --fg-0: #E8EDF2;
+  --fg-1: #AFB9C5;
+  --fg-2: #8996A6;
+  --fg-disabled: #66717F;
 
   /* Interaction */
-  --accent: #7FA7D9;
+  --accent: #93B7E4;
 
   /* Market semantics (default palette) */
   --bid: #3FB68B;
@@ -51,23 +51,23 @@
   --ok: #74BE87;
   --warn: #D8C25A;
   --error: #F2675C;
-  --info: #7FA7D9;
+  --info: var(--accent);
 
   /* Typography (§4.4). Fonts are self-hosted (CSP font-src 'self'). */
   --font-sans: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Mono', ui-monospace, Consolas, monospace;
   --text-2xs: 11px;
   --lh-2xs: 14px;
-  --text-xs: 11px;
-  --lh-xs: 16px;
-  --text-sm: 12px;
-  --lh-sm: 16px;
-  --text-md: 13px;
-  --lh-md: 18px;
-  --text-lg: 15px;
-  --lh-lg: 20px;
-  --text-xl: 18px;
-  --lh-xl: 24px;
+  --text-xs: 12px;
+  --lh-xs: 18px;
+  --text-sm: 14px;
+  --lh-sm: 20px;
+  --text-md: 15px;
+  --lh-md: 22px;
+  --text-lg: 18px;
+  --lh-lg: 26px;
+  --text-xl: 24px;
+  --lh-xl: 32px;
 
   /* 4 px grid (§4.5) */
   --sp-1: 4px;
@@ -78,24 +78,24 @@
   --sp-6: 24px;
   --sp-8: 32px;
 
-  --h-topbar: 36px;
-  --h-statusbar: 24px;
-  --w-rail: 48px;
-  --w-rail-open: 208px;
-  --h-panel-head: 28px;
-  --h-toolbar: 32px;
-  --h-tab: 28px;
-  --h-control: 24px;
-  --h-row: 24px;
-  --h-row-compact: 20px;
+  --h-topbar: 56px;
+  --h-statusbar: 32px;
+  --w-rail: 56px;
+  --w-rail-open: 224px;
+  --h-panel-head: 44px;
+  --h-toolbar: 48px;
+  --h-tab: 36px;
+  --h-control: 32px;
+  --h-row: 36px;
+  --h-row-compact: 28px;
   --w-inspector: 320px;
 
   --radius-0: 0;
-  --radius-1: 2px;
-  --radius-2: 3px;
+  --radius-1: 6px;
+  --radius-2: 8px;
 
-  --shadow-float: 0 4px 12px rgba(0, 0, 0, 0.45);
-  --scrim: rgba(0, 0, 0, 0.55);
+  --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.24);
+  --scrim: rgba(0, 0, 0, 0.6);
 
   --dur-fast: 120ms;
 }
@@ -114,7 +114,7 @@
 
 /* Density (setting, `bb.density.v1`). Rows stay on the 4 px grid. */
 :root[data-density='comfortable'] {
-  --h-row: 28px;
+  --h-row: 44px;
 }
 
 :root[data-density='compact'] {

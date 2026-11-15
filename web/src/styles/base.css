@@ -1,7 +1,7 @@
 /*
  * Base elements, utilities, controls, badges and static tables. Token values only (tokens.css).
- * Rules (§4.5): 4 px grid; radii 0 (docked) / 2 px (controls) / 3 px (floating); no gradients,
- * no glow, no translucency except the modal scrim; hover/focus change colour instantly.
+ * Rules: 4 px spacing grid; 6 px controls / 8 px cards; no gradients or glow.
+ * Hover and focus use the single interaction accent; market/evidence colours retain their meaning.
  */
 
 *,
@@ -30,6 +30,7 @@ body {
   line-height: var(--lh-sm);
   font-weight: 400;
   -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
 }
 
 h1,
@@ -43,8 +44,9 @@ h4 {
 }
 
 h1 {
-  font-size: var(--text-lg);
-  line-height: var(--lh-lg);
+  font-size: var(--text-xl);
+  line-height: var(--lh-xl);
+  letter-spacing: -0.025em;
 }
 
 p {
@@ -281,6 +283,12 @@ textarea:hover {
   border-color: var(--fg-2);
 }
 
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  border-color: var(--accent);
+}
+
 input[aria-invalid='true'],
 select[aria-invalid='true'],
 textarea[aria-invalid='true'] {
@@ -316,9 +324,9 @@ button,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
   min-height: var(--h-control);
-  padding: 0 var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
   border: 1px solid var(--border-control);
   border-radius: var(--radius-1);
   background: var(--bg-2);
@@ -328,11 +336,13 @@ button,
   white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
+  transition: background-color var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
 }
 
 button:hover,
 .btn:hover {
-  border-color: var(--fg-2);
+  border-color: var(--border-strong);
+  background: var(--bg-3);
   text-decoration: none;
 }
 
@@ -353,8 +363,9 @@ button:disabled {
 }
 
 .btn-primary {
-  background: var(--bg-3);
+  background: var(--bg-selected);
   border-color: var(--accent);
+  color: var(--accent);
 }
 
 .btn-danger {
@@ -380,9 +391,9 @@ button:disabled {
 }
 
 button[aria-pressed='true'] {
-  background: var(--bg-3);
+  background: var(--bg-selected);
   border-color: var(--accent);
-  color: var(--fg-0);
+  color: var(--accent);
 }
 
 .field {
@@ -467,11 +478,11 @@ details[open] > summary {
 .badge {
   display: inline-flex;
   align-items: center;
-  height: 16px;
-  padding: 0 var(--sp-1);
-  border: 1px solid var(--border-strong);
+  min-height: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-1);
-  background: transparent;
+  background: var(--bg-2);
   color: var(--fg-1);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
@@ -485,22 +496,22 @@ details[open] > summary {
 
 .badge-observed {
   color: var(--observed);
-  border: 1px solid var(--observed);
+  border: 1px solid color-mix(in srgb, var(--observed) 45%, var(--border-subtle));
 }
 
 .badge-modeled {
   color: var(--modeled);
-  border: 1px dashed var(--modeled);
+  border: 1px dashed color-mix(in srgb, var(--modeled) 45%, var(--border-subtle));
 }
 
 .badge-derived {
   color: var(--derived);
-  border: 3px double var(--derived);
+  border: 3px double color-mix(in srgb, var(--derived) 55%, var(--border-subtle));
 }
 
 .badge-unobservable {
   color: var(--unobservable);
-  border: 1px dotted var(--unobservable);
+  border: 1px dotted color-mix(in srgb, var(--unobservable) 55%, var(--border-subtle));
 }
 
 .badge-engine {
@@ -510,7 +521,7 @@ details[open] > summary {
 
 .badge-strategy {
   color: var(--accent);
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
 }
 
 .badge-recorder {
@@ -520,27 +531,27 @@ details[open] > summary {
 
 .badge-buy {
   color: var(--bid);
-  border-color: var(--bid);
+  border-color: color-mix(in srgb, var(--bid) 45%, var(--border-subtle));
 }
 
 .badge-sell {
   color: var(--ask);
-  border-color: var(--ask);
+  border-color: color-mix(in srgb, var(--ask) 45%, var(--border-subtle));
 }
 
 .badge-ok {
   color: var(--ok);
-  border-color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border-subtle));
 }
 
 .badge-warn {
   color: var(--warn);
-  border-color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border-subtle));
 }
 
 .badge-error {
   color: var(--error);
-  border-color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border-subtle));
 }
 
 .badge-neutral {
@@ -552,10 +563,10 @@ details[open] > summary {
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  height: 16px;
-  padding: 0 var(--sp-1);
-  border: 1px solid currentColor;
+  gap: 6px;
+  min-height: 22px;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, var(--border-subtle));
   border-radius: var(--radius-1);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
@@ -624,7 +635,7 @@ details[open] > summary {
 .stats {
   display: flex;
   overflow-x: auto;
-  border-bottom: 1px solid var(--border-subtle);
+  gap: var(--sp-4);
   background: var(--bg-1);
 }
 
@@ -632,10 +643,9 @@ details[open] > summary {
   display: flex;
   flex: 1 0 128px;
   flex-direction: column;
-  gap: 0;
+  gap: var(--sp-1);
   min-width: 0;
-  padding: var(--sp-2) var(--sp-3);
-  border-right: 1px solid var(--border-subtle);
+  padding: var(--sp-4);
 }
 
 .stat:last-child {
@@ -652,8 +662,9 @@ details[open] > summary {
   color: var(--fg-0);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums slashed-zero;
-  font-size: var(--text-lg);
-  line-height: var(--lh-lg);
+  font-size: var(--text-xl);
+  line-height: var(--lh-xl);
+  letter-spacing: -0.04em;
   overflow-wrap: anywhere;
 }
 
@@ -689,7 +700,7 @@ details[open] > summary {
 .table th,
 .table td {
   height: var(--h-row);
-  padding: 0 var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
   border-bottom: 1px solid var(--border-subtle);
   text-align: left;
   vertical-align: middle;
@@ -700,12 +711,11 @@ details[open] > summary {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--bg-2);
+  background: var(--bg-1);
   color: var(--fg-1);
   font-size: var(--text-xs);
   font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0;
 }
 
 .table tbody th {
@@ -744,7 +754,7 @@ details[open] > summary {
 .kv {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
-  gap: var(--sp-1) var(--sp-3);
+  gap: var(--sp-2) var(--sp-4);
   margin: 0;
   font-size: var(--text-sm);
 }
