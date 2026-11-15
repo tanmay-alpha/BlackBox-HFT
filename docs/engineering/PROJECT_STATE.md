@@ -4,14 +4,15 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Phase 2 released and verified (2026-11-15 10:47 UTC).** `main` = `96a3ccb`. The API reports
-`git_sha=96a3ccb` from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:565fc404…c2d86` (Render deploy
-`dep-dbsoram7bikc73c2i3j0` live). Vercel production is built from `main`, migrations run through 0009, the worker
-is idle and there is no `BB_GIT_SHA` override. Smoke passed 8/8, anonymous acceptance 7/7, and the authenticated
-journey passed (run `b0f713f6a8cb46af`, 7.9 s on the worker). Evidence and rollback (`sha256:212495fa…`, release
-`a665991`): [../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md). Phase-2 summary:
-[../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) "Phase 2 (2026-11-15)". Earlier release records
-(`a665991`, `d85f743`, `1873f4d…`) are historical.
+**Phase 3 released and verified (2026-11-15 13:23 UTC).** `main` = `b8105d4` (frontend-only product-experience
+release). The API reports `git_sha=b8105d4` from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:c41fd646…864c6b`
+(Render deploy `dep-dbsr463l550s7398h2i0` live). Vercel production is built from `main`, migrations run through 0009,
+the worker is idle and there is no `BB_GIT_SHA` override. Smoke passed 8/8, anonymous acceptance 7/7, and the
+authenticated journey through the new Strategy Lab passed (run `2bfae0fdd474731a`, result hash unchanged). Record,
+tests and rollback (`sha256:565fc404…`, release `96a3ccb`): [../rebuild/PHASE3_RECORD.md](../rebuild/PHASE3_RECORD.md).
+Earlier phases: [../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) and
+[../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md). Earlier release records (`96a3ccb`,
+`a665991`, `d85f743`, `1873f4d…`) are historical.
 
 Hosted system (the `BB_GIT_SHA` service env override was removed on 2026-11-15; the SHA now
 comes from the image):
