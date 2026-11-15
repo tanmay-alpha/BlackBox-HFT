@@ -163,6 +163,12 @@
   .risk-compare-links li {
     min-height: 40px;
   }
+
+  .risk-other {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
 }
 
 .risk-gaps {

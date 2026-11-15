@@ -133,20 +133,41 @@
   gap: var(--sp-1);
 }
 
+/* Page heading: one compact line above the window summary. */
+.term-title {
+  flex: none;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-2) 0;
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--lh-sm);
+  overflow-wrap: anywhere;
+}
+
 /* ----- best bid / ask strip ----------------------------------------------------------------- */
 
-/* Pinned to the top of the scrolling panel body (whose padding is --sp-4) while the ladder scrolls. */
+/* The strip stays above the ladder, which scrolls in its own box, so no ladder row hides behind it. */
+.panel.term-depth > .panel-body {
+  overflow: hidden;
+}
+
 .term-bbo {
-  position: sticky;
-  top: calc(-1 * var(--sp-4));
-  z-index: 2;
   display: grid;
   flex: none;
   grid-template-columns: 1fr 1fr;
   gap: var(--sp-2);
-  margin: calc(-1 * var(--sp-4)) 0 0;
-  padding: var(--sp-4) 0 var(--sp-2);
-  background: var(--bg-1);
+  margin: 0;
+}
+
+.term-ladder-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-height: 0;
+  overflow: auto;
 }
 
 .term-bbo-side {

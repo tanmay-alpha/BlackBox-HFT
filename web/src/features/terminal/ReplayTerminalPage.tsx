@@ -809,7 +809,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       </Panel>
     );
     const ladderPanel = (
-      <Panel title="Depth at cursor" basis="observed" fill>
+      <Panel title="Depth at cursor" basis="observed" fill className="term-depth">
         <dl className="term-bbo" aria-label="Best bid and ask at the cursor">
           <div className="term-bbo-side term-bbo-bid">
             <dt>Best bid</dt>
@@ -834,14 +834,16 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
             </dd>
           </div>
         </dl>
-        <TerminalLadder
-          frame={frame}
-          instrument={inst}
-          rows={LADDER_ROWS}
-          resting={resting}
-          selectedOrder={selectedOrder}
-          onSelectOrder={selectOrder}
-        />
+        <div className="term-ladder-scroll">
+          <TerminalLadder
+            frame={frame}
+            instrument={inst}
+            rows={LADDER_ROWS}
+            resting={resting}
+            selectedOrder={selectedOrder}
+            onSelectOrder={selectOrder}
+          />
+        </div>
       </Panel>
     );
     const accountPanel = (
@@ -978,6 +980,9 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
     const selectedOrderPane = <SelectedOrder runId={runId} orderId={selectedOrder} detail={detail} onCursor={moveCursor} />;
     body = (
       <div className="book-body">
+        <h1 className="term-title">
+          Order book replay <span className="dim">{'\u00b7'}</span> <span className="mono">{run.label ?? runId}</span>
+        </h1>
         {phone ? (
           <details className="book-window">
             <summary>{windowSpan}</summary>

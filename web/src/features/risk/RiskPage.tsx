@@ -356,7 +356,9 @@ function RunRisk({ runId }: { runId: string }) {
       <span className="mono">{runId}</span>
       {r ? <span className="note risk-identity">{`${r.label || 'unlabelled'} \u00b7 ${strategyName(r.strategy_kind)} \u00b7 ${r.dataset.id} v${r.dataset.version}`}</span> : null}
       <RunContextLinks runId={runId} omit={['risk']} />
-      <Link to={paths.risk()}>Other run</Link>
+      <Link to={paths.risk()} className="risk-other">
+        Other run
+      </Link>
     </>
   );
 

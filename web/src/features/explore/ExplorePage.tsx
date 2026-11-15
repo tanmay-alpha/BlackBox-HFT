@@ -214,12 +214,13 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
     const replay = replayRef.current;
     if (!s || !heading || !replay) return;
     heading.focus({ preventScroll: true });
-    // Scroll the page's own scroller only (never the document): keep as much of the replay in view
-    // as fits while the lifecycle heading and its first rows are visible.
+    // Scroll the page's own scroller only (never the document): keep the top of the replay chart
+    // (and its Reset view control) clear of the sticky bar while the lifecycle heading and its
+    // first line stay visible; on short screens the heading wins.
     const box = s.getBoundingClientRect();
     const top = (el: Element) => el.getBoundingClientRect().top - box.top + s.scrollTop;
     const bar = barRef.current && getComputedStyle(barRef.current).position === 'sticky' ? barRef.current.offsetHeight : 0;
-    const want = Math.max(top(replay) - bar - 8, top(heading) - s.clientHeight + 260);
+    const want = Math.max(top(replay) - bar - 8, top(heading) - s.clientHeight + 120);
     s.scrollTo({ top: Math.max(0, Math.min(want, top(heading) - bar - 8)) });
   }, [revealReq, scroller]);
 
@@ -306,13 +307,17 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
   };
 
   // ----- scroll position survives a visit to the forensics page and back -----
+  // The router's search, not window.location: a scroll event caused by clicking a link can be
+  // handled after the URL already moved to the next page.
+  const searchRef = useRef(location.search);
+  searchRef.current = location.search;
   useEffect(() => {
     const s = scroller.current;
     if (!s) return;
     let frame = 0;
     const save = () => {
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => sessionStorage.setItem(SCROLL_KEY, JSON.stringify({ search: window.location.search, top: s.scrollTop })));
+      frame = requestAnimationFrame(() => sessionStorage.setItem(SCROLL_KEY, JSON.stringify({ search: searchRef.current, top: s.scrollTop })));
     };
     s.addEventListener('scroll', save, { passive: true });
     return () => {

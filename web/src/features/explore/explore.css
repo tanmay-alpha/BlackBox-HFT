@@ -1049,6 +1049,24 @@
   text-decoration: underline;
 }
 
+/* Phones: order buttons, the time slider and the forensics links are 40 px touch targets. */
+@media (max-width: 599px) {
+  .ex .ex-linkbtn {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .ex-seek input[type='range'] {
+    height: 40px;
+  }
+
+  .ex-life-why a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+}
+
 .ex-tag {
   margin-left: 6px;
   padding: 0 6px;

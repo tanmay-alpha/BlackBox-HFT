@@ -550,6 +550,14 @@
   text-transform: inherit;
 }
 
+/* Phones: header sort buttons are 40 px touch targets. */
+@media (max-width: 599px) {
+  .dt-sort {
+    height: auto;
+    min-height: var(--h-touch);
+  }
+}
+
 .dt-sort:hover {
   color: var(--fg-0);
 }

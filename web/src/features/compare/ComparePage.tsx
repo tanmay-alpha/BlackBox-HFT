@@ -34,6 +34,7 @@ import {
 } from "../forensics/labels";
 import { CLASS_LABEL, CLASS_MEANING, EligibilityNotice, PAIR_CLASSES } from "./classes";
 import { EquityOverlay } from "./EquityOverlay";
+import { differenceWords } from "../explore/data";
 import "./compare.css";
 
 /** `GET /comparisons/{id}/pairs` page size (the contract's maximum). */
@@ -996,7 +997,12 @@ function FirstDivergence({
         The earliest non-identical pair in decision order. Every aligned pair before it is
         identical in both runs, timing, fees and recorded lifecycle included.{" "}
         {CLASS_MEANING[pair.class]}
-        {pair.differences.length > 0 ? ` Differs in: ${pair.differences.join(", ")}.` : ""}
+        {pair.differences.length > 0 ? (
+          <>
+            {" "}Differs in:{" "}
+            <span title={`Fields: ${pair.differences.join(", ")}`}>{pair.differences.map(differenceWords).join(", ")}</span>.
+          </>
+        ) : null}
       </p>
       <div className="cmp-outcomes">
         <OutcomeCard
@@ -1234,7 +1240,9 @@ function PairPages({
                 <td>
                   <span className={`cmp-class cmp-seg-${pair.class}`}>{CLASS_LABEL[pair.class]}</span>
                 </td>
-                <td className="mono small">{pair.differences.join(", ")}</td>
+                <td className="small" title={pair.differences.join(", ")}>
+                  {pair.differences.map(differenceWords).join(", ")}
+                </td>
                 <PairSide tag="A" runId={cmp.run_a} orderId={pair.order_id} outcome={pair.a} inst={instA} />
                 <PairSide tag="B" runId={cmp.run_b} orderId={pair.order_id} outcome={pair.b} inst={instB} />
               </tr>
