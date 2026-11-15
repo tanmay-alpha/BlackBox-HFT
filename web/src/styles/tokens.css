@@ -28,8 +28,12 @@
   --fg-2: #8996A6;
   --fg-disabled: #66717F;
 
-  /* Interaction */
+  /* Interaction: the single accent. Fills only on primary actions; elsewhere it is a line or text. */
   --accent: #93B7E4;
+  --accent-hover: #ABC8EC;
+  --on-accent: #0F1722;
+  --focus-ring: var(--accent);
+  --error-weak: #3B2526;
 
   /* Market semantics (default palette) */
   --bid: #3FB68B;
@@ -86,13 +90,19 @@
   --h-toolbar: 48px;
   --h-tab: 36px;
   --h-control: 32px;
+  /* Minimum touch target on phones and coarse pointers (WCAG 2.5.8 enhanced). */
+  --h-touch: 40px;
   --h-row: 36px;
   --h-row-compact: 28px;
   --w-inspector: 320px;
 
+  /* Radii: controls and badges use 1, panels/menus/dialogs use 2. Nothing rounder. */
   --radius-0: 0;
   --radius-1: 6px;
   --radius-2: 8px;
+
+  /* Uppercase labels (badges, pills, notice tags, section names) are Inter, never mono. */
+  --track-caps: 0.05em;
 
   --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.24);
   --scrim: rgba(0, 0, 0, 0.6);
@@ -119,6 +129,15 @@
 
 :root[data-density='compact'] {
   --h-row: var(--h-row-compact);
+}
+
+/* Phones and touch screens: every control, tab and the status bar grow to the 40 px touch target. */
+@media (max-width: 599px), (pointer: coarse) {
+  :root {
+    --h-control: var(--h-touch);
+    --h-tab: var(--h-touch);
+    --h-statusbar: var(--h-touch);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
