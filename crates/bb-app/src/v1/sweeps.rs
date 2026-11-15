@@ -442,16 +442,29 @@ pub async fn list_sweeps(
         .get("cursor")
         .map(|c| decode_cursor(c, &filters))
         .transpose()?;
-    let rows = state
-        .db
-        .sweeps(workspace.id, cursor.as_ref(), super::runs::peek(limit))
-        .await?;
+    let snapshot = state.snapshot.for_read(&state, &caller).await;
+    let rows = match &snapshot {
+        Some(snapshot) => snapshot.sweeps(cursor.as_ref(), super::runs::peek(limit) as usize),
+        None => {
+            state
+                .db
+                .sweeps(workspace.id, cursor.as_ref(), super::runs::peek(limit))
+                .await?
+        }
+    };
     let more = super::runs::has_more(rows.len(), limit);
     let rows = &rows[..rows.len().min(limit as usize)];
     let mut items = Vec::new();
     for r in rows {
-        let views = state.db.sweep_cell_views(r.id).await?;
-        items.push(resource(r, &views, false)?);
+        let views;
+        let cells = match &snapshot {
+            Some(snapshot) => snapshot.sweep_cells(r.id),
+            None => {
+                views = state.db.sweep_cell_views(r.id).await?;
+                &views
+            }
+        };
+        items.push(resource(r, cells, false)?);
     }
     let (items, cut) = bounded(&items, byte_cap(&state, &caller))?;
     let next = if (cut || more) && !items.is_empty() {

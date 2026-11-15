@@ -1,6 +1,6 @@
 //! The versioned demo snapshot (FINAL_AUDIT §4 item 6, SECURITY_REVIEW SEC-10): every row the
 //! anonymous list and catalogue routes read (`/runs`, `/experiments`, `/comparisons`, `/reports`,
-//! `/datasets`, `/presets`, `/demos`), loaded from Postgres once and answered from memory for
+//! `/sweeps`, `/datasets`, `/presets`, `/demos`), loaded from Postgres once and answered from memory for
 //! any query string. Filters, sorts, cursors and limits are evaluated here with the semantics of
 //! the keyed path's SQL, so varied anonymous queries cannot reach the database.
 //!
@@ -60,6 +60,8 @@ pub struct Snapshot {
     /// Intact comparisons and saved reports, newest first.
     comparisons: Vec<Comparison>,
     reports: Vec<ResearchReport>,
+    sweeps: Vec<bb_db::Sweep>,
+    sweep_cells: HashMap<Uuid, Vec<bb_db::SweepCellView>>,
     /// Rendered datasets in the database's id order.
     datasets: Vec<Dataset>,
     /// `GET /presets` and `GET /demos` by `dataset_id` (`None` = the default dataset).
@@ -258,6 +260,16 @@ async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
     // Changed rows are left out here as on the database path.
     comparisons.retain(comparisons::intact);
     saved.retain(reports::intact);
+    let sweeps = all_pages(
+        "sweeps",
+        |r: &bb_db::Sweep| by_row(r.created_at, r.id),
+        |c| async move { db.sweeps(demo.id, c.as_ref(), PAGE).await },
+    )
+    .await?;
+    let mut sweep_cells = HashMap::new();
+    for sweep in &sweeps {
+        sweep_cells.insert(sweep.id, db.sweep_cell_views(sweep.id).await?);
+    }
 
     let mut rows: Vec<bb_db::Dataset> = Vec::new();
     loop {
@@ -298,6 +310,8 @@ async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
         jobs,
         comparisons,
         reports: saved,
+        sweeps,
+        sweep_cells,
         datasets: rendered,
         presets,
         demos,
@@ -427,6 +441,20 @@ impl Snapshot {
             .take(count)
             .cloned()
             .collect()
+    }
+
+    /// Demo sweeps in the database's newest-first keyset order.
+    pub fn sweeps(&self, cursor: Option<&Cursor>, count: usize) -> Vec<bb_db::Sweep> {
+        self.sweeps
+            .iter()
+            .filter(|r| before_cursor(r.created_at, r.id, cursor))
+            .take(count)
+            .cloned()
+            .collect()
+    }
+
+    pub fn sweep_cells(&self, id: Uuid) -> &[bb_db::SweepCellView] {
+        self.sweep_cells.get(&id).map_or(&[], Vec::as_slice)
     }
 
     /// Rendered datasets after the id `after` (in the database's order), at most `count`.

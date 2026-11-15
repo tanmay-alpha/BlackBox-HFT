@@ -497,7 +497,7 @@ async fn blob_uploads_are_reserved_per_attempt_against_the_workspace_share() {
     assert_eq!(workspace_attempts(&server.db, ws).await, 3);
 
     // The share is spent: new work is refused at admission.
-    let (status, _, body) = server
+    let (status, headers, body) = server
         .post(
             "/api/v1/experiments",
             Some(&key),
@@ -506,6 +506,16 @@ async fn blob_uploads_are_reserved_per_attempt_against_the_workspace_share() {
         .await;
     assert_eq!(status, 429, "{body}");
     assert_eq!(body["error"]["details"]["scope"], "storage", "{body}");
+    let rows: Vec<(Option<uuid::Uuid>, Option<String>, Value)> = sqlx::query_as(
+        "SELECT api_key_id,request_id,detail FROM bb.audit_events WHERE action='storage.budget_exceeded' AND outcome='denied'",
+    )
+    .fetch_all(server.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, Some(key_id(&server.db, &key).await));
+    assert_eq!(rows[0].1, request_id(&headers));
+    assert_eq!(rows[0].2["scope"], "storage");
     // Another workspace still has its own share.
     store.fail_puts.store(0, Ordering::SeqCst);
     let (_, other) = workspace_key(&server.db, "beta", &[Scope::Run]).await;
@@ -579,6 +589,16 @@ async fn active_jobs_admit_five_units_and_a_sweep_counts_once() {
             assert_eq!(body["error"]["details"]["used"], 5);
         }
     }
+    let rows: Vec<(Option<uuid::Uuid>, Option<String>, Value)> = sqlx::query_as(
+        "SELECT api_key_id,request_id,detail FROM bb.audit_events WHERE action='quota.exceeded' AND outcome='denied'",
+    )
+    .fetch_all(server.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "one denial, no rows for accepted work");
+    assert_eq!(rows[0].0, Some(key_id(&server.db, &key).await));
+    assert!(rows[0].1.as_ref().is_some_and(|id| !id.is_empty()));
+    assert_eq!(rows[0].2["scope"], "active_jobs");
     server.stop().await;
     tdb.drop_db().await;
 }
@@ -895,6 +915,167 @@ async fn every_v1_mutation_writes_one_transactional_audit_row() {
     assert_eq!(
         revokes,
         vec![(Some(admin_id), request_id(&headers), Some(kid.to_string()))]
+    );
+    server.stop().await;
+    tdb.drop_db().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn saturated_inflight_and_trickled_body_are_bounded() {
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let tdb = db_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server::start(
+        &tdb,
+        dir.path(),
+        Options {
+            slots: 0,
+            tweak: Box::new(|cfg| cfg.max_in_flight = 1),
+            ..Options::default()
+        },
+    )
+    .await;
+    let permit = server.state.inflight.clone().acquire_owned().await.unwrap();
+    let started = Instant::now();
+    let (status, _, body) = server.get("/api/v1/status", None).await;
+    assert_eq!(status, 503, "{body}");
+    assert_eq!(body["error"]["details"]["reason"], "busy");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    drop(permit);
+
+    let (_, key) = workspace_key(&server.db, "slow-body", &[Scope::Run]).await;
+    let stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let (mut reader, mut writer) = stream.into_split();
+    let head = format!(
+        "POST /api/v1/experiments HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {key}\r\n\
+         Content-Type: application/json\r\nContent-Length: 1000\r\n\r\n{{",
+        server.addr
+    );
+    writer.write_all(head.as_bytes()).await.unwrap();
+    let trickle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if writer.write_all(b" ").await.is_err() {
+                break;
+            }
+        }
+    });
+    let mut response = [0; 1024];
+    let n = tokio::time::timeout(Duration::from_secs(12), reader.read(&mut response))
+        .await
+        .expect("the handler deadline also bounds body consumption")
+        .unwrap();
+    trickle.abort();
+    assert!(
+        String::from_utf8_lossy(&response[..n]).starts_with("HTTP/1.1 503"),
+        "{}",
+        String::from_utf8_lossy(&response[..n])
+    );
+    assert_eq!(server.get("/api/v1/status", None).await.0, 200);
+    server.stop().await;
+    tdb.drop_db().await;
+}
+
+#[tokio::test]
+async fn hosted_dataset_registration_refuses_recorded_and_oversized_imports() {
+    let tdb = db_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    let db = tdb.pool().await;
+    let manifest = register_dataset(&db, dir.path(), 1).await;
+    let mut recorded = manifest.clone();
+    recorded.id = "recorded-denied".into();
+    recorded.kind = bb_core::dataset::DatasetKind::Recorded;
+    let mut oversized = manifest;
+    oversized.id = "oversized-denied".into();
+    oversized.counts.rows = 500_001;
+    for (manifest, reason) in [
+        (&recorded, "source is not hostable"),
+        (&oversized, "hosted dataset exceeds the 500000-row limit"),
+    ] {
+        let err = bb_app::registry::register(&db, manifest, "fs", true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(reason), "{err}");
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM bb.datasets WHERE id=$1)")
+                .bind(&manifest.id)
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert!(!exists, "denial must precede dataset insertion");
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "SELECT detail FROM bb.audit_events WHERE action='dataset.create' AND outcome='denied' AND target_id=$1",
+        )
+        .bind(&manifest.id)
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(rows, vec![json!({"actor": "cli", "reason": reason})]);
+    }
+    // No hosted upload/import route exists: creation is operator-side only.
+    let doc: Value = serde_json::from_str(&bb_app::v1::OPENAPI_JSON).unwrap();
+    for (path, methods) in doc["paths"].as_object().unwrap() {
+        if path.starts_with("/api/v1/datasets") {
+            assert!(methods.get("post").is_none(), "{path}");
+        }
+    }
+    db.pool().close().await;
+    tdb.drop_db().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn anonymous_sweep_lists_use_the_snapshot_for_varied_queries_and_cursors() {
+    let tdb = db_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server::start(
+        &tdb,
+        dir.path(),
+        Options {
+            slots: 0,
+            ..Options::default()
+        },
+    )
+    .await;
+    let manifest = register_dataset(&server.db, dir.path(), 1).await;
+    let (_, admin) = workspace_key(&server.db, "demo", &[Scope::Admin]).await;
+    for seed in [101, 201] {
+        let (status, _, body) = server
+            .post(
+                "/api/v1/sweeps?workspace=demo",
+                Some(&admin),
+                &json!({"spec": {
+                    "base": config_json(&manifest, 100, seed),
+                    "design": {"type": "seeds", "count": 2}
+                }}),
+            )
+            .await;
+        assert_eq!(status, 202, "{body}");
+    }
+    server.state.snapshot.get(&server.state).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let (status, _, first) = server.get("/api/v1/sweeps?limit=1", None).await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(items(&first).len(), 1);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let (_, _, keyed) = server.get("/api/v1/sweeps?limit=1", Some(&admin)).await;
+    assert_eq!(first, keyed);
+    let before = bb_app::metrics::Metrics::get(&server.metrics.db_acquires_total);
+    for limit in 1..=100 {
+        let (status, _, page) = server
+            .get(
+                &format!("/api/v1/sweeps?limit={limit}&cursor={cursor}&ignored={limit}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, 200, "{page}");
+        assert_eq!(items(&page).len(), 1);
+        assert_ne!(items(&page)[0]["id"], items(&first)[0]["id"]);
+    }
+    assert_eq!(
+        bb_app::metrics::Metrics::get(&server.metrics.db_acquires_total),
+        before
     );
     server.stop().await;
     tdb.drop_db().await;

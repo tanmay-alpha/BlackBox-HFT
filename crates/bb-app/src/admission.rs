@@ -191,6 +191,32 @@ pub async fn quota_details(
         .as_str()
         .unwrap_or_default()
         .to_string();
+    // The rejected transaction has rolled back; record the keyed denial separately. There
+    // is no successful mutation to commit with it, and anonymous requests never reach here.
+    if let Some(key) = key {
+        let request_id = crate::v1::error::request_id();
+        let detail = serde_json::json!({ "scope": scope });
+        if let Err(error) = db
+            .audit(bb_db::NewAuditEvent {
+                workspace: Some(workspace.id),
+                key: Some(key),
+                action: if scope == "storage" {
+                    "storage.budget_exceeded"
+                } else {
+                    "quota.exceeded"
+                },
+                outcome: "denied",
+                target_type: Some("workspace"),
+                target_id: Some(&workspace.slug),
+                request_id: Some(&request_id),
+                client_ip: None,
+                detail: &detail,
+            })
+            .await
+        {
+            return error.into();
+        }
+    }
     let Ok(used) = db.quota_usage(workspace.id, key).await else {
         return err;
     };

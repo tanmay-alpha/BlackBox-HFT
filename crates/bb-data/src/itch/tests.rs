@@ -841,6 +841,29 @@ fn out_of_order_timestamp_is_reported_and_held_back_in_level2_rows() {
 }
 
 #[test]
+fn l2_refuses_overflowing_epoch_timestamps_and_inexact_quantities() {
+    let mut messages = preamble();
+    messages.push(add(T0, 1, b'B', 100, P10));
+    let bytes = file(&messages);
+    let mut opts = options();
+    opts.midnight_epoch_ns = i64::MAX - T0 as i64;
+    let boundary = reconstruct_bytes("boundary", &bytes, opts.clone());
+    assert_eq!(rows(&boundary)[0].exch_ts, i64::MAX);
+    assert!(check(&boundary.manifest, "l2.invalid_value").passed);
+    opts.midnight_epoch_ns += 1;
+    let overflow = reconstruct_bytes("overflow", &bytes, opts);
+    assert!(rows(&overflow).is_empty());
+    assert_eq!(check(&overflow.manifest, "l2.invalid_value").count, 1);
+
+    let oversized = run(&[cross(T0, (1u64 << 53) + 1, P10, 1, b'O')]);
+    assert!(rows(&oversized).is_empty());
+    assert_eq!(check(&oversized.manifest, "l2.invalid_value").count, 1);
+    let exact = run(&[cross(T0, (1u64 << 53) - 1, P10, 1, b'O')]);
+    assert_eq!(rows(&exact)[0].qty, ((1u64 << 53) - 1) as f64);
+    assert!(check(&exact.manifest, "l2.invalid_value").passed);
+}
+
+#[test]
 fn cross_trade_is_a_print_not_a_book_change() {
     let r = run(&[
         add(T0, 1, b'B', 100, P10 + 200),

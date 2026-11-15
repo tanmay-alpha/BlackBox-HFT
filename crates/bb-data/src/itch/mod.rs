@@ -617,6 +617,15 @@ impl Reconstructor {
                     .to_string(),
             ),
             check(
+                "l2.invalid_value",
+                "Level-2 values that cannot be represented exactly",
+                Severity::Error,
+                &self.l2.invalid_values,
+                "Rows with overflowing epoch timestamps or quantities above 2^53-1 are \
+                 refused; the L3 book still follows the integer-valued source."
+                    .to_string(),
+            ),
+            check(
                 "l2.timestamp_held_back",
                 "Level-2 rows held at an earlier row's timestamp",
                 Severity::Warn,
