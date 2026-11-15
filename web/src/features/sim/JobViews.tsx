@@ -14,6 +14,8 @@ import { useAnnounce } from '../../shell/announce';
 import { paths } from '../../shell/paths';
 import { ageSeconds, heartbeatStale, isTerminal, STATE_NOTE, STATE_TONE } from './jobs';
 
+import './sim.css';
+
 /** `47 s`, `1 min 12 s`, `2 h 3 min`. */
 export function fmtSeconds(s: number | null): string {
   if (s === null) return DASH;

@@ -9,7 +9,8 @@ import type {
   OrderDetail,
   Question,
 } from "../../api/types";
-import { exchangeModelLabel, latencyLabel, queueModelLabel } from "../../components/describe";
+import { exchangeModelLabel, latencyLabel, queueModelLabel, tifLabel } from "../../components/describe";
+import { PaneTabs, usePhone } from "../../components/PaneTabs";
 import { SplitPane } from "../../components/SplitPane";
 import { Tabs } from "../../components/Tabs";
 import { Term } from "../../components/Tooltip";
@@ -34,6 +35,7 @@ import { ClockText, EvidenceLegend } from "./evidence";
 import { eventFields, eventTitle } from "./eventFormat";
 import {
   OUTCOME_MEANING,
+  VERDICT_TEXT,
   fmtSince,
   outcomeTone,
   queueModelMeaning,
@@ -42,6 +44,7 @@ import {
 import { findNeighbours } from "./neighbours";
 import type { Neighbours } from "./neighbours";
 import { DecisionContext, EventList, ExplanationSteps, FillsTable, LatencyTable } from "./panels";
+import { RunContextLinks } from "../runs/RunContextLinks";
 import { QueueChart } from "./QueueChart";
 import { TwoClockTimeline } from "./TwoClockTimeline";
 import type { AxisMode } from "./timeline";
@@ -54,6 +57,8 @@ const QUESTION_TEXT: Record<Question, string> = {
 };
 
 type BottomTab = "explanation" | "context" | "latency" | "fills" | "events";
+/** Panes of the phone layout (below 600 px), one at a time. */
+type PhoneTab = "order" | "timeline" | "evidence";
 
 export default function OrderForensicsPage() {
   const { runId = "", orderId = "" } = useParams();
@@ -108,6 +113,7 @@ function OrderForensics({ runId, orderId }: { runId: string; orderId: number }) 
             >
               Open in Order Book Replay
             </Link>
+            <RunContextLinks runId={runId} omit={["overview", "replay"]} />
           </>
         }
       >
@@ -228,7 +234,7 @@ function OrderContext({
             {fmtQty(order.qty, instrument)} @ {fmtPrice(order.price_tick, instrument)}
           </span>
           <span className="mono dim">
-            {order.tif} {order.ord_type}
+            {tifLabel(order.tif)} {order.ord_type}
           </span>
         </div>
         <div className="row">
@@ -241,7 +247,7 @@ function OrderContext({
         <h3 className="fx-question">{QUESTION_TEXT[explanation.question]}</h3>
         <p className="fx-headline">{explanation.headline}</p>
         <p className="note">
-          Verdict <code className="mono">{explanation.verdict}</code>. Rule-based: assembled
+          Verdict: <span title={explanation.verdict}>{VERDICT_TEXT[explanation.verdict]}</span>. Rule-based: assembled
           deterministically from the tape events below. This order was simulated on historical
           replay; it was never sent to an exchange and did not affect the historical prices.
         </p>
@@ -382,6 +388,8 @@ function OrderView({
   const [activeStep, setActiveStep] = useState<number | null>(null);
   const [tab, setTab] = useState<BottomTab>("explanation");
   const digits = useContext(TimeDigitsContext);
+  const phone = usePhone();
+  const [phoneTab, setPhoneTab] = useState<PhoneTab>("order");
 
   const citedSeqs = useMemo<ReadonlySet<number>>(() => {
     const step = activeStep === null ? undefined : explanation.steps[activeStep];
@@ -557,6 +565,35 @@ function OrderView({
     </Tabs>
   );
 
+  const context = <OrderContext detail={detail} execution={execution} runError={runError} />;
+  if (phone) {
+    return (
+      <PaneTabs<PhoneTab>
+        label="Order forensics panes"
+        active={phoneTab}
+        onChange={setPhoneTab}
+        tabs={[
+          { id: "order", label: "Order", content: context },
+          {
+            id: "timeline",
+            label: "Timeline",
+            content: (
+              <SplitPane
+                id="forensics.order.phone"
+                orientation="vertical"
+                panes={[
+                  { id: "timeline", label: "Two-clock timeline", stackHeight: "max(320px, 60dvh)", content: timeline },
+                  { id: "queue", label: "Modeled queue position", stackHeight: "max(300px, 50dvh)", content: queue },
+                ]}
+              />
+            ),
+          },
+          { id: "evidence", label: "Evidence", count: explanation.steps.length, content: bottom },
+        ]}
+      />
+    );
+  }
+
   return (
     <SplitPane
       id="forensics.order"
@@ -577,9 +614,7 @@ function OrderView({
                   defaultSize: "30%",
                   minSize: "18%",
                   collapsible: true,
-                  content: (
-                    <OrderContext detail={detail} execution={execution} runError={runError} />
-                  ),
+                  content: context,
                 },
                 {
                   id: "charts",

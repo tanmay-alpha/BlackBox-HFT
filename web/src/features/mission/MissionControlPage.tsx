@@ -11,6 +11,7 @@ import { api } from '../../api/client';
 import type { DatasetSummary, Demo, Job, Run } from '../../api/model';
 import { CONTRACT_VERSION } from '../../api/types';
 import { DataTable, type Column } from '../../components/DataTable';
+import { strategyName } from '../../components/describe';
 import { DASH, fmtDuration, fmtInt, fmtPnl } from '../../components/fmt';
 import { fmtNsUtc } from '../../components/ns';
 import { SplitPane } from '../../components/SplitPane';
@@ -231,7 +232,7 @@ const RUN_COLUMNS: Column<Run>[] = [
     sortValue: (r) => r.label ?? '',
   },
   { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.dataset.id}</span>, sortValue: (r) => r.dataset.id },
-  { id: 'strategy', header: 'Strategy', cell: (r) => <span className="mono">{r.strategy_kind} every {fmtDuration(r.interval_ns)}</span> },
+  { id: 'strategy', header: 'Strategy', cell: (r) => <span>{strategyName(r.strategy_kind)} every {fmtDuration(r.interval_ns)}</span> },
   { id: 'orders', header: 'Orders', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.orders), sortValue: (r) => r.counts.orders },
   { id: 'fills', header: 'Fills', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.fills), sortValue: (r) => r.counts.fills },
   {

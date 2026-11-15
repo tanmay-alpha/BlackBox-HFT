@@ -3,6 +3,7 @@
 // (components/ns.ts). Nothing is synthesized, cached or retried here. Every method takes an
 // optional `AbortSignal` so a superseded view cancels its request.
 
+import { getApiKey } from './auth';
 import {
   collectAll,
   request,
@@ -39,6 +40,9 @@ export interface Opts {
 type Cursor = { cursor?: string | null; limit?: number };
 
 const enc = encodeURIComponent;
+
+/** Slug of the public demo workspace (migration 0005); any caller may list it with `workspace=demo`. */
+export const DEMO_WORKSPACE = 'demo';
 
 /** Relative ns query values travel as decimal strings. */
 const nsQ = (v: number | string | null | undefined) => (v === null || v === undefined ? undefined : toWire.ns(v));
@@ -188,6 +192,22 @@ export const api = {
       maxItems: LIST_CAP,
       signal: o.signal,
     }),
+  /**
+   * Every stored comparison the caller can open: its own workspace's, plus, for a keyed caller
+   * (whose default list holds only its own workspace), the public demo's curated ones. Used to
+   * find the comparison of two runs, which may live in either workspace.
+   */
+  async readableComparisons(o: Opts = {}): Promise<Collected<M.Comparison>> {
+    const own = await api.comparisons(o);
+    if (getApiKey() === null) return own;
+    const demo = await api.comparisons({ ...o, workspace: DEMO_WORKSPACE });
+    const seen = new Set(own.items.map((c) => c.id));
+    return {
+      items: [...own.items, ...demo.items.filter((c) => !seen.has(c.id))],
+      incomplete: own.incomplete || demo.incomplete,
+      pages: own.pages + demo.pages,
+    };
+  },
   comparison: (id: string, o: Opts = {}) => request<W.Comparison>('GET', `/comparisons/${enc(id)}`, o).then(normalize.comparison),
   comparisonPairs: (id: string, q: Cursor & { class?: PairClass } = {}, o: Opts = {}) =>
     request<W.CursorPage<OrderPair>>('GET', `/comparisons/${enc(id)}/pairs`, { query: q, ...o }).then(normalize.pairs),

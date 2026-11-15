@@ -380,6 +380,8 @@ export function describeError(error: unknown): ErrorView {
       break;
     case 'not_found':
       if (d.resource) facts.push(`resource: ${String(d.resource)}`);
+      action =
+        'Check the id in the address. Runs, jobs and reports created with an API key are visible only with that workspace\u2019s key; retrying will not help.';
       break;
     case 'conflict':
       if (d.reason) facts.push(`reason: ${String(d.reason)}`);

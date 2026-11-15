@@ -9,7 +9,7 @@ import type {
 } from '../../api/types';
 import { JsonBlock, Pager, QuantileTable } from '../../components/data';
 import { DataTable, type Column } from '../../components/DataTable';
-import { ORDER_OUTCOMES, OUTCOME_MEANING } from '../../components/describe';
+import { ORDER_OUTCOMES, OUTCOME_MEANING, tifLabel } from '../../components/describe';
 import {
   DASH, fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtQty, fmtTicks, words,
 } from '../../components/fmt';
@@ -27,6 +27,7 @@ import { useAccess } from '../../shell/access';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { outcomeTone } from '../forensics/labels';
+import { RunContextLinks } from './RunContextLinks';
 import { lastPerSecond, TimeSeriesChart } from './TimeSeriesChart';
 import type { ChartSeries } from './TimeSeriesChart';
 import './runs.css';
@@ -96,6 +97,7 @@ function RunOverview({ runId }: { runId: string }) {
           <Link className="btn btn-primary" to={paths.bookRun(runId)}>Open in Order Book Replay</Link>
           <DownloadButtons runId={runId} />
           <Link className="btn" to={paths.comparePair(runId)}>Compare with…</Link>
+          <RunContextLinks runId={runId} omit={['overview', 'replay', 'compare']} />
           <Link className="btn" to={paths.sweepForm(runId)}>Sweep from this run</Link>
           <Link className="btn" to={paths.strategy({ from: runId })}>Open in Strategy Lab</Link>
           <button type="button" onClick={run.reload} disabled={run.loading}>Reload run</button>
@@ -448,7 +450,7 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
     { id: 'side', header: 'Side', cell: (o) => <SideBadge side={o.side} />, sortValue: (o) => o.side },
     { id: 'price', header: 'Price', unit: priceUnit, numeric: true, cell: (o) => price(o.price_tick, instrument), sortValue: (o) => o.price_tick },
     { id: 'qty', header: 'Qty', unit: qtyUnit, numeric: true, cell: (o) => quantity(o.qty, instrument), sortValue: (o) => o.qty },
-    { id: 'tif', header: 'TIF', cell: (o) => <span className="mono">{o.tif}</span>, sortValue: (o) => o.tif },
+    { id: 'tif', header: 'Time in force', cell: (o) => tifLabel(o.tif), sortValue: (o) => o.tif },
     { id: 'outcome', header: 'Outcome', cell: (o) => <Pill tone={outcomeTone(o.outcome)} title={OUTCOME_MEANING[o.outcome]}>{words(o.outcome)}</Pill>, sortValue: (o) => o.outcome },
     { id: 'filled', header: 'Filled', unit: qtyUnit, numeric: true, cell: (o) => quantity(o.filled_qty, instrument), sortValue: (o) => o.filled_qty },
     { id: 'qentry', header: 'Queue ahead at entry', unit: qtyUnit, term: 'queue_position', numeric: true, cell: (o) => quantity(o.queue_ahead_at_entry, instrument), sortValue: (o) => o.queue_ahead_at_entry },

@@ -76,7 +76,7 @@ export default function ComparePage() {
 
 function runOptionText(run: Run): string {
   const label = run.label === null || run.label === "" ? "(no label)" : run.label;
-  return `${label} | ${run.strategy_kind} | ${run.dataset.id} | ${run.run_id}`;
+  return `${label} | ${strategyName(run.strategy_kind)} | ${run.dataset.id} | ${run.run_id}`;
 }
 
 function RunPicker({
@@ -235,7 +235,7 @@ function CompareView({
 }) {
   const runs = useAsync((signal) => Promise.all([api.run(a, { signal }), api.run(b, { signal })]), [a, b]);
   const lookup = useAsync(async (signal): Promise<Lookup> => {
-    const list = await api.comparisons({ signal });
+    const list = await api.readableComparisons({ signal });
     const direct = list.items.find((c) => c.run_a === a && c.run_b === b);
     const reverse = direct ? undefined : list.items.find((c) => c.run_a === b && c.run_b === a);
     return { hit: direct ?? reverse ?? null, swapped: !direct && reverse !== undefined, incomplete: list.incomplete, listed: list.items.length };

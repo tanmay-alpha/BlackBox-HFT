@@ -6,12 +6,13 @@ import { Link } from 'react-router-dom';
 
 import type { OrderDetail } from '../../api/model';
 import type { InstrumentMeta, OrderPair } from '../../api/types';
+import { tifLabel } from '../../components/describe';
 import { DASH, fmtDuration, fmtNum, fmtPrice, fmtQty, humanizeNsText } from '../../components/fmt';
 import { paths } from '../../shell/paths';
 import { fmtAxisNs, niceStep, ticksBetween } from '../forensics/axis';
 import { eventTitle } from '../forensics/eventFormat';
 import { useElementSize } from '../forensics/useElementSize';
-import { differenceWords, fmtSec, outcomeWords, pairClassText, SCENARIO_KEYS, TIF_TEXT, type Focus, type ScenarioKey } from './data';
+import { differenceWords, fmtSec, outcomeWords, pairClassText, SCENARIO_KEYS, type Focus, type ScenarioKey } from './data';
 import type { LatencyStory } from './story';
 
 /** First local response that reported an execution: when the strategy learned of the fill. */
@@ -60,7 +61,7 @@ export function LifecyclePanel({ story, orderId, details, pair, inst, names, foc
     <div className="ex-life">
       <p>
         <span className={o.side === 'buy' ? 'ex-buy' : 'ex-sell'}>{o.side === 'buy' ? 'Buy' : 'Sell'}</span> {fmtQty(o.qty, inst)} at{' '}
-        <span className="ex-num">{fmtPrice(o.price_tick, inst)}</span>, {TIF_TEXT[o.tif] ?? o.tif} {o.ord_type} order.
+        <span className="ex-num">{fmtPrice(o.price_tick, inst)}</span>, {tifLabel(o.tif)} {o.ord_type} order.
       </p>
       {pair === 'identical' ? (
         <p className="ex-verdict">

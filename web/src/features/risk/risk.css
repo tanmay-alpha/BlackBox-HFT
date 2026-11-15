@@ -31,3 +31,13 @@
   padding-left: var(--sp-4);
   color: var(--fg-1);
 }
+
+/* A long "unavailable: <reason>" wraps inside its cell instead of widening the table past the
+   panel, which hid the value column of every other row. */
+.dt-table td .analytics-unavailable {
+  display: inline-block;
+  min-width: 16ch;
+  max-width: 32ch;
+  white-space: normal;
+  text-align: left;
+}

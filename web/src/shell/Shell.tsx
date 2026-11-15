@@ -93,6 +93,17 @@ function useBreadcrumb(): Crumb[] {
   if (seg[0] === 'forensics' && seg[2] === 'orders' && seg[3]) {
     crumbs.push({ label: `order ${seg[3]}`, title: `Order ${seg[3]}`, to: paths.order(seg[1], seg[3]) });
   }
+  if ((seg[0] === 'risk' || seg[0] === 'reports') && seg[1] && seg[1] !== 'saved') run(seg[1]);
+  if (seg[0] === 'compare' && seg[1] === 'pair') {
+    for (const side of ['a', 'b']) {
+      const id = q.get(side);
+      if (id) run(id);
+    }
+  }
+  if (seg[0] === 'sim' && seg[1] === 'jobs' && seg[2]) {
+    crumbs.push({ label: `job ${seg[2].slice(0, 13)}`, title: `Job ${seg[2]}`, to: paths.job(seg[2]) });
+  }
+  if (seg[0] === 'sim' && seg[1] === 'sweep' && q.get('base')) run(q.get('base')!);
   if (seg[0] === 'strategy' && q.get('dataset')) dataset(q.get('dataset')!);
   if (seg[0] === 'strategy' && q.get('from')) run(q.get('from')!);
   const t = q.get('t');

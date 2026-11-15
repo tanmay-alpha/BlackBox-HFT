@@ -1,7 +1,7 @@
 // Wording and small formatters shared by the forensics, comparison and grid views. Definitions
 // are taken from the bb-core type documentation so the UI never says more than the contract does.
 
-import type { Basis, OrderOutcome, QueueModelConfig, Source } from "../../api/types";
+import type { Basis, OrderOutcome, QueueModelConfig, Source, Verdict } from "../../api/types";
 import { DASH, fmtDuration } from "../../components/fmt";
 import type { BadgeKind } from "../../components/ui";
 
@@ -47,6 +47,23 @@ export function queueModelMeaning(q: QueueModelConfig): string {
 export function words(snake: string): string {
   return snake.replace(/_/g, " ");
 }
+
+/** The explainer's verdict in plain words (the code stays available as a tooltip). */
+export const VERDICT_TEXT: Record<Verdict, string> = {
+  filled_queue_exhausted: "filled once the modeled queue ahead was used up",
+  filled_price_crossed: "filled because the market traded through the order's price",
+  filled_taker_on_arrival: "filled as a taker on arrival",
+  filled_mixed: "filled partly as maker, partly as taker",
+  not_filled_queue_not_reached: "not filled: the modeled queue ahead was never used up",
+  not_filled_no_trade_at_price: "not filled: no market trade at the order's price",
+  not_filled_canceled: "not filled: cancelled first",
+  not_filled_post_only_would_cross: "not filled: post-only order would have crossed",
+  not_filled_no_liquidity_on_arrival: "not filled: no liquidity on arrival",
+  not_filled_risk_blocked: "not filled: stopped by a risk rule",
+  not_filled_refused: "not filled: refused by the engine",
+  not_filled_data_ended_in_flight: "not filled: the data ended while the order was in flight",
+  not_filled_working_at_end: "not filled: still resting when the data ended",
+};
 
 export function outcomeKind(outcome: OrderOutcome): BadgeKind {
   return outcomeTone(outcome);

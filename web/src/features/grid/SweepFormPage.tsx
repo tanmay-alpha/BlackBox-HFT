@@ -10,6 +10,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { MAX_GRID_CELLS, type ObjectiveMetric } from "../../api/types";
+import { strategyName } from "../../components/describe";
 import { fmtDurationExact, fmtInt } from "../../components/fmt";
 import { SplitPane } from "../../components/SplitPane";
 import { BasisLegend, Empty, ErrorBox, Notice, Panel, Spinner, useAsync } from "../../components/ui";
@@ -133,7 +134,7 @@ export default function SweepFormPage() {
           {baseId !== "" && !list.some((r) => r.run_id === baseId) ? <option value={baseId}>{baseId} (not among the listed runs)</option> : null}
           {list.map((r) => (
             <option key={r.run_id} value={r.run_id}>
-              {r.label === null || r.label === "" ? "(no label)" : r.label} | {r.strategy_kind} | {r.dataset.id} | {r.run_id}
+              {r.label === null || r.label === "" ? "(no label)" : r.label} | {strategyName(r.strategy_kind)} | {r.dataset.id} | {r.run_id}
             </option>
           ))}
         </select>

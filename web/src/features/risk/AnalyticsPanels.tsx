@@ -21,7 +21,7 @@ function ValueCell({ v }: { v: AnalyticsValue }) {
   return v.status === 'available' ? (
     <span className="mono">{fmtValue(v)}</span>
   ) : (
-    <span className="dim" title={v.reason}>
+    <span className="dim analytics-unavailable" title={v.reason}>
       unavailable: {v.reason}
     </span>
   );

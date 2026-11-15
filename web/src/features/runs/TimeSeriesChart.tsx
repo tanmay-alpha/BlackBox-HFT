@@ -11,6 +11,8 @@ import type { Time, UTCTimestamp } from 'lightweight-charts';
 import { cssVar } from '../../components/theme';
 import { ErrorBox } from '../../components/ui';
 
+import './TimeSeriesChart.css';
+
 export interface ChartPoint {
   /** Whole seconds after the dataset origin. */
   time: number;

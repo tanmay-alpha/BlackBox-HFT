@@ -8,6 +8,7 @@ import { api, type Collected } from '../../api/client';
 import type { DatasetSummary, Run } from '../../api/model';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
+import { strategyName } from '../../components/describe';
 import { DASH, fmtDuration, fmtInt } from '../../components/fmt';
 import { SplitPane } from '../../components/SplitPane';
 import { Badge, ErrorBox, HashText, Notice, Panel, Spinner, useAsync } from '../../components/ui';
@@ -140,8 +141,8 @@ export default function BookIndexPage() {
       id: 'strategy',
       header: 'Strategy',
       cell: (r) => (
-        <span className="mono">
-          {r.strategy_kind} every {fmtDuration(r.interval_ns)}
+        <span>
+          {strategyName(r.strategy_kind)} every {fmtDuration(r.interval_ns)}
         </span>
       ),
       sortValue: (r) => r.strategy_kind,

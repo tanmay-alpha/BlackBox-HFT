@@ -196,7 +196,7 @@ export default function LatencyLabPage() {
   const comparisons = useAsync(async (signal): Promise<PairLookup | null> => {
     if (ids.length < 2) return null;
     const base = ids[0];
-    const list = await api.comparisons({ signal });
+    const list = await api.readableComparisons({ signal });
     const entries = await Promise.all(
       ids.slice(1).map(async (other): Promise<PairEntry> => {
         const id = createdIds[`${base}|${other}`] ?? list.items.find((c) => c.run_a === base && c.run_b === other)?.id;

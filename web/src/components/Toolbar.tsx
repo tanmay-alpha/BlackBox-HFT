@@ -12,10 +12,11 @@ function ownsArrows(el: HTMLElement): boolean {
   return el instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit'].includes(el.type);
 }
 
-/** The roving members: buttons, links, checkboxes of this toolbar (not of a nested one). */
+/** The roving members: buttons, links, checkboxes of this toolbar (not of a nested one, nor in a
+ *  closed disclosure). */
 function items(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-    (el) => el.closest('[role="toolbar"]') === root && !ownsArrows(el),
+    (el) => el.closest('[role="toolbar"]') === root && !ownsArrows(el) && el.closest('details:not([open])') === null,
   );
 }
 
@@ -79,6 +80,6 @@ export function Toolbar({ label, children, className }: { label: string; childre
 }
 
 /** A 1 px vertical divider between toolbar groups. */
-export function ToolbarDivider() {
-  return <span className="toolbar-divider" aria-hidden="true" />;
+export function ToolbarDivider({ className }: { className?: string } = {}) {
+  return <span className={className ? `toolbar-divider ${className}` : 'toolbar-divider'} aria-hidden="true" />;
 }

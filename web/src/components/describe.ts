@@ -208,6 +208,18 @@ export function assumptionsLabel(c: RunConfig): string {
   return parts.join(' \u00b7 ');
 }
 
+const TIF_TEXT: Record<string, string> = {
+  gtc: 'good till cancel',
+  gtx: 'post-only',
+  ioc: 'immediate or cancel',
+  fok: 'fill or kill',
+};
+
+/** Plain words for a time in force (`gtx` → "post-only"); an unknown code passes through. */
+export function tifLabel(tif: string): string {
+  return TIF_TEXT[tif] ?? tif;
+}
+
 export const ORDER_OUTCOMES: OrderOutcome[] = [
   'filled',
   'partially_filled',
