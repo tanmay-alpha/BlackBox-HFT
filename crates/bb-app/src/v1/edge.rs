@@ -43,7 +43,7 @@ const EXPOSE_HEADERS: &str =
     "ETag, X-Request-Id, Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, Location";
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-const INFLIGHT_WAIT: Duration = Duration::from_secs(2);
+const INFLIGHT_WAIT: Duration = Duration::from_secs(1);
 /// Non-error responses above this size read today's persisted egress counter first and are
 /// refused once a class's daily egress budget is spent; tiny ones and errors are always served
 /// (and counted).

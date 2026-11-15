@@ -340,3 +340,36 @@ pub fn internal_db(err: bb_db::Error) -> AppError {
         other => AppError::Internal(format!("database: {other}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn internal_error_classes_do_not_leak_diagnostics_into_http_bodies() {
+        let detail = "panicked sentinel.rs:42 SELECT bb.secrets /tmp/file https://private.example";
+        let errors: Vec<ApiError> = vec![
+            bb_db::Error::Database(sqlx::Error::Protocol(detail.into())).into(),
+            bb_db::Error::Migration(sqlx::migrate::MigrateError::Execute(sqlx::Error::Protocol(
+                detail.into(),
+            )))
+            .into(),
+            bb_artifacts::ArtifactError::Io(std::io::Error::other(detail)).into(),
+            AppError::Internal(detail.into()).into(),
+            AppError::SimulationFailed(detail.into()).into(),
+        ];
+        for error in errors {
+            let response = error.into_response();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let value: Value = serde_json::from_slice(&body).unwrap();
+            assert!(value["error"]["request_id"].is_string());
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            for forbidden in ["panicked", ".rs:", "SELECT", "bb.", "/tmp", "https://"] {
+                assert!(!body.contains(forbidden), "{body}");
+            }
+        }
+    }
+}

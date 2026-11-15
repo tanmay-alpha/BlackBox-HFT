@@ -290,6 +290,31 @@ pub async fn register(
     hosted: bool,
 ) -> Result<DatasetVersion, AppError> {
     let synthetic = matches!(manifest.kind, DatasetKind::Synthetic);
+    let refusal = if hosted && !synthetic {
+        Some("source is not hostable")
+    } else if hosted
+        && manifest.counts.rows > bb_core::limits::ExecutionLimits::hosted().max_dataset_rows
+    {
+        Some("hosted dataset exceeds the 500000-row limit")
+    } else {
+        None
+    };
+    if let Some(reason) = refusal {
+        db.audit(bb_db::NewAuditEvent {
+            workspace: None,
+            key: None,
+            action: "dataset.create",
+            outcome: "denied",
+            target_type: Some("dataset"),
+            target_id: Some(&manifest.id),
+            request_id: None,
+            client_ip: None,
+            detail: &serde_json::json!({ "actor": "cli", "reason": reason }),
+        })
+        .await
+        .map_err(db_error)?;
+        return Err(AppError::InvalidRequest(reason.into()));
+    }
     let source = if synthetic {
         SYNTHETIC_SOURCE
     } else {

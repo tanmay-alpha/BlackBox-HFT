@@ -346,3 +346,40 @@ async fn resolve(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anonymous_rate_limits_bound_one_ip_and_rotating_forwarded_ips() {
+        let mut cfg = AppConfig::from_lookup("data".into(), |_| None).unwrap();
+        cfg.rate_limits.anonymous_per_min = 120;
+        cfg.rate_limits.anonymous_burst = 30;
+        cfg.anonymous_global_per_min = 1200;
+        let limits = Limiters::new(&cfg);
+        let ip = "192.0.2.1".parse().unwrap();
+        for _ in 0..30 {
+            assert!(limits.check_anonymous(ip).is_ok());
+        }
+        let refusal = limits.check_anonymous(ip).unwrap_err();
+        assert_eq!(refusal.status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(refusal.retry_after.is_some_and(|seconds| seconds >= 1));
+
+        let limits = Limiters::new(&cfg);
+        let mut denied = 0;
+        for i in 0..1000u16 {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-forwarded-for",
+                format!("198.51.100.1, 192.0.{}.{}", i / 256, i % 256)
+                    .parse()
+                    .unwrap(),
+            );
+            if limits.check_anonymous(client_ip(&headers, None)).is_err() {
+                denied += 1;
+            }
+        }
+        assert!(denied >= 690, "the global burst is 300, denied {denied}");
+    }
+}
