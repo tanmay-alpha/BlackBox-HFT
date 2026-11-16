@@ -34,9 +34,31 @@
   padding-left: var(--sp-4);
 }
 
-.set-fill {
-  flex: 1 1 auto;
-  min-height: 0;
+/* One scrolling page of panels at every width; alignment and interpretation (both prose) sit
+   side by side once two columns fit. */
+.set-page {
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+}
+
+.set-duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+@media (min-width: 1280px) {
+  .set-duo {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 599px) {
+  .set-page {
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
 }
 
 .set-pair {

@@ -10,6 +10,7 @@ pub mod error;
 pub mod experiments;
 pub mod health;
 pub mod jobs;
+pub mod market;
 pub mod model;
 pub mod reports;
 pub mod respond;
@@ -153,6 +154,7 @@ pub fn api_router() -> OpenApiRouter<Shared> {
     let v1 = OpenApiRouter::new()
         .merge(health::v1_routes())
         .merge(datasets::routes())
+        .merge(market::routes())
         .merge(experiments::routes())
         .merge(jobs::routes())
         .merge(runs::routes())

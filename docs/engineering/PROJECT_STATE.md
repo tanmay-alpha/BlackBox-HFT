@@ -4,6 +4,19 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
+**Phases 3.1, 3.2, 4 and 5 in progress on branch `phase31/ui` (2026-11-17), not yet released.** Tracker:
+[../rebuild/NEXT_PHASES_TRACKER.md](../rebuild/NEXT_PHASES_TRACKER.md). Evidence: Phase 3.1
+[../rebuild/PHASE31_UI_REVIEW.md](../rebuild/PHASE31_UI_REVIEW.md), Phase 3.2
+[../rebuild/PHASE32_PERFORMANCE.md](../rebuild/PHASE32_PERFORMANCE.md), Phase 4
+[../research/MARKET_DATA_WORKBENCH.md](../research/MARKET_DATA_WORKBENCH.md) and
+[../research/L3_L2_VALIDATION.md](../research/L3_L2_VALIDATION.md), Phase 5
+[../research/EXECUTION_MODEL_VALIDATION.md](../research/EXECUTION_MODEL_VALIDATION.md). No migration; the release
+adds the `execution_validation` demo, so production needs `demo seed` after the image is live. Agent availability
+during this phase: GPT-6.1 Sol hit `usage_limit_reached` and Opus 5.5 hit HTTP 429 mid-phase; the affected tasks were
+re-run by other agents from the transcripts.
+
+The production state below is the last release, unchanged until this branch is released.
+
 **Phase 3 released and verified (2026-11-15 13:23 UTC).** `main` = `b8105d4` (frontend-only product-experience
 release). The API reports `git_sha=b8105d4` from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:c41fd646…864c6b`
 (Render deploy `dep-dbsr463l550s7398h2i0` live). Vercel production is built from `main`, migrations run through 0009,

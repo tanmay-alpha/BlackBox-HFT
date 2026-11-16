@@ -3,6 +3,7 @@
 
 import type { FlightEvent, InstrumentMeta, MarketView } from "../../api/types";
 import { fmtClock, fmtDuration, fmtNum, fmtPrice, fmtQty } from "../../components/fmt";
+import { strategyName } from "../../components/describe";
 import { EM_DASH, words } from "./labels";
 
 export type EventField = [label: string, value: string];
@@ -17,6 +18,12 @@ function touch(market: MarketView, inst: InstrumentMeta): string {
       ? "no ask"
       : `${fmtPrice(market.best_ask_tick, inst)} x ${fmtQty(market.best_ask_qty, inst)}`;
   return `${bid} / ${ask}`;
+}
+
+/** A strategy's reason with its kind id prefix (`touch_maker: quote bid …`) named in words. */
+function reasonText(reason: string): string {
+  const m = /^([a-z][a-z0-9_]*): ([\s\S]*)$/.exec(reason);
+  return m ? `${strategyName(m[1])}: ${m[2]}` : reason;
 }
 
 /** Human title of an event type. Fill and response wording always states that it is simulated. */
@@ -74,14 +81,14 @@ export function eventFields(ev: FlightEvent, inst: InstrumentMeta): EventField[]
         ["slot", String(b.slot)],
         ["known position", fmtQty(b.known_position, inst)],
         ["local bid / ask", touch(b.market, inst)],
-        ["reason", b.reason],
+        ["reason", reasonText(b.reason)],
       ];
     case "cancel_intent":
       return [
         ["tick", String(b.tick_no)],
         ["known position", fmtQty(b.known_position, inst)],
         ["local bid / ask", touch(b.market, inst)],
-        ["reason", b.reason],
+        ["reason", reasonText(b.reason)],
       ];
     case "risk_blocked":
       return [

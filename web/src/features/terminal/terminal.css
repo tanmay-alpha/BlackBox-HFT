@@ -39,7 +39,7 @@
   gap: var(--sp-1);
 }
 
-.term-zoom > button:not(:last-child) {
+.term-zoom > button:not(:last-of-type) {
   min-width: var(--h-control);
   padding: 0;
   font-family: var(--font-mono);
@@ -113,7 +113,7 @@
 }
 
 .term-scrubber {
-  flex: 1 1 300px;
+  flex: 1 1 200px;
   gap: var(--sp-2);
   min-width: 0;
 }
@@ -133,17 +133,52 @@
   gap: var(--sp-1);
 }
 
-/* Page heading: one compact line above the window summary. */
-.term-title {
+/* Page heading and the loaded-window summary on one compact row (they wrap when narrow). */
+.term-head {
+  display: flex;
   flex: none;
-  margin: 0;
-  padding: var(--sp-2) var(--sp-2) 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-1);
+}
+
+.term-title {
+  margin: 0;
   color: var(--fg-0);
   font-size: var(--text-md);
   font-weight: 600;
   line-height: var(--lh-sm);
   overflow-wrap: anywhere;
+}
+
+.term-head > .book-window {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+/* Docked layouts: one row; a long run label is ellipsised (the h1 title has it in full). */
+@media (min-width: 600px) {
+  .term-head > .term-title {
+    flex: 1 1 0;
+    min-width: 16em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .term-head > details.book-window {
+    flex: none;
+  }
+
+  .term-head > p.book-window,
+  .term-head > details.book-window[open] {
+    flex: 0 1 auto;
+  }
 }
 
 /* ----- best bid / ask strip ----------------------------------------------------------------- */
@@ -304,6 +339,17 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* Rows shown of the matching events, at the end of the filter row (the log has no footer row). It
+   takes only the room the filters leave, so it never wraps the row; the title has the full text. */
+.term-ev-count {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Tabs fill the bottom pane; the active table scrolls inside its tab panel. */
 .term-tabs {
   flex: 1 1 auto;
@@ -333,17 +379,101 @@
   padding: var(--sp-2);
 }
 
-/* The loaded-window line on a phone: the span stays, the counts open on demand. */
+/* The loaded-window line on narrow screens: the span stays, the counts open on demand. */
 details.book-window > summary {
   cursor: pointer;
 }
 
-@media (max-width: 599px) {
-  /* Arrow-only step buttons; their accessible names stay "Previous event" / "Next event". */
+/* Below 1680 px the transport row must fit on one line beside the scrubber: arrow-only step
+   buttons (accessible names stay "Previous event" / "Next event"), the play state and the speed
+   label only for screen readers (the Play / Pause label states the state; the select shows "1×"),
+   and the clock tag in the cursor's title. */
+@media (max-width: 1679px) {
   .term-step-label {
     display: none;
   }
 
+  /* The clock never shrinks under its neighbours; the slider gives way first. */
+  .term-scrubber {
+    min-width: min-content;
+  }
+
+  .term-scrubber .book-scrub {
+    flex: 1 1 64px;
+    width: 64px;
+    min-width: 64px;
+  }
+
+  .term-scrubber .book-cursor {
+    flex: none;
+  }
+
+  .term-state,
+  .term-field > .book-field,
+  .term-scrubber .term-clock-tag {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* A narrow docked depth column (not the tall phone pane) shows the best bid and ask only as the
+   highlighted first ladder rows (same prices and quantities); the strip stays for screen readers. */
+.panel.term-depth {
+  container-type: inline-size;
+}
+
+@media (min-width: 600px) {
+  @container (max-width: 379px) {
+    .term-bbo {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+  }
+}
+
+/* Mouse layouts: the ladder is a dense instrument; compact rows show more levels per pane, and the
+   best bid / ask strip is one line (its values are also the ladder's first rows). */
+@media (pointer: fine) and (min-width: 600px) {
+  .term-ladder-scroll .ladder {
+    --h-row: var(--h-row-compact);
+  }
+
+  .term-bbo-side {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 var(--sp-2);
+    padding: 2px var(--sp-2);
+  }
+
+  .term-bbo-px {
+    font-size: var(--text-sm);
+  }
+}
+
+/* Touch screens of any width: step buttons, the slider and own-order marks are 44 px targets. */
+@media (pointer: coarse) {
+  .term-transport > button {
+    min-width: var(--h-touch);
+  }
+
+  .ws-toolbar .book-scrub {
+    height: var(--h-touch);
+  }
+
+  .term-own-mark {
+    min-height: var(--h-touch);
+  }
+}
+
+@media (max-width: 599px) {
   .term-transport > button {
     min-width: var(--h-touch, 44px);
   }
@@ -351,16 +481,6 @@ details.book-window > summary {
   .term-scrubber {
     flex: 1 1 100%;
     order: 1;
-  }
-
-  /* The Play / Pause label already states the playback state; keep the status for screen readers. */
-  .term-state {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 
   .ws-toolbar .book-scrub {
@@ -371,9 +491,5 @@ details.book-window > summary {
 
   .term-bbo-px {
     font-size: var(--text-lg);
-  }
-
-  .term-own-mark {
-    min-height: 32px;
   }
 }

@@ -112,7 +112,8 @@ function EquityChart({ pages, names, focus, t, divergenceTs, onPick }: EquityPan
     const x = (ts: number) => PAD.l + ((ts - t0) / (t1 - t0)) * plotW;
     const y = (v: number) => PAD.t + ((hi - v) / (hi - lo)) * plotH;
     const yStep = niceStep((hi - lo) / 4);
-    const xStep = niceStep((t1 - t0) / Math.max(2, Math.floor(plotW / 120)));
+    // At least three intervals: `niceStep` rounds up, so two left one label on a phone.
+    const xStep = niceStep((t1 - t0) / Math.max(3, Math.floor(plotW / 80)));
     return {
       t0,
       t1,

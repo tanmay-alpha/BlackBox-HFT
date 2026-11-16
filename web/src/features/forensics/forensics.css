@@ -271,12 +271,27 @@
 
 /* ---- Queue trajectory ---- */
 
+/* The chart takes the height its panel leaves (QueueChart MIN_HEIGHT at least); the SVG is placed
+   absolutely so its own height never feeds back into the plot box. Narrow panes scroll sideways. */
 .fx-queue {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
   min-width: 0;
+}
+
+.fx-queue-plot {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 200px;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .fx-queue-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
 }
 
@@ -431,6 +446,26 @@
 /* The tab strip scrolls horizontally, so as a flex child it would otherwise shrink to nothing. */
 .fx-tabs > .tablist {
   flex: none;
+}
+
+/* Docked charts pane: timeline above queue when tall enough, else one chart per tab, each panel
+   filling the tab so the queue plot takes the height left after its legend. */
+.fx-charts {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.fx-charts > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.fx-chart-tabs > .tabpanel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .fx-tab-body {
@@ -705,5 +740,222 @@
     display: flex;
     align-items: center;
     min-height: var(--h-touch);
+  }
+}
+
+/* ---- Evidence ledger: what the simulator knows vs. estimates ---- */
+
+/* Container query so the row collapses to a stack whenever its pane is narrow, not only on phones. */
+.fx-ledger {
+  container: fx-ledger / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.fx-ledger > .note {
+  margin: 0;
+}
+
+.fx-ledger-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The evidence class is carried by the badge text and by the left rule's style, never by hue alone:
+   observed solid, modeled dashed, derived double, unobservable dotted (as the badges). */
+.fx-ledger-row {
+  border-left: 2px solid var(--observed);
+  background: var(--bg-0);
+  border-radius: 0 var(--radius-1) var(--radius-1) 0;
+}
+
+.fx-ledger-row[data-basis="modeled"] {
+  border-left: 2px dashed var(--modeled);
+}
+
+.fx-ledger-row[data-basis="derived"] {
+  border-left: 4px double var(--derived);
+}
+
+.fx-ledger-row[data-basis="unobservable"] {
+  border-left: 2px dotted var(--unobservable);
+}
+
+.fx-ledger-row > details > summary {
+  display: grid;
+  grid-template-columns: 12px 10.5rem 12.5rem minmax(0, 1fr) minmax(0, 15rem);
+  align-items: baseline;
+  gap: 2px var(--sp-3);
+  margin: 0;
+  padding: 6px var(--sp-3);
+  color: var(--fg-0);
+  list-style: none;
+}
+
+.fx-ledger-hint {
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+}
+
+.fx-ledger-row > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fx-ledger-chev {
+  color: var(--fg-2);
+  font-weight: 600;
+  transition: color var(--dur-fast);
+}
+
+.fx-ledger-row > details[open] .fx-ledger-chev {
+  display: inline-block;
+  transform: rotate(90deg);
+}
+
+.fx-ledger-class {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1);
+}
+
+.fx-ledger-ev {
+  color: var(--fg-1);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+}
+
+.fx-ledger-title {
+  font-weight: 600;
+}
+
+.fx-ledger-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.fx-ledger-rests {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-1);
+  font-size: var(--text-xs);
+}
+
+.fx-ledger-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) var(--sp-3) calc(12px + 2 * var(--sp-3));
+}
+
+.fx-ledger-body p {
+  margin: 0;
+}
+
+.fx-ledger-facts {
+  display: grid;
+  grid-template-columns: minmax(10rem, max-content) minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-4);
+  margin: 0;
+}
+
+.fx-ledger-facts > dt {
+  color: var(--fg-1);
+}
+
+.fx-ledger-facts > dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fx-ledger-note {
+  display: block;
+  color: var(--fg-2);
+}
+
+.fx-ledger-assume {
+  color: var(--fg-1);
+}
+
+.fx-ledger-assume-tag {
+  margin-right: var(--sp-1);
+  color: var(--fg-2);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+}
+
+.fx-ledger-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.fx-ledger-seqs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-2);
+}
+
+.fx-ledger-seqs .btn-link[aria-pressed="true"] {
+  color: var(--fg-0);
+  text-decoration: underline;
+}
+
+/* Medium panes (1024 px screens): the assumption moves under the value so the value stays on one line. */
+@container fx-ledger (max-width: 1099px) {
+  .fx-ledger-row > details > summary {
+    grid-template-columns: 12px 10.5rem 12rem minmax(0, 1fr);
+  }
+
+  .fx-ledger-rests {
+    grid-column: 4;
+    grid-row: 2;
+  }
+}
+
+/* Narrow panes and phones: badge and title on one line, then the value, then the assumption. */
+@container fx-ledger (max-width: 760px) {
+  .fx-ledger-row > details > summary {
+    grid-template-columns: 12px max-content minmax(0, 1fr);
+    gap: 2px var(--sp-2);
+  }
+
+  .fx-ledger-summary,
+  .fx-ledger-rests {
+    grid-column: 2 / -1;
+    grid-row: auto;
+  }
+
+  .fx-ledger-body {
+    padding-left: calc(12px + var(--sp-2) + var(--sp-3));
+  }
+
+  .fx-ledger-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fx-ledger-facts > dd {
+    margin-bottom: var(--sp-1);
+  }
+}
+
+@media (max-width: 599px), (pointer: coarse) {
+  .fx-ledger-seqs .btn-link {
+    min-height: var(--h-touch);
+    min-width: var(--h-touch);
   }
 }

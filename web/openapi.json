@@ -1753,6 +1753,380 @@
         ]
       }
     },
+    "/api/v1/market/datasets": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "operationId": "market_catalogue",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalogue"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/market/datasets/{dataset_id}": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "operationId": "market_summary",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Summary"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/market/datasets/{dataset_id}/book": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "operationId": "market_book",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_index",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "levels",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "orders_per_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketBook"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/market/datasets/{dataset_id}/comparison": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "operationId": "market_comparison",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/L3Comparison"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/market/datasets/{dataset_id}/events": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "operationId": "market_events",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Default 100; 1..500.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "message_type",
+            "in": "query",
+            "description": "One ITCH message-type letter.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "t0_ns",
+            "in": "query",
+            "description": "Inclusive nanoseconds since session midnight.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "t1_ns",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from_event_index",
+            "in": "query",
+            "description": "Inclusive source frame index; 0..99999.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MarketEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/market/datasets/{dataset_id}/metrics": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "operationId": "market_metrics",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "max_points",
+            "in": "query",
+            "description": "Default100; 2..500.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/L3Metrics"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "tags": [
@@ -4481,6 +4855,20 @@
           },
           "to_exchange_ns": {
             "$ref": "#/components/schemas/Distribution"
+          }
+        }
+      },
+      "Catalogue": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Summary"
+            }
           }
         }
       },
@@ -7879,6 +8267,160 @@
           }
         }
       },
+      "L3Comparison": {
+        "type": "object",
+        "required": [
+          "basis",
+          "events",
+          "order_identity_observations",
+          "touch_queue_observations",
+          "execution_messages",
+          "executions_with_order_identity",
+          "cancel_messages",
+          "cancels_ahead_of_reference",
+          "cancels_at_reference",
+          "cancels_behind_reference",
+          "same_timestamp_add_cancel_level_groups",
+          "l2_unobservable",
+          "definitions"
+        ],
+        "properties": {
+          "basis": {
+            "type": "string"
+          },
+          "cancel_messages": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cancels_ahead_of_reference": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cancels_at_reference": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cancels_behind_reference": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "definitions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "events": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "execution_messages": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "executions_with_order_identity": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "l2_unobservable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "order_identity_observations": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "same_timestamp_add_cancel_level_groups": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "touch_queue_observations": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "L3Metrics": {
+        "type": "object",
+        "required": [
+          "basis",
+          "definitions",
+          "counts",
+          "rates_per_second",
+          "order_lifetime_ns",
+          "queue_position_at_execution",
+          "series",
+          "l2"
+        ],
+        "properties": {
+          "basis": {
+            "type": "string"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "definitions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "l2": {
+            "$ref": "#/components/schemas/MarketReport"
+          },
+          "order_lifetime_ns": {
+            "$ref": "#/components/schemas/LifetimeDistribution"
+          },
+          "queue_position_at_execution": {
+            "$ref": "#/components/schemas/QueuePositionDistribution"
+          },
+          "rates_per_second": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricPoint"
+            }
+          }
+        }
+      },
       "LabelPatch": {
         "type": "object",
         "required": [
@@ -7943,6 +8485,43 @@
               "null"
             ],
             "description": "Exchange clock: arrival to first fill."
+          }
+        }
+      },
+      "LifetimeDistribution": {
+        "type": "object",
+        "required": [
+          "n"
+        ],
+        "properties": {
+          "max": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "min": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "n": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "p50": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "p90": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -8363,6 +8942,198 @@
         },
         "additionalProperties": false
       },
+      "MarketBook": {
+        "type": "object",
+        "required": [
+          "event_index",
+          "levels",
+          "bids",
+          "asks"
+        ],
+        "properties": {
+          "asks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketLevel"
+            }
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketLevel"
+            }
+          },
+          "event_index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "levels": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ts_ns": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MarketEvent": {
+        "type": "object",
+        "required": [
+          "event_index",
+          "message_type",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "type": "string"
+          },
+          "best_ask_price4": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "best_bid_price4": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "event_index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "message_type": {
+            "type": "string"
+          },
+          "new_order_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "order_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price4": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "shares": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "side": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ts_ns": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MarketLevel": {
+        "type": "object",
+        "required": [
+          "price4",
+          "shares",
+          "order_count",
+          "orders",
+          "orders_truncated"
+        ],
+        "properties": {
+          "order_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "orders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketOrder"
+            }
+          },
+          "orders_truncated": {
+            "type": "boolean"
+          },
+          "price4": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "MarketOrder": {
+        "type": "object",
+        "required": [
+          "order_ref",
+          "shares",
+          "queue_position",
+          "shares_ahead",
+          "entered_event_index"
+        ],
+        "properties": {
+          "entered_event_index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "entered_ns": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "order_ref": {
+            "type": "string"
+          },
+          "queue_position": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "shares_ahead": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "MarketPoint": {
         "type": "object",
         "required": [
@@ -8378,6 +9149,28 @@
             "items": {
               "$ref": "#/components/schemas/Value"
             }
+          }
+        }
+      },
+      "MarketQuality": {
+        "type": "object",
+        "required": [
+          "passed",
+          "quarantined_total",
+          "checks"
+        ],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {}
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "quarantined_total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -8607,6 +9400,93 @@
             ],
             "format": "double",
             "description": "Quantity-weighted mean markout in ticks. Negative means adverse selection."
+          }
+        }
+      },
+      "MetricPoint": {
+        "type": "object",
+        "required": [
+          "event_index",
+          "live_orders",
+          "bid_shares",
+          "ask_shares",
+          "signed_added_shares",
+          "signed_cancelled_shares",
+          "signed_executed_shares",
+          "touch_depleted_shares",
+          "touch_replenished_shares"
+        ],
+        "properties": {
+          "ask_shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "best_ask_price4": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "best_bid_price4": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "bid_shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "event_index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "live_orders": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "order_count_imbalance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "signed_added_shares": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "signed_cancelled_shares": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "signed_executed_shares": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "touch_depleted_shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "touch_replenished_shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "ts_ns": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -10361,6 +11241,112 @@
           }
         }
       },
+      "Page_MarketEvent": {
+        "type": "object",
+        "description": "A cursor page (API_CONTRACT §7).",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "event_index",
+                "message_type",
+                "applied"
+              ],
+              "properties": {
+                "applied": {
+                  "type": "string"
+                },
+                "best_ask_price4": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "best_bid_price4": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "event_index": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "message_type": {
+                  "type": "string"
+                },
+                "new_order_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "order_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "price4": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "shares": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "side": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ts_ns": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque; pass back as `cursor` with the same filters."
+          },
+          "truncated_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TruncatedBy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "Page_OrderPair": {
         "type": "object",
         "description": "A cursor page (API_CONTRACT §7).",
@@ -11432,6 +12418,51 @@
           "ts": {
             "type": "string",
             "description": "Exchange clock."
+          }
+        }
+      },
+      "QueuePositionDistribution": {
+        "type": "object",
+        "required": [
+          "n"
+        ],
+        "properties": {
+          "max": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "min": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "n": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "p50": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "p90": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -13136,6 +14167,81 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "Summary": {
+        "type": "object",
+        "required": [
+          "dataset_id",
+          "dataset_version",
+          "data_class",
+          "symbol",
+          "venue",
+          "session",
+          "timestamp_basis",
+          "events",
+          "messages_by_type",
+          "quality",
+          "generator",
+          "license_note"
+        ],
+        "properties": {
+          "data_class": {
+            "type": "string"
+          },
+          "dataset_id": {
+            "type": "string"
+          },
+          "dataset_version": {
+            "type": "string"
+          },
+          "events": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "first_ns": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generator": {},
+          "last_ns": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "license_note": {
+            "type": "string"
+          },
+          "messages_by_type": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "quality": {
+            "$ref": "#/components/schemas/MarketQuality"
+          },
+          "session": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "timestamp_basis": {
+            "type": "string"
+          },
+          "venue": {
+            "type": "string"
           }
         }
       },

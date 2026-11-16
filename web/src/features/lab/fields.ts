@@ -630,7 +630,7 @@ function strategyFields(c: RunConfig, ctx: SectionContext): Field<RunConfig>[] {
           id: 'strategy.kind.sigma_source',
           label: 'Volatility source',
           help: 'Observed price series whose clock-sampled changes estimate sigma.',
-          options: SIGMA_SOURCES.map((s) => ({ value: s, label: `${SIGMA_SOURCE_INFO[s].label} (${s})`, help: SIGMA_SOURCE_INFO[s].help })),
+          options: SIGMA_SOURCES.map((s) => ({ value: s, label: SIGMA_SOURCE_INFO[s].label, help: `${SIGMA_SOURCE_INFO[s].help} (${s})` })),
           get: (x) => (x.strategy.kind.type === 'glft' ? x.strategy.kind.sigma_source : ''),
           set: (x, v) => (isSigmaSource(v) ? patchGlft(x, { sigma_source: v }) : x),
         },
@@ -727,8 +727,8 @@ function queueFields(c: RunConfig): Field<RunConfig>[] {
       help: QUEUE_MODEL_INFO[q.type].help,
       options: QUEUE_MODEL_TYPES.map((t) => ({
         value: t,
-        label: `${QUEUE_MODEL_INFO[t].label} (${t})`,
-        help: QUEUE_MODEL_INFO[t].help,
+        label: QUEUE_MODEL_INFO[t].label,
+        help: `${QUEUE_MODEL_INFO[t].help} (${t})`,
       })),
       get: (x) => x.execution.queue_model.type,
       set: (x, v) => {
@@ -765,25 +765,25 @@ function queueFields(c: RunConfig): Field<RunConfig>[] {
   return fields;
 }
 
-const LATENCY_MODELS: { value: OrderLatencyConfig['type']; label: string; help: string }[] = [
+export const LATENCY_MODELS: { value: OrderLatencyConfig['type']; label: string; help: string }[] = [
   {
     value: 'constant',
-    label: 'Constant (constant)',
+    label: 'Constant',
     help: 'Every request takes exactly the entry latency to reach the exchange, and every response the response latency to come back.',
   },
   {
     value: 'jitter',
-    label: 'Constant plus seeded jitter (jitter)',
+    label: 'Constant plus seeded jitter',
     help: 'Each request\u2019s latency is the base plus a seeded uniform draw from [0, jitter]. The engine\u2019s order bus keeps requests in send order, so jitter never reorders them.',
   },
   {
     value: 'log_normal',
-    label: 'Seeded log-normal (log_normal)',
+    label: 'Seeded log-normal',
     help: 'Every leg is an independent seeded draw median \u00d7 exp(sigma \u00d7 Z), Z ~ N(0, 1). Cancels may have their own entry distribution. Messages never overtake.',
   },
   {
     value: 'heavy_tail',
-    label: 'Seeded heavy tail, ABIDES cubic (heavy_tail)',
+    label: 'Seeded heavy tail, ABIDES cubic',
     help: 'Every leg is min + (jitter / x\u00b3) \u00d7 (min / unit) with x uniform on (clip, 1]: a clipped power-law tail where rare messages are very slow. Messages never overtake.',
   },
 ];
@@ -1025,8 +1025,8 @@ export function buildSections(c: RunConfig, ctx: SectionContext): Section[] {
           help: EXCHANGE_MODEL_INFO[c.execution.exchange_model].help,
           options: EXCHANGE_MODELS.map((m) => ({
             value: m,
-            label: `${EXCHANGE_MODEL_INFO[m].label} (${m})`,
-            help: EXCHANGE_MODEL_INFO[m].help,
+            label: EXCHANGE_MODEL_INFO[m].label,
+            help: `${EXCHANGE_MODEL_INFO[m].help} (${m})`,
           })),
           get: (x) => x.execution.exchange_model,
           set: (x, v) => (isExchangeModel(v) ? withExecution(x, { exchange_model: v }) : x),

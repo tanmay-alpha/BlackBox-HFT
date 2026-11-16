@@ -247,7 +247,7 @@
   align-items: center;
   gap: var(--sp-3);
   width: 100%;
-  min-height: 40px;
+  min-height: var(--h-touch);
   padding: var(--sp-2) var(--sp-3);
   font-size: var(--text-sm);
 }
@@ -283,7 +283,29 @@
   min-height: 0;
 }
 
+.toolbar-hint {
+  display: none;
+}
+
+/* Shown while a roving toolbar member has keyboard focus (not for text fields or selects). */
+.toolbar:has(button:focus-visible, a:focus-visible, summary:focus-visible) > .toolbar-hint {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: var(--sp-4);
+  z-index: 70;
+  display: block;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-1);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-size: var(--text-xs);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 .toolbar {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -607,8 +629,10 @@
   color: var(--fg-2);
 }
 
+/* `flex: none`: in a fill-height table the pager keeps its full (possibly wrapped) height. */
 .dt-footer {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
@@ -717,7 +741,7 @@
 .pane-tabs > .tablist > .tab {
   flex: 1 1 0;
   justify-content: center;
-  min-height: 40px;
+  min-height: var(--h-touch);
 }
 
 .pane-tabs > .tabpanel {
@@ -731,7 +755,7 @@
   min-height: 0;
 }
 
-/* Secondary toolbar controls of a phone layout, behind one disclosure. */
+/* Secondary toolbar controls behind one disclosure (phones, narrow replay toolbars). */
 .ws-more > summary {
   display: inline-flex;
   align-items: center;
@@ -741,6 +765,19 @@
   border-radius: var(--radius-1);
   color: var(--fg-1);
   cursor: pointer;
+  white-space: nowrap;
+}
+
+.ws-more > summary::after {
+  content: '\25BE';
+  margin-left: var(--sp-1);
+  color: var(--fg-2);
+  font-size: var(--text-2xs);
+}
+
+.ws-more > summary:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
 }
 
 .ws-more[open] {
@@ -753,6 +790,40 @@
   align-items: center;
   gap: var(--sp-2);
   margin-top: var(--sp-2);
+}
+
+/* "View" (row density, reset layout): a small menu under its button, so opening it never moves
+   the panes below the toolbar. */
+.ws-view {
+  position: relative;
+}
+
+.ws-view[open] {
+  flex: none;
+}
+
+.ws-view > .ws-more-body {
+  position: absolute;
+  top: calc(100% + var(--sp-1));
+  right: 0;
+  z-index: 60;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 200px;
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-2);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-float);
+}
+
+.ws-view-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--fg-1);
+  font-size: var(--text-xs);
 }
 
 /* ----- tooltip (§6.11) and glossary terms (§6.14) ---------------------------------------- */
@@ -1038,6 +1109,22 @@
   max-width: 200px;
 }
 
+/* Desktop: the segments that fill in when /status answers keep a fixed width, so the mode and the
+   research banner never move (layout shift). Longer text ends in an ellipsis; titles carry it all. */
+@media (min-width: 960px) {
+  .sb-seg.sb-api {
+    width: 136px;
+  }
+
+  .sb-seg.sb-worker {
+    width: 232px;
+  }
+
+  .sb-seg.sb-build {
+    width: 200px;
+  }
+}
+
 .sb-worker-text,
 .sb-build-text {
   overflow: hidden;
@@ -1310,7 +1397,7 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
-    min-height: 40px;
+    min-height: var(--h-touch);
     padding: 0 var(--sp-2);
     border-left: 2px solid transparent;
     color: var(--fg-1);
@@ -1374,7 +1461,7 @@
     display: none;
   }
 
-  /* The badge stays 24 px tall visually; an invisible frame makes its target 40 px. */
+  /* The badge stays 24 px tall visually; an invisible frame makes its target 44 px. */
   .topbar > .badge,
   .topbar .access-badge .badge {
     position: relative;
@@ -1388,7 +1475,7 @@
   .topbar .access-badge .badge::after {
     content: '';
     position: absolute;
-    inset: -9px -5px;
+    inset: calc((var(--h-touch) - 24px) / -2) -5px;
   }
 
   .topbar .access-badge {
@@ -1466,4 +1553,30 @@ button[aria-disabled='true'] {
 
 .error-box-action {
   color: var(--fg-1);
+}
+
+/* Touch screens wider than a phone (tablets): the brand link, command button and access badge
+   reach the 44 px target too; the badge keeps its compact look inside an invisible frame. */
+@media (pointer: coarse) and (min-width: 600px) {
+  .topbar .brand,
+  .topbar .palette-trigger {
+    min-height: var(--h-touch);
+    min-width: var(--h-touch);
+  }
+
+  .topbar .access-badge .badge,
+  .topbar > .badge {
+    position: relative;
+  }
+
+  .topbar .access-badge .badge::after,
+  .topbar > .badge::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100% + 8px, var(--h-touch));
+    height: var(--h-touch);
+    transform: translate(-50%, -50%);
+  }
 }

@@ -7,6 +7,7 @@ import type { OrderLatencyConfig } from '../../api/types';
 import { DataTable, type Column } from '../../components/DataTable';
 import { latencyLabel, strategyName } from '../../components/describe';
 import { DASH, fmtDuration, fmtInt, fmtPnl } from '../../components/fmt';
+import { runLabelText, useDemoTitles } from '../../components/labels';
 import { fmtNsUtc } from '../../components/ns';
 import { ToolbarDivider } from '../../components/Toolbar';
 import { Badge, ErrorBox, Notice, Panel, Spinner, useAsync } from '../../components/ui';
@@ -132,6 +133,7 @@ export default function RunsPage() {
   const live = picked.filter((id) => list?.some((r) => r.run_id === id));
   const selectedRun = list?.find((r) => r.run_id === selected) ?? null;
   const latencies = useLatencies(list);
+  const titles = useDemoTitles();
 
   const toggle = (runId: string) =>
     setPicked((p) => (p.includes(runId) ? p.filter((id) => id !== runId) : [...p, runId]));
@@ -153,7 +155,7 @@ export default function RunsPage() {
   };
 
   useInspector(
-    selectedRun ? `Run ${selectedRun.label ?? selectedRun.run_id}` : 'Stored runs',
+    selectedRun ? `Run ${selectedRun.label ? runLabelText(selectedRun.label, titles) : selectedRun.run_id}` : 'Stored runs',
     selectedRun ? (
       <RunInspector run={selectedRun} latency={latencies.get(selectedRun.run_id)} />
     ) : (
@@ -162,7 +164,7 @@ export default function RunsPage() {
         <p className="note">{PNL_NOTE}</p>
       </div>
     ),
-    [selectedRun, latencies],
+    [selectedRun, latencies, titles],
   );
 
   const columns = useMemo<Column<Run>[]>(
@@ -175,7 +177,7 @@ export default function RunsPage() {
           const id = r.run_id;
           const idx = live.indexOf(id);
           return (
-            <label className="row runs-pick" onClick={(e) => e.stopPropagation()}>
+            <label className="row runs-pick touch-hit" onClick={(e) => e.stopPropagation()}>
               <input
                 type="checkbox"
                 checked={idx >= 0}
@@ -193,8 +195,8 @@ export default function RunsPage() {
         header: 'Run',
         rowHeader: true,
         cell: (r) => (
-          <Link to={paths.run(r.run_id)} tabIndex={-1} title={`Run ${r.run_id}`}>
-            {r.label || <span className="mono">{r.run_id}</span>}
+          <Link to={paths.run(r.run_id)} tabIndex={-1} title={r.label ? `${r.label} (run ${r.run_id})` : `Run ${r.run_id}`}>
+            {r.label ? runLabelText(r.label, titles) : <span className="mono">{r.run_id}</span>}
           </Link>
         ),
         raw: (r) => r.run_id,
@@ -258,7 +260,7 @@ export default function RunsPage() {
         id: 'views',
         header: 'Views',
         cell: (r) => (
-          <span className="row" onClick={(e) => e.stopPropagation()}>
+          <span className="row nowrap" onClick={(e) => e.stopPropagation()}>
             <Link to={paths.riskRun(r.run_id)} tabIndex={-1}>
               Risk
             </Link>
@@ -272,7 +274,7 @@ export default function RunsPage() {
     ],
     // `toggle` only closes over the state setter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [live.join(','), latencies],
+    [live.join(','), latencies, titles],
   );
 
   const pickNote =

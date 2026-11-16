@@ -11,21 +11,22 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api, isAbort } from '../../api/client';
 import type { Comparison, Demo, RunDetail } from '../../api/model';
 import type { DatasetManifest, InstrumentMeta, MetricRow, OrderPair, PairClass } from '../../api/types';
-import { ConfigValue, metricLabel } from '../../components/configValue';
+import { ConfigValue, configDiffRows, metricLabel, variedPaths } from '../../components/configValue';
 import { DataTable, type Column } from '../../components/DataTable';
 import { assumptionsLabel, strategyLabel } from '../../components/describe';
 import { DASH, fmtDuration, fmtInt, fmtMoney, fmtNum, fmtPct, fmtPnl, fmtPp, fmtPrice, fmtQty, fmtSigned, fmtTicks, words } from '../../components/fmt';
 import type { GlossaryKey } from '../../components/glossary';
+import { controlledItem, pathLabel, runLabelText, unitLabel, useDemoTitles } from '../../components/labels';
 import { digitsForUnit } from '../../components/ns';
-import { SplitPane, type Pane } from '../../components/SplitPane';
 import { ToolbarDivider } from '../../components/Toolbar';
 import { Term } from '../../components/Tooltip';
 import { Badge, BasisBadge, ClockText, Empty, ErrorBox, HashText, Notice, Panel, SideBadge, Spinner, TimeDigitsContext, useAsync } from '../../components/ui';
-import { GatedButton } from '../../shell/access';
+import { GatedButton, useAccess } from '../../shell/access';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { CompareTabs } from '../experiments/CompareTabs';
 import { CLASS_LABEL as COMPARE_CLASS_LABEL, EligibilityNotice, PAIR_CLASSES } from '../compare/classes';
+import { differenceWords } from '../explore/data';
 import { fmtSignedDuration, outcomeKind } from '../forensics/labels';
 // Shared comparison styles: the eligibility notice (`EligibilityNotice`) is styled there.
 import '../compare/compare.css';
@@ -70,16 +71,6 @@ const CLASS_LABEL: Record<PairClass, string> = {
   ...COMPARE_CLASS_LABEL,
   only_a: 'Only in baseline',
   only_b: 'Only in this run',
-};
-
-/** Unit column of the mixed-unit metrics table (§6.1). */
-const UNIT_LABEL: Record<string, string> = {
-  quote: 'quote',
-  qty: 'base',
-  count: 'count',
-  ratio: '% (delta pp)',
-  ns: 'time',
-  ticks: 'ticks',
 };
 
 function fmtMetric(v: number | null, row: MetricRow): string {
@@ -144,11 +135,23 @@ function settle<T>(p: Promise<T>): Promise<Settled<T>> {
   );
 }
 
+/**
+ * A stored comparison of a run with some other run than the baseline: experiments pair a run that
+ * changes two assumptions against the baseline with the run that differs in only one of them.
+ */
+interface InsteadPair {
+  runA: string;
+  runB: string;
+  /** The other run of that comparison, as labelled when stored (may be empty), and its id. */
+  otherLabel: string;
+  otherId: string;
+}
+
 /** The stored comparison of the baseline (A) with one run (B), as the server holds it. */
 type PairEntry =
   | { kind: 'ok'; cmp: Comparison }
   /** None stored with A = baseline; `reversedId` names one stored the other way round. */
-  | { kind: 'missing'; reversedId: string | null }
+  | { kind: 'missing'; reversedId: string | null; instead: InsteadPair | null }
   | { kind: 'error'; error: unknown };
 
 interface PairLookup {
@@ -158,9 +161,10 @@ interface PairLookup {
   listed: number;
 }
 
-function runLabel(runs: Settled<RunDetail>[], ids: string[], i: number): string {
+/** The run's label with its experiment named (`Cost of latency: …`), else its id. */
+function runLabel(runs: Settled<RunDetail>[], ids: string[], i: number, titles: ReadonlyMap<string, string>): string {
   const r = runs[i];
-  return r && r.ok && r.value.label ? r.value.label : ids[i];
+  return r && r.ok && r.value.label ? runLabelText(r.value.label, titles) : ids[i];
 }
 
 export default function LatencyLabPage() {
@@ -201,7 +205,13 @@ export default function LatencyLabPage() {
       ids.slice(1).map(async (other): Promise<PairEntry> => {
         const id = createdIds[`${base}|${other}`] ?? list.items.find((c) => c.run_a === base && c.run_b === other)?.id;
         if (id === undefined) {
-          return { kind: 'missing', reversedId: list.items.find((c) => c.run_a === other && c.run_b === base)?.id ?? null };
+          const alt = list.items.find((c) => c.run_b === other && c.run_a !== base) ?? list.items.find((c) => c.run_a === other && c.run_b !== base);
+          const instead: InsteadPair | null = alt
+            ? alt.run_b === other
+              ? { runA: alt.run_a, runB: alt.run_b, otherLabel: alt.label_a, otherId: alt.run_a }
+              : { runA: alt.run_a, runB: alt.run_b, otherLabel: alt.label_b, otherId: alt.run_b }
+            : null;
+          return { kind: 'missing', reversedId: list.items.find((c) => c.run_a === other && c.run_b === base)?.id ?? null, instead };
         }
         // The list omits `alignment`; the resource carries it.
         const cmp = await settle(api.comparison(id, { signal }));
@@ -211,6 +221,12 @@ export default function LatencyLabPage() {
     return { entries, incomplete: list.incomplete, listed: list.items.length };
   }, [key, createdIds]);
   const missing = (comparisons.data?.entries ?? []).flatMap((e, i) => (e.kind === 'missing' ? [ids[i + 1]] : []));
+  // Without a key nothing can be created: runs already compared with another run are explained instead.
+  const canCreate = useAccess().reasonFor('run') === null;
+  const missingInstead = (comparisons.data?.entries ?? []).flatMap((e, i) =>
+    e.kind === 'missing' && e.instead !== null ? [{ id: ids[i + 1], instead: e.instead }] : [],
+  );
+  const missingShown = canCreate ? missing : missing.filter((id) => !missingInstead.some((m) => m.id === id));
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown>(null);
   const createMissing = async () => {
@@ -244,7 +260,18 @@ export default function LatencyLabPage() {
       ? dataset.data.current_version.manifest
       : null;
 
+  // First load: only the Run set panel (with one spinner) shows until every request that shapes the
+  // page has settled, then all panels render at once. Panels filling in one by one pushed the ones
+  // below them down while they were being read (layout shift 0.65 on a phone). Latched per
+  // experiment: later reloads (Add run, Create comparisons) keep the panels and their own spinners.
+  const resolvingDemo = demoId !== null && (demos.loading || baseListed.loading);
+  const settled = !resolvingDemo && !all.loading && !runs.loading && !comparisons.loading && !dataset.loading;
+  const [readyFor, setReadyFor] = useState<{ demo: string | null } | null>(null);
+  const ready = readyFor !== null && readyFor.demo === demoId;
+  if (settled && !ready) setReadyFor({ demo: demoId });
+
   const [pick, setPick] = useState('');
+  const titles = useDemoTitles();
   const available = (all.data?.items ?? []).filter((r) => !ids.includes(r.run_id));
 
   const toolbar = (
@@ -266,7 +293,7 @@ export default function LatencyLabPage() {
           <option value="">{all.loading ? 'Loading runs\u2026' : 'Choose a stored run'}</option>
           {available.map((r) => (
             <option key={r.run_id} value={r.run_id}>
-              {r.label || 'unlabelled'} · {r.run_id} · {r.dataset.id}
+              {r.label ? runLabelText(r.label, titles) : 'unlabelled'} · {r.run_id} · {r.dataset.id}
             </option>
           ))}
         </select>
@@ -302,7 +329,7 @@ export default function LatencyLabPage() {
       : null;
 
   const comparisonsNote =
-    comparisons.data && (missing.length > 0 || comparisons.data.incomplete || createError) ? (
+    comparisons.data && (missingShown.length > 0 || (!canCreate && missingInstead.length > 0) || comparisons.data.incomplete || createError) ? (
       <div className="col">
         {comparisons.data.incomplete ? (
           <Notice tag="List incomplete">
@@ -310,12 +337,21 @@ export default function LatencyLabPage() {
             exist beyond them.
           </Notice>
         ) : null}
-        {missing.length > 0 ? (
+        {!canCreate
+          ? missingInstead.map(({ id, instead }) => (
+              <Notice key={id} tag="Compared elsewhere" tone="info">
+                {runLabel(runs.data ?? [], ids, ids.indexOf(id), titles)} differs from the baseline in more than one assumption,
+                so it is compared with {instead.otherLabel ? runLabelText(instead.otherLabel, titles) : instead.otherId} instead:{' '}
+                <Link to={paths.comparePair(instead.runA, instead.runB)}>open that comparison</Link>.
+              </Notice>
+            ))
+          : null}
+        {missingShown.length > 0 ? (
           <Notice tag="Not compared" tone="info">
-            {missing.length} run{missing.length === 1 ? ' has' : 's have'} no stored comparison with the baseline (A =
+            {missingShown.length} run{missingShown.length === 1 ? ' has' : 's have'} no stored comparison with the baseline (A =
             baseline). The server computes comparisons; this page does not.{' '}
             <GatedButton scope="run" onClick={() => void createMissing()} blockedReason={creating ? 'Creating comparisons\u2026' : null}>
-              {creating ? 'Creating\u2026' : `Create ${missing.length} missing comparison${missing.length === 1 ? '' : 's'}`}
+              {creating ? 'Creating\u2026' : `Create ${missingShown.length} missing comparison${missingShown.length === 1 ? '' : 's'}`}
             </GatedButton>
           </Notice>
         ) : null}
@@ -334,108 +370,34 @@ export default function LatencyLabPage() {
       listIncomplete={all.data?.incomplete ? all.data.items.length : null}
       demo={demo}
       note={comparisonsNote}
+      pending={ready ? null : resolvingDemo ? "Resolving the experiment's stored runs" : 'Loading runs and their comparisons'}
     />
   );
 
-  const top: ReactNode =
-    demoId !== null ? (
-      <SplitPane
-        id="compare.set.top"
-        panes={[
-          { id: 'runs', label: 'Run set', defaultSize: '55%', minSize: '25%', content: runSet },
-          {
-            id: 'experiment',
-            label: 'Experiment',
-            defaultSize: '45%',
-            minSize: '20%',
-            content: (
-              <DemoPanel
-                demoId={demoId}
-                demo={demo}
-                ids={ids}
-                loading={demos.loading || baseListed.loading}
-                error={demos.error ?? baseListed.error}
-              />
-            ),
-          },
-        ]}
-      />
-    ) : (
-      runSet
-    );
-
-  const bottom: Pane[] = [
-    {
-      id: 'alignment',
-      label: 'Decision alignment',
-      defaultSize: demoId === 'gross_vs_net' ? '34%' : '50%',
-      minSize: '20%',
-      content: <AlignmentPanel pair={pair} state={pairState} />,
-    },
-    {
-      id: 'interpretation',
-      label: 'Interpretation notes',
-      defaultSize: demoId === 'gross_vs_net' ? '33%' : '50%',
-      minSize: '15%',
-      content: <InterpretationPanel pair={pair} state={pairState} />,
-    },
-  ];
-  if (demoId === 'gross_vs_net') {
-    bottom.push({
-      id: 'waterfall',
-      label: 'Gross to net',
-      defaultSize: '33%',
-      minSize: '15%',
-      content: <GrossToNet ids={ids} runs={runs.data} loading={runs.loading} />,
-    });
-  }
-
   const context = demo ? demo.title : ids.length > 0 ? `${ids[0].slice(0, 12)} + ${ids.length - 1}` : null;
 
+  // One scrolling page: docked quadrants left most panels a few rows tall (one showed 32 of its
+  // 657 px at 1024 wide), so every panel takes the height of its content.
   return (
-    <Workspace context={context} toolbar={toolbar} layout>
+    <Workspace context={context} toolbar={toolbar} scroll>
       <TimeDigitsContext.Provider value={manifest ? digitsForUnit(manifest.timestamps.input_unit) : 9}>
-        <SplitPane
-          id="compare.set.main"
-          orientation="vertical"
-          panes={[
-            { id: 'top', label: 'Run set and experiment', defaultSize: '38%', minSize: '12%', content: top },
-            {
-              id: 'middle',
-              label: 'Configuration and metrics',
-              defaultSize: '34%',
-              minSize: '12%',
-              content: (
-                <SplitPane
-                  id="compare.set.middle"
-                  panes={[
-                    {
-                      id: 'variables',
-                      label: 'Varied versus controlled',
-                      defaultSize: '45%',
-                      minSize: '20%',
-                      content: <VariablesPanel pair={pair} state={pairState} />,
-                    },
-                    {
-                      id: 'metrics',
-                      label: 'Key metrics',
-                      defaultSize: '55%',
-                      minSize: '20%',
-                      content: <MetricsPanel pair={pair} state={pairState} />,
-                    },
-                  ]}
-                />
-              ),
-            },
-            {
-              id: 'bottom',
-              label: 'Alignment and interpretation',
-              defaultSize: '28%',
-              minSize: '12%',
-              content: <SplitPane id={demoId === 'gross_vs_net' ? 'compare.set.bottom3' : 'compare.set.bottom'} panes={bottom} />,
-            },
-          ]}
-        />
+        <div className="col set-page">
+          {runSet}
+          {ready ? (
+            <>
+              {demoId !== null ? (
+                <DemoPanel demoId={demoId} demo={demo} ids={ids} loading={demos.loading || baseListed.loading} error={demos.error ?? baseListed.error} />
+              ) : null}
+              <VariablesPanel pair={pair} state={pairState} />
+              <MetricsPanel pair={pair} state={pairState} />
+              <div className="set-duo">
+                <AlignmentPanel pair={pair} state={pairState} />
+                <InterpretationPanel pair={pair} state={pairState} />
+              </div>
+              {demoId === 'gross_vs_net' ? <GrossToNet ids={ids} runs={runs.data} loading={runs.loading} /> : null}
+            </>
+          ) : null}
+        </div>
       </TimeDigitsContext.Provider>
     </Workspace>
   );
@@ -461,6 +423,7 @@ function RunSetPanel({
   listIncomplete,
   demo,
   note,
+  pending,
 }: {
   ids: string[];
   runs: Settled<RunDetail>[] | null;
@@ -472,7 +435,10 @@ function RunSetPanel({
   listIncomplete: number | null;
   demo: Demo | null;
   note: ReactNode;
+  /** First load in progress: this spinner stands in for the panel body (no table yet). */
+  pending: string | null;
 }) {
+  const titles = useDemoTitles();
   const rows: SetRow[] = ids.map((id, index) => ({
     id,
     index,
@@ -493,7 +459,7 @@ function RunSetPanel({
           {
             id: 'demo',
             header: 'Experiment run',
-            cell: (r: SetRow) => (r.demoLabel === null ? <span className="dim">not in the experiment</span> : r.demoLabel),
+            cell: (r: SetRow) => (r.demoLabel === null ? <span className="dim">not in the experiment</span> : <span title={r.demoLabel}>{runLabelText(r.demoLabel, titles)}</span>),
             raw: (r: SetRow) => r.demoLabel ?? '',
           },
         ]
@@ -506,7 +472,7 @@ function RunSetPanel({
           <span className="dim">{DASH}</span>
         ) : r.run.ok ? (
           r.run.value.label ? (
-            <span title={r.run.value.label}>{r.run.value.label}</span>
+            <span title={r.run.value.label}>{runLabelText(r.run.value.label, titles)}</span>
           ) : (
             <span className="dim">unlabelled</span>
           )
@@ -563,10 +529,15 @@ function RunSetPanel({
   return (
     <Panel
       title="Run set"
-      caption="Runs side by side on the same historical replay, the first as baseline. Differences are between simulations under different assumptions; they are not forecasts and say nothing about how the market would have reacted."
+      caption="Runs side by side on replayed market data (recorded or synthetic; see each run's dataset), the first as baseline. Runs that replay different datasets are not like-for-like. Differences are between simulations under different assumptions; they are not forecasts and say nothing about how the market would have reacted."
       flush
     >
-      {loading || error || listError || listIncomplete !== null || failed.length > 0 || note ? (
+      {pending !== null ? (
+        <div className="set-status">
+          <Spinner label={pending} />
+        </div>
+      ) : null}
+      {pending === null && (loading || error || listError || listIncomplete !== null || failed.length > 0 || note) ? (
         <div className="set-status col">
           {loading ? <Spinner label="Loading runs" /> : null}
           {error ? <ErrorBox error={error} /> : null}
@@ -585,14 +556,15 @@ function RunSetPanel({
           {note}
         </div>
       ) : null}
-      <DataTable
-        label="Run set"
-        rows={rows}
-        rowKey={(r) => r.id}
-        columns={columns}
-        empty="No runs in the set. Add stored runs with Add run in the toolbar."
-        fill
-      />
+      {pending === null ? (
+        <DataTable
+          label="Run set"
+          rows={rows}
+          rowKey={(r) => r.id}
+          columns={columns}
+          empty="No runs in the set. Add stored runs with Add run in the toolbar."
+        />
+      ) : null}
     </Panel>
   );
 }
@@ -612,6 +584,7 @@ function DemoPanel({
   loading: boolean;
   error: Error | null;
 }) {
+  const titles = useDemoTitles();
   return (
     <Panel title={`Experiment ${demo ? demo.title : demoId}`}>
       {loading ? <Spinner label="Loading experiment description" /> : null}
@@ -631,8 +604,10 @@ function DemoPanel({
                 'nothing'
               ) : (
                 <ul className="set-list">
-                  {demo.varied.map((v) => (
-                    <li key={v}>{v}</li>
+                  {variedPaths(demo.varied).map((v) => (
+                    <li key={v} title={v}>
+                      {pathLabel(v)}
+                    </li>
                   ))}
                 </ul>
               )}
@@ -640,8 +615,11 @@ function DemoPanel({
             <dt>Controlled</dt>
             <dd className="prose">
               <ul className="set-list">
-                {demo.controlled.map((c) => (
-                  <li key={c}>{c}</li>
+                {demo.controlled.map(controlledItem).map((c) => (
+                  <li key={c.raw} title={c.raw}>
+                    {c.label}
+                    {c.value === '' ? null : <>: {c.value}</>}
+                  </li>
                 ))}
               </ul>
             </dd>
@@ -659,7 +637,7 @@ function DemoPanel({
             <tbody>
               {demo.runs.map((r) => (
                 <tr key={r.label}>
-                  <th scope="row">{r.label}</th>
+                  <th scope="row" title={r.label}>{runLabelText(r.label, titles)}</th>
                   <td>
                     {r.run_id === null ? (
                       <span className="dim">not stored yet</span>
@@ -696,13 +674,14 @@ function ok(pair: PairPanelProps): (Comparison | null)[] {
 }
 
 function VariablesPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
+  const titles = useDemoTitles();
   return (
     <Panel title="Varied versus controlled">
       {state}
       {pair
         ? pair.comparisons.map((c, i) => {
             const other = pair.ids[i + 1];
-            const name = runLabel(pair.runs, pair.ids, i + 1);
+            const name = runLabel(pair.runs, pair.ids, i + 1, titles);
             if (c.kind === 'error') {
               return (
                 <section key={other} className="col set-pair">
@@ -725,8 +704,15 @@ function VariablesPanel({ pair, state }: { pair: PairPanelProps | null; state: R
                         One exists the other way round (<Link to={paths.comparePair(other, pair.ids[0])}>open it as a pair</Link>);
                         its deltas are baseline minus this run.
                       </>
+                    ) : null}
+                    {c.instead !== null ? (
+                      <>
+                        {' '}
+                        It is compared with {c.instead.otherLabel ? runLabelText(c.instead.otherLabel, titles) : c.instead.otherId}{' '}
+                        instead (<Link to={paths.comparePair(c.instead.runA, c.instead.runB)}>open that comparison</Link>).
+                      </>
                     ) : null}{' '}
-                    Create the missing comparisons from the Run set panel.
+                    {c.instead === null ? 'Create the missing comparisons from the Run set panel.' : null}
                   </p>
                 </section>
               );
@@ -758,13 +744,13 @@ function VariablesPanel({ pair, state }: { pair: PairPanelProps | null; state: R
                         </tr>
                       </thead>
                       <tbody>
-                        {cmp.config_diffs.map((d) => (
+                        {configDiffRows(cmp.config_diffs).map((d) => (
                           <tr key={d.path}>
-                            <th scope="row" className="mono">
-                              {d.path}
+                            <th scope="row" title={d.path}>
+                              {pathLabel(d.path)}
                             </th>
-                            <ConfigValue path={d.path} value={d.a} />
-                            <ConfigValue path={d.path} value={d.b} />
+                            <ConfigValue path={d.a.path} value={d.a.value} />
+                            <ConfigValue path={d.b.path} value={d.b.value} />
                           </tr>
                         ))}
                       </tbody>
@@ -786,6 +772,7 @@ function MetricLabel({ row }: { row: MetricRow }) {
 }
 
 function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
+  const titles = useDemoTitles();
   const comparisons = pair ? ok(pair) : [];
   const first = comparisons.find((c) => c !== null) ?? null;
   const rowsByKey = comparisons.map((c) => new Map<string, MetricRow>((c?.metrics ?? []).map((r) => [r.key, r])));
@@ -800,7 +787,7 @@ function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: Rea
       {state ? <div className="set-status">{state}</div> : null}
       {pair && !first ? <Empty>No stored comparison with the baseline is available yet.</Empty> : null}
       {pair && first ? (
-        <div className="table-scroll set-fill">
+        <div className="table-scroll">
           <table className="table set-metrics">
             <thead>
               <tr>
@@ -811,7 +798,7 @@ function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: Rea
                 </th>
                 {pair.ids.slice(1).map((id, i) => (
                   <th key={id} scope="col" className="num" colSpan={2} title={id}>
-                    {runLabel(pair.runs, pair.ids, i + 1)}
+                    {runLabel(pair.runs, pair.ids, i + 1, titles)}
                     <span className="unit">value · delta</span>
                   </th>
                 ))}
@@ -825,15 +812,27 @@ function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: Rea
                     <th scope="row" title={k}>
                       <MetricLabel row={any} />
                     </th>
-                    <td className="dim">{UNIT_LABEL[any.unit] ?? any.unit}</td>
+                    <td className="dim">{any.unit === 'ratio' ? '% (delta pp)' : unitLabel(any.unit)}</td>
                     <td className="num">{fmtMetric(any.a, any)}</td>
                     {rowsByKey.map((m, i) => {
                       const r = m.get(k);
+                      const entry = pair.comparisons[i];
                       return r ? (
                         <MetricCells key={pair.ids[i + 1]} row={r} />
                       ) : (
                         <td key={pair.ids[i + 1]} colSpan={2} className="num dim">
-                          {pair.comparisons[i]?.kind === 'ok' ? DASH : 'not compared'}
+                          {entry?.kind === 'ok' ? (
+                            DASH
+                          ) : entry?.kind === 'missing' && entry.instead !== null && k !== keys[0] ? (
+                            'compared elsewhere'
+                          ) : entry?.kind === 'missing' && entry.instead !== null ? (
+                            <Link to={paths.comparePair(entry.instead.runA, entry.instead.runB)}>
+                              compared with {entry.instead.otherLabel ? runLabelText(entry.instead.otherLabel, titles) : entry.instead.otherId}{' '}
+                              instead
+                            </Link>
+                          ) : (
+                            'not compared'
+                          )}
                         </td>
                       );
                     })}
@@ -885,6 +884,7 @@ function DivergenceSide({ label, pair, side, inst }: { label: string; pair: Orde
 }
 
 function AlignmentPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
+  const titles = useDemoTitles();
   return (
     <Panel
       title="Decision alignment and first divergence"
@@ -900,12 +900,12 @@ function AlignmentPanel({ pair, state }: { pair: PairPanelProps | null; state: R
             if (al === null) {
               return (
                 <section key={other} className="col set-pair">
-                  <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, ids, i + 1)}</h3>
+                  <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, ids, i + 1, titles)}</h3>
                   <p className="note">
                     Status <span className="mono">{cmp.status}</span>: no per-order alignment; the runs differ in{' '}
                     {cmp.eligibility.reasons
                       .filter((r) => r.effect === 'no_alignment')
-                      .map((r) => r.field)
+                      .map((r) => pathLabel(r.field))
                       .join(', ')}
                     .
                   </p>
@@ -919,7 +919,7 @@ function AlignmentPanel({ pair, state }: { pair: PairPanelProps | null; state: R
             const firstFill = al.timing.first_fill;
             return (
               <section key={other} className="col set-pair">
-                <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, ids, i + 1)}</h3>
+                <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, ids, i + 1, titles)}</h3>
                 {total > 0 ? (
                   <div className="set-bar" aria-hidden="true">
                     {PAIR_CLASSES.map((c) =>
@@ -950,7 +950,12 @@ function AlignmentPanel({ pair, state }: { pair: PairPanelProps | null; state: R
                       First divergence: order <span className="mono">{fd.order_id}</span> (tick{' '}
                       <span className="mono">{fd.tick_no}</span>), decided at <ClockText ns={fd.decision_ts} /> ·{' '}
                       <Badge kind="neutral">{CLASS_LABEL[fd.class]}</Badge>
-                      {fd.differences.length > 0 ? <span className="small"> · differs in {fd.differences.join(', ')}</span> : null}
+                      {fd.differences.length > 0 ? (
+                        <span className="small" title={`Fields: ${fd.differences.join(', ')}`}>
+                          {' '}
+                          · differs in {fd.differences.map(differenceWords).join(', ')}
+                        </span>
+                      ) : null}
                     </p>
                     <p className="small">Every pair before it is identical, timing included.</p>
                     <DivergenceSide label="Baseline" pair={fd} side="a" inst={pair.inst} />
@@ -983,6 +988,7 @@ function AlignmentPanel({ pair, state }: { pair: PairPanelProps | null; state: R
 }
 
 function InterpretationPanel({ pair, state }: { pair: PairPanelProps | null; state: ReactNode }) {
+  const titles = useDemoTitles();
   return (
     <Panel title="Interpretation notes (from the comparison, verbatim)">
       {state}
@@ -990,7 +996,7 @@ function InterpretationPanel({ pair, state }: { pair: PairPanelProps | null; sta
         ? ok(pair).map((cmp, i) =>
             cmp ? (
               <section key={pair.ids[i + 1]} className="col set-pair">
-                <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, pair.ids, i + 1)}</h3>
+                <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, pair.ids, i + 1, titles)}</h3>
                 {cmp.interpretation.length === 0 ? (
                   <p className="note">The comparison returned no interpretation notes.</p>
                 ) : (
@@ -1021,6 +1027,7 @@ interface WaterfallStep {
 }
 
 function GrossToNet({ ids, runs, loading }: { ids: string[]; runs: Settled<RunDetail>[] | null; loading: boolean }) {
+  const titles = useDemoTitles();
   const rows = (runs ?? []).flatMap((r, i) => {
     if (!r || !r.ok) return [];
     const m = r.value.metrics;
@@ -1033,7 +1040,7 @@ function GrossToNet({ ids, runs, loading }: { ids: string[]; runs: Settled<RunDe
       { label: 'Net P&L (reported)', from: 0, to: m.net_pnl, total: true },
     ];
     const gap = m.net_pnl - (gross - m.fees);
-    return [{ id: ids[i], label: runLabel(runs ?? [], ids, i), m, steps, gap }];
+    return [{ id: ids[i], label: runLabel(runs ?? [], ids, i, titles), m, steps, gap }];
   });
   const points = rows.flatMap((r) => [...r.steps.flatMap((s) => [s.from, s.to]), r.m.spread_capture, 0]);
   const lo = points.length > 0 ? Math.min(...points) : 0;

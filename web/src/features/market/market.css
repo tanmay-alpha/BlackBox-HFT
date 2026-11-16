@@ -1,0 +1,359 @@
+/* Market Data Workbench (features/market). Composes the shared tokens and components; defines
+   only this workspace's layout and its SVG chart strokes. */
+
+.mk-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.mk-head {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-4);
+  padding: var(--sp-3) var(--sp-5) var(--sp-2);
+  min-width: 0;
+}
+
+.mk-title {
+  font-size: var(--text-lg);
+  line-height: var(--lh-lg);
+}
+
+.mk-title-sub {
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* Its own row and one line at every width (full text in the title): when the summary arrives it
+   neither joins the title's row nor wraps, so the tabs below keep their place (layout shift). */
+.mk-meta {
+  flex: 1 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-1);
+}
+
+.mk-meta .mk-class > .badge {
+  white-space: nowrap;
+}
+
+/* The data-class badge is a phrase; let it wrap instead of overflowing a narrow column. */
+.mk-class > .badge {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* The step tabs fill the rest of the body; each step lays out inside the panel. */
+.mk-tabs {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mk-tabs > .tablist {
+  padding: 0 var(--sp-3);
+}
+
+.mk-tabs > .tabpanel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mk-tabs > .tabpanel > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mk-tabs > .tabpanel > .spinner,
+.mk-tabs > .tabpanel > .error-box {
+  flex: none;
+  margin: var(--sp-4);
+}
+
+.mk-scroll {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.mk-stack,
+.mk-index {
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.mk-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding-left: var(--sp-5);
+  overflow-wrap: anywhere;
+}
+
+/* ----- validation ------------------------------------------------------------------------ */
+
+.mk-checks {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mk-check {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--border-subtle);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mk-check:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* ----- toolbar navigator ----------------------------------------------------------------- */
+
+.mk-inline-form {
+  gap: var(--sp-2);
+}
+
+.mk-index-input {
+  width: 9ch;
+  font-family: var(--font-mono);
+}
+
+.mk-nav-note {
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+}
+
+.mk-nav-note:empty {
+  display: none;
+}
+
+/* ----- book ------------------------------------------------------------------------------ */
+
+.mk-book-wrap,
+.mk-book {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.mk-book {
+  flex: 1 1 auto;
+}
+
+.mk-book-bar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-4);
+  padding: var(--sp-2) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mk-book-wrap > .spinner,
+.mk-book-wrap > .error-box {
+  margin: var(--sp-4);
+}
+
+.mk-book-head {
+  flex: none;
+  padding: var(--sp-3) var(--sp-5);
+}
+
+.mk-touch {
+  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+}
+
+.mk-book-panes {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mk-event-facts {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mk-level-row > th {
+  background: var(--bg-2);
+  color: var(--fg-0);
+  font-weight: 500;
+  white-space: normal;
+}
+
+.mk-hl > td {
+  background: var(--bg-selected);
+}
+
+.mk-hl > td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.mk-spread-row > td {
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
+/* ----- timeline -------------------------------------------------------------------------- */
+
+.mk-events-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.mk-filters {
+  flex: none;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mk-filters select {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.mk-events-table {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.mk-events-table > .spinner,
+.mk-events-table > .error-box {
+  margin: var(--sp-3);
+}
+
+.mk-pager {
+  gap: var(--sp-2);
+}
+
+/* ----- charts ---------------------------------------------------------------------------- */
+
+.mk-chart {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mk-chart svg {
+  display: block;
+  cursor: crosshair;
+}
+
+.mk-grid {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.mk-zero {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.mk-guide {
+  stroke: var(--fg-0);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.mk-axis-label {
+  fill: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.mk-chart-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-4);
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--fg-1);
+  font-size: var(--text-xs);
+}
+
+.mk-chart-key > li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.mk-key-line {
+  display: inline-block;
+  width: 18px;
+  border-top-width: 2px;
+}
+
+.mk-def {
+  display: contents;
+}
+
+@media (max-width: 959px) {
+  .mk-touch {
+    grid-template-columns: max-content minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 599px) {
+  .mk-head,
+  .mk-stack,
+  .mk-index,
+  .mk-book-bar,
+  .mk-book-head {
+    padding-inline: var(--sp-3);
+  }
+
+  .mk-goto-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+/* Phones: the book step scrolls as one document (event, touch, then the L3/L2 pane tabs at a
+   usable height) instead of squeezing the panes under the header. */
+@media (max-width: 599px) {
+  .mk-meta-extra {
+    display: none;
+  }
+
+  .mk-book-wrap {
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .mk-book {
+    flex: none;
+  }
+
+  .mk-book-panes {
+    flex: none;
+    height: max(420px, 80dvh);
+  }
+}

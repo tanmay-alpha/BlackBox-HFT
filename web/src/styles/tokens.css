@@ -90,8 +90,8 @@
   --h-toolbar: 48px;
   --h-tab: 36px;
   --h-control: 32px;
-  /* Minimum touch target on phones and coarse pointers (WCAG 2.5.8 enhanced). */
-  --h-touch: 40px;
+  /* Minimum touch target on phones and coarse pointers (WCAG 2.5.5, 44 × 44 CSS px). */
+  --h-touch: 44px;
   --h-row: 36px;
   --h-row-compact: 28px;
   --w-inspector: 320px;
@@ -131,12 +131,18 @@
   --h-row: var(--h-row-compact);
 }
 
-/* Phones and touch screens: every control, tab and the status bar grow to the 40 px touch target. */
+/* Phones and touch screens: every control, tab and the status bar grow to the 44 px touch target.
+   Table rows too, whatever the density setting (the extra `:root`s outrank `[data-density]`), so a
+   link or button in a cell gets a full-height target without overlapping the next row's. */
 @media (max-width: 599px), (pointer: coarse) {
   :root {
     --h-control: var(--h-touch);
     --h-tab: var(--h-touch);
     --h-statusbar: var(--h-touch);
+  }
+
+  :root:root:root {
+    --h-row: var(--h-touch);
   }
 }
 

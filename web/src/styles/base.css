@@ -200,6 +200,10 @@ dd {
   white-space: nowrap;
 }
 
+.row.nowrap {
+  flex-wrap: nowrap;
+}
+
 .wrap-anywhere {
   overflow-wrap: anywhere;
 }
@@ -677,10 +681,12 @@ details[open] > summary {
 
 /* ----- KPI strip (§6.2) ------------------------------------------------------------------ */
 
+/* Figures wrap onto further rows rather than scroll sideways: a strip that scrolled hid its last
+   figures with no sign that more existed (PHASE31 visual audit item 9). */
 .stats {
-  display: flex;
-  overflow-x: auto;
-  gap: var(--sp-4);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 0 var(--sp-2);
   background: var(--bg-1);
 }
 
@@ -936,4 +942,81 @@ details[open] > summary {
 .json-block {
   max-height: 480px;
   tab-size: 2;
+}
+
+/* ----- touch hit regions (PHASE31_UI_REVIEW R2) ------------------------------------------- */
+
+/* On touch screens every stand-alone text action gets a 44 × 44 px target without growing its
+   text: an invisible frame centred on the element (a pseudo-element hit-tests as its element).
+   Table rows are 44 px tall there (tokens.css), so frames in neighbouring rows never overlap.
+   Links inside running prose keep their line box (WCAG 2.5.8 inline exception). Disclosure
+   buttons and link lists grow for real instead: a frame would cover the content they reveal. */
+@media (pointer: coarse) {
+  .btn-link,
+  td a,
+  th a,
+  .row > a:not(.btn),
+  dd > a:only-child,
+  .chart-credit > a,
+  .risk-compare-links a,
+  :is(h2, h3, h4) > .term,
+  td .term,
+  th .term,
+  dt .term,
+  .stat .term,
+  .dt-label.term,
+  .tooltip-anchor > .term,
+  .touch-hit {
+    position: relative;
+  }
+
+  .btn-link::after,
+  td a::after,
+  th a::after,
+  .row > a:not(.btn)::after,
+  dd > a:only-child::after,
+  .chart-credit > a::after,
+  .risk-compare-links a::after,
+  :is(h2, h3, h4) > .term::after,
+  td .term::after,
+  th .term::after,
+  dt .term::after,
+  .stat .term::after,
+  .dt-label.term::after,
+  .tooltip-anchor > .term::after,
+  .touch-hit::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100% + 8px, var(--h-touch));
+    height: max(100%, var(--h-touch));
+    transform: translate(-50%, -50%);
+  }
+
+  /* Rows of text links: enough space that neighbouring frames never overlap. */
+  .row:has(> a:not(.btn)) {
+    gap: var(--sp-6) var(--sp-4);
+  }
+
+  /* A checkbox or radio with its words: the whole label is the target. */
+  label:has(> input[type='checkbox'], > input[type='radio']) {
+    min-height: var(--h-touch);
+    align-items: center;
+  }
+
+  details > summary {
+    min-height: var(--h-touch);
+    padding-block: calc((var(--h-touch) - var(--lh-sm)) / 2);
+  }
+
+  .dt-sort {
+    min-width: var(--h-touch);
+  }
+
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 20px;
+    height: 20px;
+  }
 }

@@ -1,4 +1,4 @@
-import { Fragment, useContext, useMemo, useState } from "react";
+import { Fragment, useContext, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -44,11 +44,14 @@ import {
 import { findNeighbours } from "./neighbours";
 import type { Neighbours } from "./neighbours";
 import { DecisionContext, EventList, ExplanationSteps, FillsTable, LatencyTable } from "./panels";
+import { EvidenceLedger, LEDGER_HINT } from "./EvidenceLedger";
+import { buildLedger, type LedgerTarget } from "./ledger";
 import { Lifecycle } from "./Lifecycle";
 import { RunContextLinks } from "../runs/RunContextLinks";
 import { QueueChart } from "./QueueChart";
 import { TwoClockTimeline } from "./TwoClockTimeline";
 import type { AxisMode } from "./timeline";
+import { useElementSize } from "./useElementSize";
 import "./forensics.css";
 
 const QUESTION_TEXT: Record<Question, string> = {
@@ -57,9 +60,14 @@ const QUESTION_TEXT: Record<Question, string> = {
   why_partially_filled: "Why did this order only partly fill?",
 };
 
-type BottomTab = "lifecycle" | "explanation" | "context" | "latency" | "fills" | "events";
+type BottomTab = "ledger" | "lifecycle" | "explanation" | "context" | "latency" | "fills" | "events";
 /** Panes of the phone layout (below 600 px), one at a time. */
 type PhoneTab = "order" | "timeline" | "evidence";
+/** The two charts of the docked layout when they share one pane as tabs. */
+type ChartTab = "timeline" | "queue";
+/** Docked charts pane height (px) that shows the timeline canvas above the queue plot; a shorter
+ *  pane shows one chart at a time on tabs instead of squeezing both. */
+const BOTH_CHARTS_MIN = 640;
 
 export default function OrderForensicsPage() {
   const { runId = "", orderId = "" } = useParams();
@@ -95,6 +103,22 @@ function OrderForensics({ runId, orderId }: { runId: string; orderId: number }) 
 
   const data = detail.data && detail.data.order.order_id === orderId ? detail.data : null;
   const digits = dataset.data ? digitsForUnit(dataset.data.timestamps.input_unit) : 9;
+  const phone = usePhone();
+
+  const blotterLink = (
+    <Link className="btn" to={paths.run(runId)} title={`Order blotter of run ${runId}`}>
+      Run blotter <span className="mono">{runId.slice(0, 12)}</span>
+    </Link>
+  );
+  const openReplay = (
+    <Link
+      className="btn btn-primary"
+      to={paths.bookRun(runId, { t: data ? data.order.decision_ts : null, order: orderId })}
+    >
+      Open in Order Book Replay
+    </Link>
+  );
+  const runLinks = <RunContextLinks runId={runId} omit={["overview", "replay"]} />;
 
   return (
     <TimeDigitsContext.Provider value={digits}>
@@ -102,20 +126,35 @@ function OrderForensics({ runId, orderId }: { runId: string; orderId: number }) 
         context={`Order ${orderId} \u00b7 run ${runId}`}
         layout
         toolbar={
-          <>
-            <Link className="btn" to={paths.run(runId)} title={`Order blotter of run ${runId}`}>
-              Run blotter <span className="mono">{runId.slice(0, 12)}</span>
-            </Link>
-            <span className="mono">Order {orderId}</span>
-            <OrderNav runId={runId} neighbours={neighbours.data} loading={neighbours.loading} />
-            <Link
-              className="btn btn-primary"
-              to={paths.bookRun(runId, { t: data ? data.order.decision_ts : null, order: orderId })}
-            >
-              Open in Order Book Replay
-            </Link>
-            <RunContextLinks runId={runId} omit={["overview", "replay"]} />
-          </>
+          phone ? (
+            // Phones: the order, the one primary action and order stepping stay in view; the run's
+            // other views sit behind one disclosure so the toolbar stays two rows.
+            <>
+              <span className="mono">Order {orderId}</span>
+              {openReplay}
+              <OrderNav runId={runId} neighbours={neighbours.data} loading={neighbours.loading} compact />
+              <details className="ws-more">
+                <summary>Run links</summary>
+                <div className="ws-more-body">
+                  {neighbours.data && neighbours.data.position !== null ? (
+                    <span className="dim mono">
+                      {fmtInt(neighbours.data.position)} of {fmtInt(neighbours.data.total)}
+                    </span>
+                  ) : null}
+                  {blotterLink}
+                  {runLinks}
+                </div>
+              </details>
+            </>
+          ) : (
+            <>
+              {blotterLink}
+              <span className="mono">Order {orderId}</span>
+              <OrderNav runId={runId} neighbours={neighbours.data} loading={neighbours.loading} />
+              {openReplay}
+              {runLinks}
+            </>
+          )
         }
       >
         {data ? (
@@ -144,35 +183,39 @@ function OrderForensics({ runId, orderId }: { runId: string; orderId: number }) 
   );
 }
 
+/** `compact` (phones): short "Prev" / "Next" labels and no position, which moves into the
+ *  toolbar's disclosure; accessible names stay "Previous order <id>" / "Next order <id>". */
 function OrderNav({
   runId,
   neighbours,
   loading,
+  compact = false,
 }: {
   runId: string;
   neighbours: Neighbours | null;
   loading: boolean;
+  compact?: boolean;
 }) {
-  const link = (id: number | null, label: string) =>
+  const link = (id: number | null, label: string, short: string) =>
     id === null ? (
       <button type="button" disabled title={`No ${label.toLowerCase()} in this run`}>
-        {label}
+        {compact ? short : label}
       </button>
     ) : (
-      <Link className="btn" to={paths.order(runId, id)}>
-        {label} <span className="mono dim">{id}</span>
+      <Link className="btn" to={paths.order(runId, id)} aria-label={compact ? `${label} ${id}` : undefined}>
+        {compact ? short : label} <span className="mono dim">{id}</span>
       </Link>
     );
   if (neighbours) {
     return (
       <>
-        {neighbours.position !== null ? (
+        {!compact && neighbours.position !== null ? (
           <span className="dim mono">
             {fmtInt(neighbours.position)} of {fmtInt(neighbours.total)}
           </span>
         ) : null}
-        {link(neighbours.prev, "Previous order")}
-        {link(neighbours.next, "Next order")}
+        {link(neighbours.prev, "Previous order", "Prev")}
+        {link(neighbours.next, "Next order", "Next")}
       </>
     );
   }
@@ -219,10 +262,13 @@ function OrderContext({
   detail,
   execution,
   runError,
+  ledger,
 }: {
   detail: OrderDetail;
   execution: ExecutionConfig | null;
   runError: Error | null;
+  /** The phone layout shows the evidence ledger here, right under the verdict. */
+  ledger?: ReactNode;
 }) {
   const { order, explanation, instrument } = detail;
   const originNs = order.decision_ts;
@@ -247,6 +293,12 @@ function OrderContext({
         <p className="dim">{OUTCOME_MEANING[order.outcome]}</p>
         <h3 className="fx-question">{QUESTION_TEXT[explanation.question]}</h3>
         <p className="fx-headline">{explanation.headline}</p>
+        {ledger ? (
+          <>
+            <h3 className="fx-subhead">What the simulator knows vs. estimates</h3>
+            {ledger}
+          </>
+        ) : null}
         <p className="note">
           Verdict: <span title={explanation.verdict}>{VERDICT_TEXT[explanation.verdict]}</span>. Rule-based: assembled
           deterministically from the tape events below. This order was simulated on historical
@@ -391,10 +443,47 @@ function OrderView({
   const [mode, setMode] = useState<AxisMode>("linear");
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [activeStep, setActiveStep] = useState<number | null>(null);
-  const [tab, setTab] = useState<BottomTab>("lifecycle");
-  const digits = useContext(TimeDigitsContext);
   const phone = usePhone();
+  // The ledger is the desktop's first evidence tab; phones show it in the Order pane instead.
+  const [tab, setTab] = useState<BottomTab>(phone ? "lifecycle" : "ledger");
+  const bottomTab: BottomTab = phone && tab === "ledger" ? "lifecycle" : tab;
+  const digits = useContext(TimeDigitsContext);
   const [phoneTab, setPhoneTab] = useState<PhoneTab>("order");
+  const [chartTab, setChartTab] = useState<ChartTab>("timeline");
+  const [attachCharts, chartsSize] = useElementSize<HTMLDivElement>();
+  const chartsTabbed = chartsSize.height < BOTH_CHARTS_MIN;
+
+  const ledgerRows = useMemo(
+    () =>
+      buildLedger({
+        detail,
+        execution,
+        dataset: dataset ? { id: dataset.id, kind: dataset.kind } : null,
+      }),
+    [detail, execution, dataset],
+  );
+  const openTab = (next: BottomTab) => () => {
+    setTab(next);
+    if (phone) setPhoneTab("evidence");
+  };
+  const ledgerTargets: Partial<Record<LedgerTarget, () => void>> = {
+    context: openTab("context"),
+    latency: openTab("latency"),
+    fills: openTab("fills"),
+    explanation: openTab("explanation"),
+    // Phones show the queue chart on the Timeline pane; a docked layout on its chart tab (a no-op
+    // when the pane is tall enough to show both charts).
+    queue: phone ? () => setPhoneTab("timeline") : () => setChartTab("queue"),
+  };
+  const ledger = (
+    <EvidenceLedger
+      rows={ledgerRows}
+      selectedSeq={selectedSeq}
+      onSelect={setSelectedSeq}
+      targets={ledgerTargets}
+      intro={phone}
+    />
+  );
 
   const citedSeqs = useMemo<ReadonlySet<number>>(() => {
     const step = activeStep === null ? undefined : explanation.steps[activeStep];
@@ -430,25 +519,19 @@ function OrderView({
     [selectedEvent, citingSteps.join(","), instrument, originNs, runId, order.order_id, digits],
   );
 
+  const axisToggle = (
+    <span className="fx-toggle" role="group" aria-label="Time axis">
+      <button type="button" aria-pressed={mode === "linear"} onClick={() => setMode("linear")}>
+        Linear time
+      </button>
+      <button type="button" aria-pressed={mode === "ordinal"} onClick={() => setMode("ordinal")}>
+        Event order
+      </button>
+    </span>
+  );
+
   const timeline = (
-    <Panel
-      title="Two-clock timeline"
-      fill
-      actions={
-        <span className="fx-toggle" role="group" aria-label="Time axis">
-          <button type="button" aria-pressed={mode === "linear"} onClick={() => setMode("linear")}>
-            Linear time
-          </button>
-          <button
-            type="button"
-            aria-pressed={mode === "ordinal"}
-            onClick={() => setMode("ordinal")}
-          >
-            Event order
-          </button>
-        </span>
-      }
-    >
+    <Panel title="Two-clock timeline" fill actions={axisToggle}>
       {events.length === 0 ? (
         <Empty>The tape holds no event for this order.</Empty>
       ) : (
@@ -471,8 +554,32 @@ function OrderView({
     </Panel>
   );
 
+  // The chart comes first so a short pane still shows it; the model note follows.
   const queue = (
-    <Panel title="Modeled queue position" basis="modeled" fill>
+    <Panel
+      title="Modeled queue position"
+      basis="modeled"
+      fill
+      actions={!phone && chartsTabbed ? axisToggle : undefined}
+    >
+      <QueueChart
+        path={explanation.queue_path}
+        events={events}
+        originNs={originNs}
+        instrument={instrument}
+        side={order.side}
+        mode={mode}
+        selectedSeq={selectedSeq}
+        citedSeqs={citedSeqs}
+        onSelect={setSelectedSeq}
+      />
+      {truncations.map((dropped, i) => (
+        <Notice key={i} tag="TRUNCATED" tone="info">
+          <Badge kind="recorder">recorder</Badge> The per-order cap on recorded queue updates was
+          reached: {dropped} later updates that changed the estimate by less than one lot were not
+          kept.
+        </Notice>
+      ))}
       <p className="note">
         {execution ? (
           <>
@@ -488,24 +595,6 @@ function OrderView({
         Level-2 data does not show individual orders, so the position in the queue is an estimate
         and is never observed.
       </p>
-      {truncations.map((dropped, i) => (
-        <Notice key={i} tag="TRUNCATED" tone="info">
-          <Badge kind="recorder">recorder</Badge> The per-order cap on recorded queue updates was
-          reached: {dropped} later updates that changed the estimate by less than one lot were not
-          kept.
-        </Notice>
-      ))}
-      <QueueChart
-        path={explanation.queue_path}
-        events={events}
-        originNs={originNs}
-        instrument={instrument}
-        side={order.side}
-        mode={mode}
-        selectedSeq={selectedSeq}
-        citedSeqs={citedSeqs}
-        onSelect={setSelectedSeq}
-      />
     </Panel>
   );
 
@@ -513,9 +602,10 @@ function OrderView({
     <Tabs<BottomTab>
       label="Order evidence"
       className="fx-tabs"
-      active={tab}
+      active={bottomTab}
       onChange={setTab}
       tabs={[
+        ...(phone ? [] : [{ id: "ledger" as const, label: "Known vs. estimated" }]),
         { id: "lifecycle", label: "Lifecycle" },
         { id: "explanation", label: "Explanation", count: explanation.steps.length },
         { id: "context", label: "Decision context" },
@@ -524,7 +614,19 @@ function OrderView({
         { id: "events", label: "Flight recorder", count: events.length },
       ]}
     >
-      {tab === "lifecycle" ? (
+      {bottomTab === "ledger" ? (
+        <Panel
+          title="What the simulator knows vs. estimates"
+          fill
+          actions={
+            <span className="fx-ledger-hint" title={LEDGER_HINT}>
+              Expand a row for values, assumption and tape events
+            </span>
+          }
+        >
+          {ledger}
+        </Panel>
+      ) : bottomTab === "lifecycle" ? (
         <Panel title="Order lifecycle" basis="modeled" fill>
           <p className="note">
             Strategy decision and responses run on the local (strategy) clock; arrival, queue, fills and cancels on the
@@ -538,7 +640,7 @@ function OrderView({
             onSelect={setSelectedSeq}
           />
         </Panel>
-      ) : tab === "explanation" ? (
+      ) : bottomTab === "explanation" ? (
         <Panel title="Explanation" fill>
           <ExplanationSteps
             explanation={explanation}
@@ -548,11 +650,11 @@ function OrderView({
             onSelect={setSelectedSeq}
           />
         </Panel>
-      ) : tab === "context" ? (
+      ) : bottomTab === "context" ? (
         <Panel title="Decision context" fill>
           <DecisionContext events={events} order={order} instrument={instrument} />
         </Panel>
-      ) : tab === "latency" ? (
+      ) : bottomTab === "latency" ? (
         <Panel title="Latency breakdown" fill>
           <LatencyTable
             latency={explanation.latency}
@@ -560,7 +662,7 @@ function OrderView({
             feedOffsetNs={execution ? execution.feed_latency_offset_ns : null}
           />
         </Panel>
-      ) : tab === "fills" ? (
+      ) : bottomTab === "fills" ? (
         <Panel title="Simulated fills" basis="modeled" flush fill>
           <FillsTable
             fills={fills}
@@ -585,7 +687,9 @@ function OrderView({
     </Tabs>
   );
 
-  const context = <OrderContext detail={detail} execution={execution} runError={runError} />;
+  const context = (
+    <OrderContext detail={detail} execution={execution} runError={runError} ledger={phone ? ledger : undefined} />
+  );
   if (phone) {
     return (
       <PaneTabs<PhoneTab>
@@ -641,15 +745,33 @@ function OrderView({
                   label: "Timeline and queue",
                   defaultSize: "70%",
                   minSize: "35%",
+                  stackHeight: "max(480px, 60dvh)",
                   content: (
-                    <SplitPane
-                      id="forensics.order.charts"
-                      orientation="vertical"
-                      panes={[
-                        { id: "timeline", label: "Two-clock timeline", defaultSize: "55%", minSize: "25%", content: timeline },
-                        { id: "queue", label: "Modeled queue position", defaultSize: "45%", minSize: "20%", content: queue },
-                      ]}
-                    />
+                    <div className="fx-charts" ref={attachCharts}>
+                      {chartsTabbed ? (
+                        <Tabs<ChartTab>
+                          label="Order charts"
+                          className="fx-tabs fx-chart-tabs"
+                          active={chartTab}
+                          onChange={setChartTab}
+                          tabs={[
+                            { id: "timeline", label: "Two-clock timeline" },
+                            { id: "queue", label: "Modeled queue position" },
+                          ]}
+                        >
+                          {chartTab === "timeline" ? timeline : queue}
+                        </Tabs>
+                      ) : (
+                        <SplitPane
+                          id="forensics.order.charts"
+                          orientation="vertical"
+                          panes={[
+                            { id: "timeline", label: "Two-clock timeline", defaultSize: "50%", minSize: 320, content: timeline },
+                            { id: "queue", label: "Modeled queue position", defaultSize: "50%", minSize: 300, content: queue },
+                          ]}
+                        />
+                      )}
+                    </div>
                   ),
                 },
               ]}

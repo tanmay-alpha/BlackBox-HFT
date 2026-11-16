@@ -108,6 +108,13 @@ export function ResultStrip({ story, names }: { story: LatencyStory; names: Reco
           ))}
         </tr>
       </tbody>
+      {cols.some(({ m }) => m.key === 'round_trip_ns') ? (
+        <tfoot className="ex-compare-hidden">
+          <tr>
+            <td colSpan={cols.length + 1}>Round trip (median) is hidden at this width; it is in the full results under step 1.</td>
+          </tr>
+        </tfoot>
+      ) : null}
     </table>
   );
 }

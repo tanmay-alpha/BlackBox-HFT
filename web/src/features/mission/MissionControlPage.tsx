@@ -13,6 +13,7 @@ import { CONTRACT_VERSION } from '../../api/types';
 import { DataTable, type Column } from '../../components/DataTable';
 import { strategyName } from '../../components/describe';
 import { DASH, fmtDuration, fmtInt, fmtPnl } from '../../components/fmt';
+import { controlledItem, pathLabel, runLabelText, useDemoTitles } from '../../components/labels';
 import { fmtNsUtc } from '../../components/ns';
 import { SplitPane } from '../../components/SplitPane';
 import { Badge, BasisBadge, Empty, ErrorBox, HashText, Notice, Panel, Pill, Spinner, useAsync } from '../../components/ui';
@@ -21,7 +22,7 @@ import { useAnnounce } from '../../shell/announce';
 import { useHealth, type ApiPhase } from '../../shell/health';
 import { useInspector } from '../../shell/inspector';
 import { paths } from '../../shell/paths';
-import { useNow, workerHealth } from '../../shell/StatusBar';
+import { commitText, useNow, workerHealth } from '../../shell/StatusBar';
 import { Workspace } from '../../shell/Workspace';
 import { heartbeatText, JobProgress, JobStatePill, queueText } from '../sim/JobViews';
 import { usePolledJobs } from '../sim/jobs';
@@ -48,17 +49,22 @@ function ExperimentDetails({ demo }: { demo: Demo }) {
       {demo.varied.length === 0 ? (
         <p className="dim">nothing</p>
       ) : (
-        <ul className="ov-list mono">
+        <ul className="ov-list">
           {demo.varied.map((v) => (
-            <li key={v}>{v}</li>
+            <li key={v} title={v}>{pathLabel(v)}</li>
           ))}
         </ul>
       )}
       <h3 className="inspector-heading">Controlled ({demo.controlled.length} settings held identical)</h3>
       <ul className="ov-list">
-        {demo.controlled.map((c) => (
-          <li key={c}>{c}</li>
-        ))}
+        {demo.controlled.map((c) => {
+          const item = controlledItem(c);
+          return (
+            <li key={c} title={item.raw}>
+              {item.value === '' ? item.label : `${item.label}: ${item.value}`}
+            </li>
+          );
+        })}
       </ul>
       <h3 className="inspector-heading">Runs</h3>
       <ol className="ov-list">
@@ -140,7 +146,7 @@ function Experiments({ datasetId }: { datasetId: string }) {
   const columns: Column<Demo>[] = [
     { id: 'title', header: 'Experiment', rowHeader: true, cell: (d) => d.title, sortValue: (d) => d.title },
     { id: 'question', header: 'Question', cell: (d) => <span title={d.question}>{d.question}</span> },
-    { id: 'varied', header: 'Varied', cell: (d) => <span className="mono">{d.varied.length === 0 ? 'nothing' : d.varied.join(', ')}</span> },
+    { id: 'varied', header: 'Varied', cell: (d) => (d.varied.length === 0 ? 'nothing' : <span title={d.varied.join(', ')}>{d.varied.map(pathLabel).join(', ')}</span>) },
     {
       id: 'runs',
       header: 'Runs stored',
@@ -213,54 +219,58 @@ function Experiments({ datasetId }: { datasetId: string }) {
 
 // ----- recent runs ----------------------------------------------------------------------------
 
-const RUN_COLUMNS: Column<Run>[] = [
-  {
-    id: 'run',
-    header: 'Run',
-    rowHeader: true,
-    cell: (r) => (
-      <Link to={paths.run(r.run_id)}>
-        <HashText hash={r.run_id} />
-      </Link>
-    ),
-    raw: (r) => r.run_id,
-  },
-  {
-    id: 'label',
-    header: 'Label',
-    cell: (r) => (r.label ? <span title={r.label}>{r.label}</span> : <span className="dim">unlabelled</span>),
-    sortValue: (r) => r.label ?? '',
-  },
-  { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.dataset.id}</span>, sortValue: (r) => r.dataset.id },
-  { id: 'strategy', header: 'Strategy', cell: (r) => <span>{strategyName(r.strategy_kind)} every {fmtDuration(r.interval_ns)}</span> },
-  { id: 'orders', header: 'Orders', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.orders), sortValue: (r) => r.counts.orders },
-  { id: 'fills', header: 'Fills', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.fills), sortValue: (r) => r.counts.fills },
-  {
-    id: 'net',
-    header: 'Net P&L',
-    unit: 'quote',
-    numeric: true,
-    cell: (r) => fmtPnl(r.metrics.net_pnl, 4),
-    sortValue: (r) => r.metrics.net_pnl,
-    className: (r) => (r.metrics.net_pnl > 0 ? 'up' : r.metrics.net_pnl < 0 ? 'down' : undefined),
-  },
-  { id: 'created', header: 'Created (UTC)', cell: (r) => <span className="mono">{fmtNsUtc(r.created_at_ns, 0)}</span>, sortValue: (r) => BigInt(r.created_at_ns) },
-  {
-    id: 'open',
-    header: 'Open',
-    cell: (r) => (
-      <span className="row ov-actions">
-        <Link to={paths.run(r.run_id)}>Forensics</Link>
-        <Link to={paths.riskRun(r.run_id)}>Risk</Link>
-        <Link to={paths.report(r.run_id)}>Report</Link>
-      </span>
-    ),
-    raw: () => '',
-  },
-];
+function runColumns(titles: ReadonlyMap<string, string>): Column<Run>[] {
+  return [
+    {
+      id: 'run',
+      header: 'Run',
+      rowHeader: true,
+      cell: (r) => (
+        <Link to={paths.run(r.run_id)}>
+          <HashText hash={r.run_id} />
+        </Link>
+      ),
+      raw: (r) => r.run_id,
+    },
+    {
+      id: 'label',
+      header: 'Label',
+      cell: (r) => (r.label ? <span title={r.label}>{runLabelText(r.label, titles)}</span> : <span className="dim">unlabelled</span>),
+      sortValue: (r) => r.label ?? '',
+    },
+    { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.dataset.id}</span>, sortValue: (r) => r.dataset.id },
+    { id: 'strategy', header: 'Strategy', cell: (r) => <span>{strategyName(r.strategy_kind)} every {fmtDuration(r.interval_ns)}</span> },
+    { id: 'orders', header: 'Orders', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.orders), sortValue: (r) => r.counts.orders },
+    { id: 'fills', header: 'Fills', unit: 'count', numeric: true, cell: (r) => fmtInt(r.counts.fills), sortValue: (r) => r.counts.fills },
+    {
+      id: 'net',
+      header: 'Net P&L',
+      unit: 'quote',
+      numeric: true,
+      cell: (r) => fmtPnl(r.metrics.net_pnl, 4),
+      sortValue: (r) => r.metrics.net_pnl,
+      className: (r) => (r.metrics.net_pnl > 0 ? 'up' : r.metrics.net_pnl < 0 ? 'down' : undefined),
+    },
+    { id: 'created', header: 'Created (UTC)', cell: (r) => <span className="mono">{fmtNsUtc(r.created_at_ns, 0)}</span>, sortValue: (r) => BigInt(r.created_at_ns) },
+    {
+      id: 'open',
+      header: 'Open',
+      cell: (r) => (
+        <span className="row ov-actions">
+          <Link to={paths.run(r.run_id)}>Forensics</Link>
+          <Link to={paths.riskRun(r.run_id)}>Risk</Link>
+          <Link to={paths.report(r.run_id)}>Report</Link>
+        </span>
+      ),
+      raw: () => '',
+    },
+  ];
+}
 
 function RecentRuns() {
   const navigate = useNavigate();
+  const titles = useDemoTitles();
+  const columns = useMemo(() => runColumns(titles), [titles]);
   const runs = useAsync((signal) => api.runsPage({ limit: RECENT_RUNS }, { signal }), []);
   return (
     <Panel
@@ -288,7 +298,7 @@ function RecentRuns() {
           label="Recent runs"
           rows={runs.data.items}
           rowKey={(r) => r.run_id}
-          columns={RUN_COLUMNS}
+          columns={columns}
           onActivate={(r) => navigate(paths.run(r.run_id))}
           empty={
             <>
@@ -520,7 +530,7 @@ function System() {
           ) : null}
         </dd>
         <dt>Build</dt>
-        <dd className="mono">{s ? `${s.blackbox_version} \u00b7 ${s.git_sha?.slice(0, 12) ?? 'commit not reported'}` : DASH}</dd>
+        <dd className="mono">{s ? `${s.blackbox_version} \u00b7 ${commitText(s.git_sha)}` : DASH}</dd>
         <dt>Engine</dt>
         <dd>{s ? `${s.engine.name} ${s.engine.version}` : DASH}</dd>
         <dt>Access</dt>

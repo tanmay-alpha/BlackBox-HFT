@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FillRecord, InstrumentMeta, OrderRecord, ReplayWindow } from '../../api/types';
 import { DASH, fmtPrice, fmtQty } from '../../components/fmt';
 import { cssVar } from '../../components/theme';
+import { useMediaQuery } from '../../components/PaneTabs';
 import { Toolbar } from '../../components/Toolbar';
 import { ClockText, ErrorBox, Spinner } from '../../components/ui';
 import { HeatmapRenderer } from '../replay/heatmap';
@@ -71,6 +72,7 @@ export function TerminalHeatmap({
   const [hover, setHover] = useState<HeatmapHover | null>(null);
   const [fatal, setFatal] = useState<Error | null>(null);
   const [zoomed, setZoomed] = useState(false);
+  const touch = useMediaQuery('(pointer: coarse)');
   const themes = useMemo(readThemes, []);
 
   const onCursorRef = useRef(onCursor);
@@ -187,7 +189,11 @@ export function TerminalHeatmap({
               </span>
             </>
           ) : (
-            <span className="dim">Hover for values · click sets the cursor · wheel zooms · drag pans</span>
+            <span className="dim">
+              {touch
+                ? 'Tap sets the cursor · drag pans · + / \u2212 zoom; the ladder shows the book at the cursor'
+                : 'Hover for values · click sets the cursor · wheel zooms · drag pans'}
+            </span>
           )}
         </div>
       </div>

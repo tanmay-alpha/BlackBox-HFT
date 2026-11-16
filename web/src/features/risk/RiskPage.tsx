@@ -18,24 +18,26 @@ import { DataTable, type Column } from '../../components/DataTable';
 import { strategyName } from '../../components/describe';
 import { QuantileTable } from '../../components/data';
 import { DASH, fmtDuration, fmtInt, fmtNum, fmtPct, fmtPnl, fmtTicks } from '../../components/fmt';
+import { runLabelText, unitLabel, useDemoTitles } from '../../components/labels';
+import { usePhone } from '../../components/PaneTabs';
 import { cssVar } from '../../components/theme';
 import { Badge, BasisBadge, BASIS_MEANING, Empty, ErrorBox, Notice, Panel, Spinner, useAsync } from '../../components/ui';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { RunContextLinks } from '../runs/RunContextLinks';
 import { lastPerSecond, TimeSeriesChart, type ChartSeries } from '../runs/TimeSeriesChart';
-import { ExecutionAnalytics, RiskAnalytics } from './AnalyticsPanels';
+import { ExecutionAnalytics, PageTable, RiskAnalytics } from './AnalyticsPanels';
 import './risk.css';
 
 const MAX_POINTS = 5000;
 
 /** Units as words, so a reader never has to guess what "quote" means. */
 const UNIT = {
-  quote: 'quote currency',
-  base: 'base quantity',
-  count: 'count',
-  ratio: 'percent',
-  ticks: 'ticks',
+  quote: unitLabel('quote'),
+  base: unitLabel('base'),
+  count: unitLabel('count'),
+  ratio: unitLabel('ratio'),
+  ticks: unitLabel('ticks'),
 } as const;
 
 /** Drawdown from the running peak of the served equity, per sample (DERIVED). */
@@ -61,16 +63,22 @@ function equitySpanNs(page: EquityPage): number | null {
 function RunPicker() {
   const navigate = useNavigate();
   const runs = useAsync((signal) => api.runs({}, { signal }), []);
+  const titles = useDemoTitles();
   const columns = useMemo<Column<Run>[]>(
     () => [
       { id: 'run', header: 'Run', rowHeader: true, cell: (r) => <Link className="mono" to={paths.riskRun(r.run_id)}>{r.run_id}</Link>, raw: (r) => r.run_id },
-      { id: 'label', header: 'Label', cell: (r) => r.label || <span className="dim">unlabelled</span>, sortValue: (r) => r.label ?? '' },
+      {
+        id: 'label',
+        header: 'Label',
+        cell: (r) => (r.label ? <span title={r.label}>{runLabelText(r.label, titles)}</span> : <span className="dim">unlabelled</span>),
+        sortValue: (r) => r.label ?? '',
+      },
       { id: 'strategy', header: 'Strategy', cell: (r) => <span>{strategyName(r.strategy_kind)} every {fmtDuration(r.interval_ns)}</span> },
       { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.dataset.id} v{r.dataset.version}</span> },
       { id: 'net', header: 'Net P&L', unit: 'quote', numeric: true, cell: (r) => fmtPnl(r.metrics.net_pnl), sortValue: (r) => r.metrics.net_pnl },
       { id: 'dd', header: 'Max drawdown', unit: 'quote', numeric: true, cell: (r) => fmtNum(r.metrics.max_drawdown, 4), sortValue: (r) => r.metrics.max_drawdown },
     ],
-    [],
+    [titles],
   );
   return (
     <Workspace toolbar={<span className="note">Pick a run to see its risk and performance.</span>}>
@@ -117,6 +125,7 @@ function Figure({ label, value, unit, basis, detail }: { label: string; value: s
 /** Stored comparisons that include this run, like-for-like ones first. */
 function ComparisonLinks({ runId }: { runId: string }) {
   const list = useAsync((signal) => api.readableComparisons({ signal }), []);
+  const titles = useDemoTitles();
   if (list.error) return null;
   if (!list.data) return <span className="dim">Looking for comparisons with this run…</span>;
   const mine = list.data.items
@@ -136,7 +145,7 @@ function ComparisonLinks({ runId }: { runId: string }) {
         return (
           <li key={c.id}>
             <Link to={paths.comparePair(c.run_a, c.run_b)}>
-              Compare with {o.label || <span className="mono">{o.id}</span>}
+              Compare with {o.label ? <span title={o.label}>{runLabelText(o.label, titles)}</span> : <span className="mono">{o.id}</span>}
             </Link>{' '}
             {c.eligibility.like_for_like ? <Badge kind="ok">like-for-like</Badge> : <Badge kind="warn">not like-for-like</Badge>}
           </li>
@@ -350,15 +359,36 @@ function RunRisk({ runId }: { runId: string }) {
   const dataset = useAsync((signal) => (datasetId === null ? Promise.resolve(null) : api.dataset(datasetId, { signal })), [datasetId]);
   const sampledNote = r?.config ? `every ${fmtInt(r.config.record.sample_every_ticks)} ticks` : 'sampling as recorded';
   const spanNs = equity.data ? equitySpanNs(equity.data) : null;
+  const titles = useDemoTitles();
+  const phone = usePhone();
 
-  const toolbar = (
+  const identity = r ? `${r.label ? runLabelText(r.label, titles) : 'unlabelled'} \u00b7 ${strategyName(r.strategy_kind)} \u00b7 ${r.dataset.id} v${r.dataset.version}` : null;
+  const links = (
     <>
-      <span className="mono">{runId}</span>
-      {r ? <span className="note risk-identity">{`${r.label || 'unlabelled'} \u00b7 ${strategyName(r.strategy_kind)} \u00b7 ${r.dataset.id} v${r.dataset.version}`}</span> : null}
       <RunContextLinks runId={runId} omit={['risk']} />
       <Link to={paths.risk()} className="risk-other">
         Other run
       </Link>
+    </>
+  );
+  // Phones: the run and its identity stay; the other views go behind one disclosure, so the
+  // toolbar is one row instead of a 168 px block that never scrolls away.
+  const toolbar = (
+    <>
+      <span className="mono">{runId}</span>
+      {identity ? (
+        <span className="note risk-identity" title={r?.label ? `${identity} (label: ${r.label})` : identity}>
+          {identity}
+        </span>
+      ) : null}
+      {phone ? (
+        <details className="ws-more">
+          <summary>Run links</summary>
+          <div className="ws-more-body">{links}</div>
+        </details>
+      ) : (
+        links
+      )}
     </>
   );
 
@@ -370,32 +400,42 @@ function RunRisk({ runId }: { runId: string }) {
         {r ? (
           <>
             <Answer run={r} synthetic={dataset.data ? dataset.data.kind === 'synthetic' : null} spanNs={spanNs} />
-            {equity.loading ? <Spinner label="Loading equity samples" /> : null}
+            {equity.loading ? (
+              <div className="risk-charts-pending">
+                <Spinner label="Loading equity samples" />
+              </div>
+            ) : null}
             <ErrorBox error={equity.error} onRetry={equity.reload} />
             {equity.data && equity.data.items.length === 0 ? <Empty>No account samples were recorded.</Empty> : null}
             {equity.data && equity.data.items.length > 0 ? <Charts page={equity.data} /> : null}
             {equity.data?.next_cursor ? <p className="note">The equity window was cut by the server ({equity.data.truncated_by}); later samples are not shown.</p> : null}
 
             <Panel title="Run metrics" flush caption={`bb-core Metrics recorded with the run. ${BASIS_MEANING.derived} Modeled values come from the simulation's fill, queue and fee models.`}>
-              <DataTable label="Run metrics" columns={METRIC_COLUMNS} rows={runMetricRows(r.metrics, sampledNote)} rowKey={(x) => x.key} />
+              <PageTable rows={runMetricRows(r.metrics, sampledNote).length}>
+                <DataTable label="Run metrics" columns={METRIC_COLUMNS} rows={runMetricRows(r.metrics, sampledNote)} rowKey={(x) => x.key} />
+              </PageTable>
             </Panel>
             <Panel title="Execution counts and markouts" flush>
-              <DataTable label="Execution metrics" columns={METRIC_COLUMNS} rows={executionRows(r.metrics)} rowKey={(x) => x.key} />
+              <PageTable rows={executionRows(r.metrics).length}>
+                <DataTable label="Execution metrics" columns={METRIC_COLUMNS} rows={executionRows(r.metrics)} rowKey={(x) => x.key} />
+              </PageTable>
             </Panel>
             {analytics.loading ? <Spinner label="Loading analytics" /> : null}
             <ErrorBox error={analytics.error} onRetry={analytics.reload} />
             {analytics.data ? <RiskAnalytics risk={analytics.data.risk} /> : null}
             <Panel title="Timing" basis="modeled" flush caption="Latencies are the configured latency model's draws; order age is right-censored at the end.">
-              <QuantileTable
-                label="Timing distributions"
-                rows={[
-                  { label: 'Entry latency', q: r.metrics.entry_latency_ns, fmt: fmtDuration },
-                  { label: 'Response latency', q: r.metrics.response_latency_ns, fmt: fmtDuration },
-                  { label: 'Round trip', q: r.metrics.round_trip_ns, fmt: fmtDuration },
-                  { label: 'Time to first fill', q: r.metrics.time_to_first_fill_ns, fmt: fmtDuration },
-                  { label: 'Order age', q: r.metrics.order_age_ns, fmt: fmtDuration },
-                ]}
-              />
+              <PageTable rows={5}>
+                <QuantileTable
+                  label="Timing distributions"
+                  rows={[
+                    { label: 'Entry latency', q: r.metrics.entry_latency_ns, fmt: fmtDuration },
+                    { label: 'Response latency', q: r.metrics.response_latency_ns, fmt: fmtDuration },
+                    { label: 'Round trip', q: r.metrics.round_trip_ns, fmt: fmtDuration },
+                    { label: 'Time to first fill', q: r.metrics.time_to_first_fill_ns, fmt: fmtDuration },
+                    { label: 'Order age', q: r.metrics.order_age_ns, fmt: fmtDuration },
+                  ]}
+                />
+              </PageTable>
             </Panel>
             {analytics.data?.execution_unavailable ? (
               <Notice tag="EXECUTION ANALYTICS UNAVAILABLE" tone="info">

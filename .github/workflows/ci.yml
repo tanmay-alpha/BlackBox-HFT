@@ -206,8 +206,9 @@ jobs:
           for _ in $(seq 300); do curl -sf http://127.0.0.1:8787/api/v1/status > /dev/null && break; sleep 2; done
           curl -sf http://127.0.0.1:8787/api/v1/status | jq -e '.worker.state'
           curl -sf http://127.0.0.1:8787/api/v1/datasets | grep synthetic-demo > /dev/null
-          test "$(curl -sf 'http://127.0.0.1:8787/api/v1/comparisons?limit=20' | jq '.items | length')" = 5
-          test "$(curl -sf 'http://127.0.0.1:8787/api/v1/reports?limit=20' | jq '.items | length')" = 3
+          # Curated: 5 canonical + 6 execution_validation comparisons; 3 + 1 saved reports (demo_workflow.rs).
+          test "$(curl -sf 'http://127.0.0.1:8787/api/v1/comparisons?limit=20' | jq '.items | length')" = 11
+          test "$(curl -sf 'http://127.0.0.1:8787/api/v1/reports?limit=20' | jq '.items | length')" = 4
           curl -sf http://127.0.0.1:8787/ | grep -i '<!doctype html' > /dev/null
           docker compose logs app | grep 'bbk_' > /dev/null
 

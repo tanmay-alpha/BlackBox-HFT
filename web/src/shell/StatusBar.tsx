@@ -14,7 +14,15 @@ import { useHealth, type ApiPhase } from './health';
 
 /** Shown on every view. The wording is fixed by the product's honesty rules. */
 export const RESEARCH_BANNER =
-  'Simulated on historical replay \u2014 research only. Simulated orders do not affect historical prices.';
+  'Simulated on replayed market data \u2014 research only. Simulated orders do not affect the replayed prices.';
+
+/** Wording for a build whose server reports no git commit (`git_sha: null`), on every page. */
+export const COMMIT_NOT_REPORTED = 'commit not reported';
+
+/** The build's git commit as every page shows it: the first 12 hex digits (full SHA as the title). */
+export function commitText(sha: string | null | undefined): string {
+  return sha ? sha.slice(0, 12) : COMMIT_NOT_REPORTED;
+}
 
 const PHASE_TEXT: Record<ApiPhase, string> = {
   connecting: 'connecting',
@@ -129,7 +137,7 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
         : 'GET /api/v1/status, polled every 30 s while this tab is visible. Activate to check now.';
   const s = h.status;
   const build = s
-    ? `v${s.blackbox_version} \u00b7 ${s.git_sha?.slice(0, 7) ?? 'no sha'} \u00b7 contract v${s.contract_version} \u00b7 ${s.engine.name} ${s.engine.version}`
+    ? `v${s.blackbox_version} \u00b7 ${s.git_sha ? `commit ${commitText(s.git_sha)}` : COMMIT_NOT_REPORTED} \u00b7 contract v${s.contract_version} \u00b7 ${s.engine.name} ${s.engine.version}`
     : null;
   const worker = s ? workerHealth(s, h.checkedAt, now.getTime()) : null;
   const utc = `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())} UTC`;
@@ -158,6 +166,8 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
           WARN contract mismatch
         </span>
       ) : null}
+      {/* Worker and build always hold their place (fixed width on desktop), so nothing to their
+          right moves when /status first answers (PHASE32_PERFORMANCE, layout shift). */}
       {worker ? (
         <span
           className={`sb-seg sb-worker sb-${worker.tone === 'info' ? 'neutral' : worker.tone}`}
@@ -177,17 +187,26 @@ export function StatusBar({ announce }: { announce: (message: string) => void })
             Worker: {worker.label} {'\u00b7'} queued {worker.queueDepth} {'\u00b7'} running {worker.running}
           </span>
         </span>
-      ) : null}
+      ) : (
+        <span className="sb-seg sb-worker sb-neutral" aria-hidden="true">
+          <span className="sb-dot" />
+          <span className="sb-worker-text">Worker {'\u2014'}</span>
+        </span>
+      )}
       {build ? (
         <button
           type="button"
           className="sb-seg sb-build sb-detail"
-          title={`Build: ${build}. Activate to copy.`}
+          title={`Build: ${build}${s?.git_sha ? ` (full commit ${s.git_sha})` : ''}. Activate to copy.`}
           onClick={() => void navigator.clipboard?.writeText(build).then(() => setCopied(true))}
         >
           <span className="sb-build-text mono">{copied ? 'copied' : build}</span>
         </button>
-      ) : null}
+      ) : (
+        <span className="sb-seg sb-build sb-detail" aria-hidden="true">
+          <span className="sb-build-text mono">{'\u2014'}</span>
+        </span>
+      )}
       <button
         type="button"
         className="sb-seg sb-mode sb-detail"

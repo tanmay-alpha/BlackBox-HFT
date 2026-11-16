@@ -51,7 +51,7 @@ export const QUEUE_MODEL_TYPES: QueueModelType[] = [
 
 export const QUEUE_MODEL_INFO: Record<QueueModelType, OptionInfo> = {
   risk_adverse: {
-    label: 'Risk-adverse',
+    label: 'Risk-averse',
     help: 'The queue ahead shrinks only when trades print at the order\u2019s price. Cancellations ahead are never credited. Most conservative.',
   },
   log_prob: {

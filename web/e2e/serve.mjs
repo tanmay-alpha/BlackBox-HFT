@@ -7,7 +7,8 @@
 //
 // Env: DATABASE_URL (default: the local Postgres database `blackbox_e2e_ui`, which holds only what
 // this suite creates: a shared database also lists runs whose bundles live in other data
-// directories, and those fail verification here), BLACKBOX_BIN, E2E_PORT.
+// directories, and those fail verification here), BLACKBOX_BIN, E2E_PORT, E2E_DATA_DIR (relative
+// to the repo root; default `data/e2e-ui`).
 
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -18,7 +19,7 @@ const webDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(webDir, '..');
 const exe = process.platform === 'win32' ? '.exe' : '';
 const bin = resolve(root, process.env.BLACKBOX_BIN ?? `target/debug/blackbox${exe}`);
-const dataDir = 'data/e2e-ui';
+const dataDir = process.env.E2E_DATA_DIR ?? 'data/e2e-ui';
 const port = process.env.E2E_PORT ?? '18797';
 const env = {
   ...process.env,

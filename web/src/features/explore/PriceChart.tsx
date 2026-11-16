@@ -24,6 +24,7 @@ import type {
 
 import type { InstrumentMeta } from '../../api/types';
 import { fmtPrice, fmtQty, stepDecimals } from '../../components/fmt';
+import { usePhone } from '../../components/PaneTabs';
 import { PlainError } from './PlainError';
 import type { Moment } from './story';
 import { shows, type Focus, type ScenarioKey } from './data';
@@ -158,6 +159,7 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
   const firstUnit = useRef(toUnit(moment.window.t0));
   firstUnit.current = toUnit(moment.window.t0);
   const tRef = useRef(t);
+  const phone = usePhone();
   tRef.current = t;
 
   /** Places the time line over the chart; the chart redraws on zoom and resize without React. */
@@ -296,6 +298,16 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
   }, [moment, colors]);
 
   useEffect(() => placeCursor.current(), [t]);
+
+  // Below 600 px the series titles covered a third of the plot and the 13 px axis labels left
+  // room for one or two time ticks; the legend under the chart names both lines.
+  useEffect(() => {
+    const c = chartRef.current;
+    if (!c) return;
+    c.bid.applyOptions({ title: phone ? '' : 'Best bid' });
+    c.ask.applyOptions({ title: phone ? '' : 'Best ask' });
+    c.chart.applyOptions({ layout: { fontSize: phone ? 11 : 13 } });
+  }, [phone, colors]);
 
   const desc = built
     ? `Price chart from ${(moment.window.t0 / 1e9).toFixed(3)} s to ${(moment.window.t1 / 1e9).toFixed(3)} s, replay time line at ${(t / 1e9).toFixed(3)} s. Observed best bid and ask from ${fmtPrice(

@@ -2,22 +2,29 @@
 // side (and a 768 px screen stacks) become tabs, each filling the workspace body, instead of a
 // tall stack of short panes that each scroll on their own (FINAL_REVIEW J, UI_AUDIT).
 
-import { useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
 
 import { Tabs } from './Tabs';
 
 export const PHONE_QUERY = '(max-width: 599px)';
 
-function subscribe(cb: () => void): () => void {
-  const mq = window.matchMedia(PHONE_QUERY);
-  mq.addEventListener('change', cb);
-  return () => mq.removeEventListener('change', cb);
+/** Whether a CSS media query matches, re-rendering when it changes. */
+export function useMediaQuery(query: string): boolean {
+  const subscribe = useCallback(
+    (cb: () => void) => {
+      const mq = window.matchMedia(query);
+      mq.addEventListener('change', cb);
+      return () => mq.removeEventListener('change', cb);
+    },
+    [query],
+  );
+  return useSyncExternalStore(subscribe, () => window.matchMedia(query).matches);
 }
 
 /** True on a phone-width viewport (the `max-width: 599px` breakpoint of shell.css). */
 export function usePhone(): boolean {
-  return useSyncExternalStore(subscribe, () => window.matchMedia(PHONE_QUERY).matches);
+  return useMediaQuery(PHONE_QUERY);
 }
 
 export interface PaneTab<K extends string> {
