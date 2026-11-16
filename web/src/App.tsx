@@ -10,6 +10,7 @@ import { Workspace } from './shell/Workspace';
 const BookIndexPage = lazy(() => import('./features/book/BookIndexPage'));
 const DatasetsPage = lazy(() => import('./features/datasets/DatasetsPage'));
 const PairWorkspace = lazy(() => import('./features/experiments/PairWorkspace'));
+const MarketWorkbenchPage = lazy(() => import('./features/market/MarketWorkbenchPage'));
 const OrderForensicsPage = lazy(() => import('./features/forensics/OrderForensicsPage'));
 const SweepFormPage = lazy(() => import('./features/grid/SweepFormPage'));
 const SweepPage = lazy(() => import('./features/grid/SweepPage'));
@@ -84,6 +85,8 @@ export default function App() {
           <Route path="book" element={<BookIndexPage />} />
           <Route path="book/data/:datasetId" element={<ReplayPage />} />
           <Route path="book/runs/:runId" element={<ReplayTerminalPage />} />
+          <Route path="market" element={<MarketWorkbenchPage />} />
+          <Route path="market/:datasetId" element={<MarketWorkbenchPage />} />
           <Route path="strategy" element={<LabPage />} />
           <Route path="forensics" element={<RunsPage />} />
           <Route path="forensics/:runId" element={<RunOverviewPage />} />

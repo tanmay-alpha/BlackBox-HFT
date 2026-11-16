@@ -173,13 +173,14 @@
   color: var(--fg-0);
 }
 
+/* The page's visible h1 keeps the shared h1 size (base.css, --text-xl) like every workspace. */
 .ex-question {
   margin-top: var(--sp-2);
-  font-size: 22px;
-  line-height: 28px;
-  font-weight: 600;
-  letter-spacing: -0.015em;
   text-wrap: balance;
+}
+
+.ex-compare-hidden {
+  display: none;
 }
 
 /* The answer: the conclusion in words beside the comparison table. */
@@ -1049,21 +1050,29 @@
   text-decoration: underline;
 }
 
-/* Phones: order buttons, the time slider and the forensics links are 40 px touch targets. */
-@media (max-width: 599px) {
+/* Phones and touch screens: order buttons, the time slider and the forensics links are 44 px
+   touch targets. */
+@media (max-width: 599px), (pointer: coarse) {
   .ex .ex-linkbtn {
-    min-width: 40px;
-    min-height: 40px;
+    min-width: var(--h-touch);
+    min-height: var(--h-touch);
+  }
+
+  .ex .btn,
+  .ex button:not(.ex-linkbtn),
+  .ex input[inputmode],
+  .ex .ex-flow-step {
+    min-height: var(--h-touch);
   }
 
   .ex-seek input[type='range'] {
-    height: 40px;
+    height: var(--h-touch);
   }
 
   .ex-life-why a {
     display: inline-flex;
     align-items: center;
-    min-height: 40px;
+    min-height: var(--h-touch);
   }
 }
 
@@ -1451,11 +1460,6 @@
     height: clamp(260px, calc(100dvh - 500px), 420px);
   }
 
-  .ex-question {
-    font-size: 20px;
-    line-height: 26px;
-  }
-
   .ex-answer {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1535,11 +1539,6 @@
     padding-right: var(--sp-3);
   }
 
-  .ex-question {
-    font-size: 20px;
-    line-height: 26px;
-  }
-
   .ex-compare {
     width: 100%;
   }
@@ -1556,9 +1555,22 @@
     white-space: nowrap;
   }
 
-  /* The optional fourth measure stays in the full table (step 1) on phones. */
+  /* The optional fourth measure stays in the full table (step 1) on phones; a footer says so. */
   .ex-compare [data-key='round_trip_ns'] {
     display: none;
+  }
+
+  .ex-compare-hidden {
+    display: table-footer-group;
+  }
+
+  .ex-compare .ex-compare-hidden td {
+    padding: var(--sp-1) 0 0;
+    color: var(--fg-2);
+    font-size: var(--text-xs);
+    line-height: var(--lh-xs);
+    text-align: left;
+    white-space: normal;
   }
 
   .ex-answer-detail:not([open]) {
@@ -1597,8 +1609,23 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  /* "Reset view" sat on the plot; on narrow layouts it goes under the chart. */
   .ex-chart-wrap {
-    height: 300px;
+    display: flex;
+    flex-direction: column;
+    height: 340px;
+  }
+
+  .ex-chart-wrap .ex-chart-host {
+    flex: 1 1 0;
+    min-height: 0;
+    height: auto;
+  }
+
+  .ex-chart-reset {
+    position: static;
+    align-self: flex-end;
+    margin-top: var(--sp-1);
   }
 
   .ex-dl {

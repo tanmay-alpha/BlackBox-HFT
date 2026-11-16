@@ -13,53 +13,20 @@
   outline-offset: 2px;
 }
 
+/* The visible h1 keeps the shared h1 size (base.css, --text-xl). */
 .cmp-title h1 {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 600;
+  margin: 0 0 var(--sp-1);
 }
 
 .cmp-title p {
   margin: 0;
   max-width: 110ch;
-  font-size: 13px;
-}
-
-.cmp-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-1);
-  background: var(--bg-2);
-  color: var(--fg-0);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.5;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.cmp-btn:hover:not(:disabled) {
-  border-color: var(--fg-2);
-}
-
-.cmp-btn:disabled {
-  color: var(--fg-2);
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.cmp-btn[aria-pressed="true"] {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 .cmp-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 /* ---- Picker ---- */
@@ -75,7 +42,7 @@
   grid-template-columns: 96px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .cmp-pick-label {
@@ -85,8 +52,7 @@
 .cmp-pick select {
   min-width: 0;
   max-width: 100%;
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .cmp-picker-go {
@@ -94,7 +60,7 @@
   align-items: center;
   gap: 10px;
   padding-left: 104px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* ---- Scenario headers ---- */
@@ -137,7 +103,7 @@
 .cmp-scenario h2,
 .cmp-outcome h3 {
   margin: 0 0 8px;
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -148,8 +114,8 @@
   padding: 0 4px;
   border: 1px solid currentColor;
   border-radius: var(--radius-1);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
   line-height: 1.5;
   text-align: center;
 }
@@ -163,7 +129,7 @@
   display: grid;
   gap: 4px;
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .cmp-scenario dl > div,
@@ -184,6 +150,12 @@
   overflow-wrap: anywhere;
 }
 
+/* A run id that wraps at phone width stays one box, so its touch frame covers both lines. */
+.cmp-scenario dd > a.mono {
+  display: inline-block;
+  max-width: 100%;
+}
+
 .cmp-warning {
   margin: 0;
   padding: 8px 10px;
@@ -191,7 +163,7 @@
   border-left-width: 3px;
   border-radius: var(--radius-0);
   background: var(--bg-1);
-  font-size: 13px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 
@@ -202,7 +174,7 @@
   border-left-width: 3px;
   border-radius: var(--radius-0);
   background: var(--bg-1);
-  font-size: 13px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 
@@ -211,7 +183,7 @@
 .cmp-caption {
   caption-side: top;
   padding: 0 0 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   text-align: left;
   color: var(--fg-2);
 }
@@ -268,7 +240,7 @@
 
 .cmp-align p {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .cmp-bar {
@@ -301,7 +273,7 @@
   display: inline-block;
   padding: 0 6px;
   border-left: 3px solid var(--seg);
-  font-size: 12px;
+  font-size: var(--text-xs);
   white-space: nowrap;
 }
 
@@ -318,18 +290,18 @@
   align-items: baseline;
   gap: 6px 18px;
   margin: 0 0 6px;
-  font-size: 14px;
+  font-size: var(--text-sm);
 }
 
 .cmp-first > p.dim {
   margin: 0 0 10px;
   max-width: 120ch;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .cmp-outcome p {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 /* ---- Pairs ---- */
@@ -346,7 +318,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 20px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .cmp-pairs-bar .cmp-pick {
@@ -372,7 +344,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* ---- Equity overlay ---- */
@@ -389,7 +361,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 18px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .cmp-equity-key {
@@ -439,6 +411,8 @@
 .cmp-equity-svg {
   display: block;
   cursor: crosshair;
+  /* A horizontal finger drag reads the curves; a vertical one still scrolls the page. */
+  touch-action: pan-y;
 }
 
 .cmp-grid {
@@ -464,7 +438,7 @@
 .cmp-tick {
   fill: var(--fg-2);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
 }
 
 .cmp-trace {
@@ -490,8 +464,8 @@
 
 .cmp-div-label {
   fill: var(--warn);
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
 }
 
 .cmp-cursor {
@@ -504,7 +478,7 @@
 .cmp-note {
   margin: 0;
   max-width: 130ch;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* ---- Interpretation ---- */

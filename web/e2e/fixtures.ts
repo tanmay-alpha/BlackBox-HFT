@@ -7,7 +7,7 @@ const webDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** The research key `serve.mjs` minted for this run. */
 export function researchKey(): string {
-  return readFileSync(join(webDir, '..', 'data', 'e2e-ui', 'e2e-key.txt'), 'utf8').trim();
+  return readFileSync(join(webDir, '..', process.env.E2E_DATA_DIR ?? 'data/e2e-ui', 'e2e-key.txt'), 'utf8').trim();
 }
 
 const SHOTS = join(webDir, 'test-results', 'ui-v1');

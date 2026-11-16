@@ -7,14 +7,14 @@ import { fmtSince } from "./labels";
 import type { AxisMode } from "./timeline";
 import { useElementSize } from "./useElementSize";
 
-const HEIGHT = 286;
+/** The chart fills the height its pane leaves it, never below this (plot about 96 px tall). */
+const MIN_HEIGHT = 200;
 const LEFT = 72;
 const RIGHT = 18;
 const TOP = 16;
 const GAP = 16;
 const TRADE_BAND = 46;
 const AXIS_BAND = 26;
-const PLOT_HEIGHT = HEIGHT - TOP - GAP - TRADE_BAND - AXIS_BAND;
 
 interface TradeBar {
   seq: number;
@@ -52,6 +52,7 @@ function buildGeometry(
   instrument: InstrumentMeta,
   mode: AxisMode,
   width: number,
+  height: number,
 ): Geometry {
   const n = path.length;
   const plotWidth = width - LEFT - RIGHT;
@@ -88,7 +89,8 @@ function buildGeometry(
   const pad = (hi - lo) * 0.08;
   const yMin = lo - pad;
   const yMax = hi + pad;
-  const yOf = (v: number) => TOP + ((yMax - v) / (yMax - yMin)) * PLOT_HEIGHT;
+  const yOf = (v: number) =>
+    TOP + ((yMax - v) / (yMax - yMin)) * (height - TOP - GAP - TRADE_BAND - AXIS_BAND);
 
   const points = path.map((p, i) => ({
     seq: p.seq,
@@ -189,9 +191,10 @@ export function QueueChart({
 }: QueueChartProps) {
   const [attach, size] = useElementSize<HTMLDivElement>();
   const width = Math.max(360, Math.floor(size.width));
+  const height = Math.max(MIN_HEIGHT, Math.floor(size.height));
   const geo = useMemo(
-    () => buildGeometry(path, events, originNs, instrument, mode, width),
-    [path, events, originNs, instrument, mode, width],
+    () => buildGeometry(path, events, originNs, instrument, mode, width, height),
+    [path, events, originNs, instrument, mode, width, height],
   );
 
   if (path.length === 0) {
@@ -205,7 +208,7 @@ export function QueueChart({
 
   const first = path[0] as QueuePoint;
   const last = path[path.length - 1] as QueuePoint;
-  const tradeBase = TOP + PLOT_HEIGHT + GAP + TRADE_BAND;
+  const tradeBase = height - AXIS_BAND;
   const axisY = tradeBase;
   const right = width - RIGHT;
 
@@ -220,13 +223,14 @@ export function QueueChart({
       : null;
 
   return (
-    <div className="fx-queue" ref={attach}>
+    <div className="fx-queue">
+      <div className="fx-queue-plot" ref={attach}>
       {size.width > 0 ? (
         <svg
           className="fx-queue-svg"
           width={width}
-          height={HEIGHT}
-          viewBox={`0 0 ${width} ${HEIGHT}`}
+          height={height}
+          viewBox={`0 0 ${width} ${height}`}
           role="img"
           aria-label={`Signed queue estimate (modeled, base units) on the exchange clock: ${fmtQty(first.ahead, instrument)} at entry, ${fmtQty(last.ahead, instrument)} at the last recorded update, over ${path.length} recorded points. Below zero: quantity beyond the modeled front; not the order's fill quantity. ${geo.trades.length} market trades printed at the order's price.`}
           onClick={() => onSelect(null)}
@@ -339,6 +343,7 @@ export function QueueChart({
           })}
         </svg>
       ) : null}
+      </div>
       <ul className="fx-queue-legend">
         <li>
           <span className="fx-swatch fx-swatch-line" aria-hidden="true" />

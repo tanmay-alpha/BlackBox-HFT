@@ -32,6 +32,15 @@ function unrepresentable(e: unknown): string {
   return DASH;
 }
 
+/**
+ * A JS number that cannot be a nanosecond count (NaN, infinite, beyond 2^53): stored and served
+ * nanoseconds never are (JSON has no NaN and large values arrive as strings), so it is a form
+ * draft still being typed. Shown as a dash without a console error; validation reports it.
+ */
+function isDraftNumber(ns: NsInput): boolean {
+  return typeof ns === 'number' && (!Number.isFinite(ns) || Math.abs(ns) > Number.MAX_SAFE_INTEGER);
+}
+
 /** `x` with `digits` decimals, `,` thousands separators and U+2212 for negatives. */
 function fixed(x: number, digits: number): string {
   const text = Math.abs(x).toFixed(digits);
@@ -54,7 +63,7 @@ function sig3(v: number): string {
  * number (a statistic such as a mean of durations) uses the same rule in floating point.
  */
 export function fmtDuration(ns: NsInput | null | undefined): string {
-  if (ns === null || ns === undefined) return DASH;
+  if (ns === null || ns === undefined || isDraftNumber(ns)) return DASH;
   if (typeof ns === 'number' && Number.isFinite(ns) && !Number.isInteger(ns)) {
     const sign = ns < 0 ? MINUS : '';
     const a = Math.abs(ns);
@@ -76,6 +85,7 @@ export function fmtDuration(ns: NsInput | null | undefined): string {
  * (`1227000000` -> `1.227 s`). For prose where three significant digits would merge values.
  */
 export function fmtDurationExact(ns: NsInput): string {
+  if (isDraftNumber(ns)) return DASH;
   try {
     return fmtNsDurationExact(ns);
   } catch (e) {

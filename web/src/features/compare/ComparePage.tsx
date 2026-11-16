@@ -17,10 +17,11 @@ import type {
   OrderPair,
   PairClass,
 } from "../../api/types";
-import { ConfigValue, metricLabel } from "../../components/configValue";
+import { ConfigValue, configDiffRows, metricLabel } from "../../components/configValue";
 import { exchangeModelLabel, feeLabel, latencyLabel, queueModelLabel, strategyName } from "../../components/describe";
 import { DataTable, type Column } from "../../components/DataTable";
 import { fmtDuration, fmtInt, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
+import { pathLabel, runLabelText, unitLabel, useDemoTitles, valueLabel } from "../../components/labels";
 import { fmtNsUtc } from "../../components/ns";
 import { Badge, Empty, ErrorBox, HashText, Notice, Panel, Pill, Spinner, useAsync } from "../../components/ui";
 import { GatedButton } from "../../shell/access";
@@ -54,7 +55,7 @@ export default function ComparePage() {
         <h1>Scenario comparison</h1>
         <p className="dim">
           Two simulations side by side, as compared by the server: which configuration fields differ, which measured
-          outcomes differ, and where the two tapes first part. Both are simulations on historical replay.
+          outcomes differ, and where the two tapes first part. Both are simulations on replayed market data (recorded or synthetic, as each run&apos;s dataset declares).
         </p>
       </header>
       {a === "" || b === "" ? (
@@ -75,8 +76,8 @@ export default function ComparePage() {
   );
 }
 
-function runOptionText(run: Run): string {
-  const label = run.label === null || run.label === "" ? "(no label)" : run.label;
+function runOptionText(run: Run, titles: ReadonlyMap<string, string>): string {
+  const label = run.label === null || run.label === "" ? "(no label)" : runLabelText(run.label, titles);
   return `${label} | ${strategyName(run.strategy_kind)} | ${run.dataset.id} | ${run.run_id}`;
 }
 
@@ -90,6 +91,7 @@ function RunPicker({
   onPick: (a: string, b: string) => void;
 }) {
   const runs = useAsync((signal) => api.runs({}, { signal }), []);
+  const titles = useDemoTitles();
   const [pickA, setPickA] = useState(a);
   const [pickB, setPickB] = useState(b);
 
@@ -131,7 +133,7 @@ function RunPicker({
       <datalist id="cmp-run-options">
         {list.map((r) => (
           <option key={r.run_id} value={r.run_id}>
-            {runOptionText(r)}
+            {runOptionText(r, titles)}
           </option>
         ))}
       </datalist>
@@ -145,7 +147,7 @@ function RunPicker({
         {select("cmp-pick-a", pickA, setPickA, "Scenario A")}
         {select("cmp-pick-b", pickB, setPickB, "Scenario B")}
         <div className="cmp-picker-go">
-          <button type="submit" className="cmp-btn" disabled={!ready}>
+          <button type="submit" disabled={!ready}>
             Compare
           </button>
           {same ? (
@@ -162,23 +164,26 @@ function RunPicker({
 /** The comparisons the server already holds for this workspace (the demo lists its curated ones). */
 function StoredComparisons() {
   const list = useAsync((signal) => api.comparisons({ signal }), []);
+  const titles = useDemoTitles();
   const columns: Column<Comparison>[] = [
     {
       id: "label",
       header: "Comparison",
       rowHeader: true,
       cell: (c) => (
-        <Link to={paths.comparePair(c.run_a, c.run_b)}>{c.label === "" ? `comparison ${c.id.slice(0, 12)}` : c.label}</Link>
+        <Link to={paths.comparePair(c.run_a, c.run_b)} title={c.label === "" ? undefined : c.label}>
+          {c.label === "" ? `comparison ${c.id.slice(0, 12)}` : runLabelText(c.label, titles)}
+        </Link>
       ),
       raw: (c) => c.label,
       sortValue: (c) => c.label,
     },
-    { id: "a", header: "A", cell: (c) => <span title={c.run_a}>{c.label_a === "" ? c.run_a.slice(0, 12) : c.label_a}</span> },
-    { id: "b", header: "B", cell: (c) => <span title={c.run_b}>{c.label_b === "" ? c.run_b.slice(0, 12) : c.label_b}</span> },
+    { id: "a", header: "A", cell: (c) => <span title={`${c.label_a} (${c.run_a})`}>{c.label_a === "" ? c.run_a.slice(0, 12) : runLabelText(c.label_a, titles)}</span> },
+    { id: "b", header: "B", cell: (c) => <span title={`${c.label_b} (${c.run_b})`}>{c.label_b === "" ? c.run_b.slice(0, 12) : runLabelText(c.label_b, titles)}</span> },
     {
       id: "status",
       header: "Status",
-      cell: (c) => <Pill tone={c.status === "aligned" ? "ok" : "warn"}>{c.status}</Pill>,
+      cell: (c) => <Pill tone={c.status === "aligned" ? "ok" : "warn"} title={`Comparison status as returned by the server: ${c.status}`}>{c.status.replace(/_/g, " ")}</Pill>,
       raw: (c) => c.status,
       sortValue: (c) => c.status,
     },
@@ -268,17 +273,17 @@ function CompareView({
     }
   };
   const createButton = (text: string) => (
-    <GatedButton scope="run" className="cmp-btn" onClick={() => void create()} blockedReason={creating ? "Creating the comparison\u2026" : null}>
+    <GatedButton scope="run" onClick={() => void create()} blockedReason={creating ? "Creating the comparison\u2026" : null}>
       {creating ? "Creating\u2026" : text}
     </GatedButton>
   );
 
   const actions = (
     <div className="cmp-actions">
-      <button type="button" className="cmp-btn" onClick={onSwap}>
+      <button type="button" onClick={onSwap}>
         Swap A and B
       </button>
-      <button type="button" className="cmp-btn" onClick={onChange}>
+      <button type="button" onClick={onChange}>
         Choose other runs
       </button>
     </div>
@@ -297,10 +302,10 @@ function CompareView({
           <ErrorBox error={runs.error} />
         )}
         <div className="cmp-actions">
-          <button type="button" className="cmp-btn" onClick={runs.reload}>
+          <button type="button" onClick={runs.reload}>
             Retry
           </button>
-          <button type="button" className="cmp-btn" onClick={onChange}>
+          <button type="button" onClick={onChange}>
             Choose other runs
           </button>
         </div>
@@ -351,7 +356,7 @@ function CompareView({
             The stored comparison has A = <span className="mono">{cmp.run_a}</span> and B ={" "}
             <span className="mono">{cmp.run_b}</span>, the reverse of this link. It is shown as stored: every delta is its B
             minus its A.{" "}
-            <button type="button" className="cmp-btn" onClick={onSwap}>
+            <button type="button" onClick={onSwap}>
               Open in stored order
             </button>{" "}
             {createButton("Create comparison in this order")}
@@ -366,12 +371,15 @@ function CompareView({
   return (
     <>
       {actions}
-      {detail.data ? null : (
+      {/* The run cards show on their own only when no stored comparison is coming; while one loads
+          the spinner holds the place, so the comparison body (with its own cards) doesn't push
+          earlier cards down when it arrives (layout shift 0.27 at 1440×900). */}
+      {current === null && !lookup.loading ? (
         <section className="cmp-scenarios" aria-label="Scenarios">
           <ScenarioCard tag="A" label={runA.label ?? ""} run={runA} />
           <ScenarioCard tag="B" label={runB.label ?? ""} run={runB} />
         </section>
-      )}
+      ) : null}
       {body}
     </>
   );
@@ -395,6 +403,7 @@ function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunD
   const runB = runs.find((r) => r.run_id === cmp.run_b);
   const instA = useInstrument(runA);
   const instB = useInstrument(runB);
+  const titles = useDemoTitles();
   const equity = useAsync(
     (signal) =>
       Promise.all([
@@ -409,10 +418,10 @@ function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunD
   const noAlignment = cmp.eligibility.reasons.filter((r) => r.effect === "no_alignment").map((r) => r.field);
   const notAligned = (
     <Notice tag="Metrics only" tone="info">
-      This comparison's status is <span className="mono">{cmp.status}</span>
+      This comparison's status is <span title={cmp.status}>{cmp.status.replace(/_/g, " ")}</span>
       {noAlignment.length > 0 ? (
         <>
-          : the runs differ in <span className="mono">{noAlignment.join(", ")}</span>
+          : the runs differ in <FieldList fields={noAlignment} />
         </>
       ) : null}
       , so the same order id does not name the same decision in both runs and the server holds no per-order alignment.
@@ -425,7 +434,7 @@ function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunD
     <>
       <EvidenceLegend />
       <p className="dim small">
-        Comparison <HashText hash={cmp.id} /> {cmp.label === "" ? null : <strong>{cmp.label}</strong>} · version{" "}
+        Comparison <HashText hash={cmp.id} /> {cmp.label === "" ? null : <strong title={cmp.label}>{runLabelText(cmp.label, titles)}</strong>} · version{" "}
         <span className="mono">{cmp.version}</span> · comparator version <span className="mono">{cmp.comparator_version}</span>{" "}
         · created <span className="mono">{fmtNsUtc(cmp.created_at_ns, 0)}</span>
       </p>
@@ -492,13 +501,13 @@ function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunD
             {!cmp.eligibility.aligned ? (
               <>
                 <Badge kind="warn">aggregates only</Badge> The runs differ in{" "}
-                <span className="mono">{cmp.eligibility.reasons.map((r) => r.field).join(", ")}</span>, so decisions cannot be paired and the
+                <FieldList fields={cmp.eligibility.reasons.map((r) => r.field)} />, so decisions cannot be paired and the
                 metric deltas mix the configuration change with those differences.
               </>
             ) : !cmp.eligibility.like_for_like ? (
               <>
                 <Badge kind="warn">not like-for-like</Badge> Decisions are paired, but the runs also differ in{" "}
-                <span className="mono">{cmp.eligibility.reasons.map((r) => r.field).join(", ")}</span>; the deltas do not isolate the
+                <FieldList fields={cmp.eligibility.reasons.map((r) => r.field)} />; the deltas do not isolate the
                 configuration change.
               </>
             ) : (
@@ -565,14 +574,29 @@ function HeldConstant({ cmp, run }: { cmp: Comparison; run: RunDetail }) {
   );
 }
 
+/** Eligibility or configuration paths by name; each raw path is its title. */
+function FieldList({ fields }: { fields: string[] }) {
+  return (
+    <>
+      {fields.map((f, i) => (
+        <Fragment key={f}>
+          {i > 0 ? ", " : null}
+          <span title={f}>{pathLabel(f)}</span>
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
 function ScenarioCard({ tag, label, run }: { tag: "A" | "B"; label: string; run: RunDetail }) {
   const { config } = run;
   const execution = config.execution;
   const latency = execution.order_latency;
+  const titles = useDemoTitles();
   return (
     <article className={`cmp-scenario cmp-scenario-${tag.toLowerCase()}`}>
-      <h2>
-        <span className="cmp-tag">{tag}</span> {label === "" ? "(no label)" : label}
+      <h2 title={label === "" ? undefined : label}>
+        <span className="cmp-tag">{tag}</span> {label === "" ? "(no label)" : runLabelText(label, titles)}
       </h2>
       <dl>
         <div>
@@ -603,7 +627,7 @@ function ScenarioCard({ tag, label, run }: { tag: "A" | "B"; label: string; run:
               ? `entry ${fmtDuration(latency.entry_ns)} / response ${fmtDuration(latency.response_ns)}${
                   latency.type === "jitter" ? ` / jitter ${fmtDuration(latency.jitter_ns)}` : ""
                 }`
-              : `${latency.type} ${latencyLabel(latency)}`}
+              : `${valueLabel(latency.type)}: ${latencyLabel(latency).replace(/cubic\(/g, "(")}`}
           </dd>
         </div>
         <div>
@@ -632,34 +656,25 @@ function ConfigDiffTable({ cmp }: { cmp: Comparison }) {
       <caption className="cmp-caption">Every field of the serialized run configuration whose value differs.</caption>
       <thead>
         <tr>
-          <th scope="col">Configuration path</th>
+          <th scope="col">Setting</th>
           <th scope="col">A</th>
           <th scope="col">B</th>
         </tr>
       </thead>
       <tbody>
-        {cmp.config_diffs.map((diff) => (
-          <tr key={diff.path}>
-            <th scope="row" className="mono">
-              {diff.path}
+        {configDiffRows(cmp.config_diffs).map((row) => (
+          <tr key={row.path}>
+            <th scope="row" title={row.path}>
+              {pathLabel(row.path)}
             </th>
-            <ConfigValue path={diff.path} value={diff.a} />
-            <ConfigValue path={diff.path} value={diff.b} />
+            <ConfigValue path={row.a.path} value={row.a.value} />
+            <ConfigValue path={row.b.path} value={row.b.value} />
           </tr>
         ))}
       </tbody>
     </table>
   );
 }
-
-const UNIT_LABEL: Record<string, string> = {
-  quote: "quote currency",
-  qty: "base quantity",
-  count: "count",
-  ratio: "percent",
-  ns: "time",
-  ticks: "ticks",
-};
 
 function fmtMetric(value: number | null, unit: string): string {
   if (value === null) return EM_DASH;
@@ -738,7 +753,7 @@ function MetricsTable({ rows, likeForLike }: { rows: MetricRow[]; likeForLike: b
             <td className={`mono cmp-num${signClass(row, row.a)}`}>{fmtMetric(row.a, row.unit)}</td>
             <td className={`mono cmp-num${signClass(row, row.b)}`}>{fmtMetric(row.b, row.unit)}</td>
             <td className="mono cmp-num">{fmtMetricDelta(row.delta, row.unit)}</td>
-            <td className="dim">{UNIT_LABEL[row.unit] ?? row.unit}</td>
+            <td className="dim">{unitLabel(row.unit)}</td>
             <td>{likeForLike ? <span className="dim">yes</span> : <Badge kind="warn">no</Badge>}</td>
           </tr>
         ))}
@@ -896,10 +911,11 @@ function OutcomeCard({
   outcome: DecisionOutcome | null;
   inst: InstrumentMeta | null;
 }) {
+  const titles = useDemoTitles();
   return (
     <article className={`cmp-outcome cmp-scenario-${tag.toLowerCase()}`}>
-      <h3>
-        <span className="cmp-tag">{tag}</span> {label === "" ? "(no label)" : label}
+      <h3 title={label === "" ? undefined : label}>
+        <span className="cmp-tag">{tag}</span> {label === "" ? "(no label)" : runLabelText(label, titles)}
       </h3>
       {outcome === null ? (
         <p className="dim">No order was decided at this tick and slot in scenario {tag}.</p>
@@ -957,7 +973,7 @@ function OutcomeCard({
               </dd>
             </div>
           </dl>
-          <Link className="cmp-btn" to={paths.order(runId, orderId)}>
+          <Link className="btn" to={paths.order(runId, orderId)}>
             Open this order's forensics in {tag}
           </Link>
         </>
@@ -1146,6 +1162,7 @@ function PairPages({
   instB: InstrumentMeta | null;
 }) {
   const pairClass = cls === "all" ? undefined : cls;
+  const titles = useDemoTitles();
   const first = useAsync(
     (signal) => api.comparisonPairs(cmp.id, { class: pairClass, limit: PAIRS_PAGE }, { signal }),
     [cmp.id, pairClass],
@@ -1203,11 +1220,11 @@ function PairPages({
               <th scope="col" rowSpan={2}>
                 Differs in
               </th>
-              <th scope="colgroup" colSpan={3} className="cmp-side-start">
-                <span className="cmp-tag">A</span> {cmp.label_a}
+              <th scope="colgroup" colSpan={3} className="cmp-side-start" title={cmp.label_a}>
+                <span className="cmp-tag">A</span> {runLabelText(cmp.label_a, titles)}
               </th>
-              <th scope="colgroup" colSpan={3} className="cmp-side-start">
-                <span className="cmp-tag">B</span> {cmp.label_b}
+              <th scope="colgroup" colSpan={3} className="cmp-side-start" title={cmp.label_b}>
+                <span className="cmp-tag">B</span> {runLabelText(cmp.label_b, titles)}
               </th>
             </tr>
             <tr>
@@ -1258,7 +1275,7 @@ function PairPages({
             : ""}
         </span>
         {last.next_cursor !== null ? (
-          <button type="button" className="cmp-btn" onClick={() => void loadMore()} disabled={loadingMore}>
+          <button type="button" onClick={() => void loadMore()} disabled={loadingMore}>
             {loadingMore ? "Loading\u2026" : `Load more (up to ${fmtInt(PAIRS_PAGE)})`}
           </button>
         ) : null}

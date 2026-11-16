@@ -53,7 +53,8 @@ test.describe('keyed research journey', () => {
 
     // Guided mode (the default): a preset plus the essentials, edited in plain units.
     await page.goto('/strategy?dataset=synthetic-demo');
-    await page.getByRole('radio', { name: 'Touch maker: baseline', exact: true }).check();
+    // A preset card's radio is named by its short title and the strategy tag.
+    await page.getByRole('radio', { name: 'Baseline Touch maker Passive maker', exact: true }).check();
     const modes = page.getByRole('group', { name: 'Form mode' });
     await expect(modes.getByRole('button', { name: 'Guided' })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByRole('tab', { name: /Seed/ })).toHaveCount(0);
@@ -81,6 +82,10 @@ test.describe('keyed research journey', () => {
     await page.getByLabel('Seed', { exact: true }).and(page.locator('input')).fill(String(base));
     await page.getByLabel('Run label').fill(`e2e guided ${base}`);
     await page.getByTestId('lab-submit').click();
+    // A new configuration is a new job, never reported as already simulated (PHASE3_REVIEW D1).
+    const jobStatus = page.getByTestId('lab-job-status');
+    await expect(jobStatus).toHaveText(/^(Queued|Running|Completed)\./);
+    await expect(jobStatus).not.toContainText('Already simulated');
     // The Lab stays on the page and links the next steps; the first is the job.
     await page.getByTestId('lab-next-job').click();
     await page.waitForURL(/\/sim\/jobs\//);
@@ -122,13 +127,16 @@ test.describe('keyed research journey', () => {
     await expect(page).toHaveURL(new RegExp(`/compare/pair\\?a=${runId}&b=${DEMO_RUN}`));
     await page.getByRole('button', { name: 'Create comparison' }).click();
     await expect(page.getByText('Measured outcomes', { exact: false }).first()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText('execution.fees.maker').first()).toBeVisible();
+    // Differing settings show their plain label, with the raw configuration path as the title.
+    const makerFee = page.locator('th[title="execution.fees.maker"]').first();
+    await expect(makerFee).toBeVisible();
+    await expect(makerFee).toHaveText('Maker fee');
     await shot(page, '12-comparison-created');
 
     // Idempotent resubmission returns the stored run instead of a new job.
     await page.goto('/strategy');
     await advanced(page);
-    await page.getByRole('radio', { name: 'Touch maker: baseline', exact: true }).check();
+    await page.getByRole('radio', { name: 'Baseline Touch maker Passive maker', exact: true }).check();
     await page.getByRole('tab', { name: /Order latency/ }).click();
     await page.getByLabel('Entry latency', { exact: true }).fill('5');
     await page.getByRole('tab', { name: /Fees/ }).click();
@@ -137,7 +145,8 @@ test.describe('keyed research journey', () => {
     await page.getByRole('tab', { name: /Seed/ }).click();
     await page.getByLabel('Seed', { exact: true }).and(page.locator('input')).fill(String(base));
     await page.getByTestId('lab-submit').click();
-    await expect(page.getByRole('region', { name: 'Next steps' })).toContainText(`stored run ${runId}`);
+    const results = page.getByRole('region', { name: 'Job and results' });
+    await expect(results.getByTestId('lab-job-status')).toContainText(`Already simulated. This exact configuration was simulated before: stored run ${runId}`);
     await page.getByTestId('lab-next-forensics').click();
     await expect(page).toHaveURL(new RegExp(`/forensics/${runId}`));
 

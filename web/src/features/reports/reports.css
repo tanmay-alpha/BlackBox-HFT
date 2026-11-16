@@ -43,6 +43,12 @@
   margin: 0 0 var(--sp-2);
 }
 
+/* Inline code (SHA-256s, paths) breaks anywhere so a long hash never makes the report pan sideways
+   on a phone; code blocks keep their own scroller. */
+.md :not(pre) > code {
+  overflow-wrap: anywhere;
+}
+
 .md-code {
   max-height: 480px;
   overflow: auto;
@@ -120,7 +126,7 @@ h2.report-heading {
 .report-code > summary {
   display: flex;
   align-items: center;
-  min-height: 40px;
+  min-height: var(--h-touch);
   color: var(--fg-1);
   font-size: var(--text-sm);
   cursor: pointer;
@@ -139,6 +145,20 @@ h2.report-heading {
 .report-toc a {
   display: inline-block;
   padding: var(--sp-1) 0;
+}
+
+/* Touch screens: each contents entry is a full-height row. */
+@media (pointer: coarse) {
+  .report-toc {
+    gap: 0;
+  }
+
+  .report-toc a {
+    display: flex;
+    align-items: center;
+    min-height: var(--h-touch);
+    padding: 0;
+  }
 }
 
 @media (max-width: 599px) {

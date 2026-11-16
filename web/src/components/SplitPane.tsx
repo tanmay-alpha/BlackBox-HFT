@@ -9,6 +9,8 @@ import { Fragment, createContext, isValidElement, useContext, useEffect, useMemo
 import type { CSSProperties, ReactNode } from 'react';
 import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
 
+import { LayoutResetContext } from './layoutReset';
+
 export interface Pane {
   id: string;
   /** Names the pane in its separators' accessible labels. */
@@ -32,9 +34,6 @@ const StackContext = createContext(false);
 /** The outermost narrow flow fills the workspace slot and scrolls; nested flows grow with content. */
 const STACK_ROOT: CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflowY: 'auto', overflowX: 'hidden' };
 const STACK_NESTED: CSSProperties = { display: 'flex', flexDirection: 'column', height: 'auto' };
-
-/** Bumped by "Reset layout"; every SplitPane remounts with its default sizes. */
-export const LayoutResetContext = createContext(0);
 
 const STACK_QUERY = '(max-width: 959px)';
 

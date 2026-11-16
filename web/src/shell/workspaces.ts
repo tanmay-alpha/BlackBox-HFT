@@ -11,6 +11,7 @@ import {
   FlaskConical,
   GitCompareArrows,
   LayoutDashboard,
+  Layers,
   LineChart,
   Microscope,
   Server,
@@ -32,7 +33,7 @@ export const SECTIONS: { id: SectionId; name: string }[] = [
 ];
 
 export interface WorkspaceDef {
-  id: 'explore' | 'overview' | 'data' | 'book' | 'strategy' | 'sim' | 'forensics' | 'risk' | 'compare' | 'reports' | 'system';
+  id: 'explore' | 'overview' | 'data' | 'book' | 'market' | 'strategy' | 'sim' | 'forensics' | 'risk' | 'compare' | 'reports' | 'system';
   name: string;
   section: SectionId;
   /** Two-letter mnemonic, shown only in the collapsed rail. */
@@ -55,6 +56,7 @@ export const WORKSPACES: WorkspaceDef[] = [
   { id: 'reports', name: 'Reports', section: 'studio', mnemonic: 'RE', chord: 'p', path: paths.reports(), icon: FileText, owns: under('/reports') },
   { id: 'data', name: 'Datasets', section: 'market', mnemonic: 'DS', chord: 'm', path: paths.datasets(), icon: Database, owns: under('/data') },
   { id: 'book', name: 'Order Book Replay', section: 'market', mnemonic: 'OB', chord: 'b', path: paths.book(), icon: BookOpen, owns: under('/book') },
+  { id: 'market', name: 'Market Data Workbench', section: 'market', mnemonic: 'MW', chord: 'k', path: paths.market(), icon: Layers, owns: under('/market') },
   { id: 'forensics', name: 'Runs & Forensics', section: 'execution', mnemonic: 'RF', chord: 'f', path: paths.runs(), icon: Microscope, owns: under('/forensics') },
   { id: 'compare', name: 'Comparisons', section: 'execution', mnemonic: 'CO', chord: 'c', path: paths.compare(), icon: GitCompareArrows, owns: under('/compare') },
   { id: 'risk', name: 'Risk & P&L', section: 'execution', mnemonic: 'RP', chord: 'r', path: paths.risk(), icon: LineChart, owns: under('/risk') },

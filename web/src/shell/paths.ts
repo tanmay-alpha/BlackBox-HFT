@@ -28,6 +28,17 @@ export const paths = {
     withQuery(`/book/data/${enc(id)}`, query),
   bookRun: (runId: string, query?: { t?: string | number | null; order?: number | null }) =>
     withQuery(`/book/runs/${enc(runId)}`, query),
+  /** Market Data Workbench: L3 (order-level) datasets, the demo is synthetic. */
+  market: () => '/market',
+  /**
+   * One workbench dataset. `tab` is the step, `event` the selected event index (shared by the
+   * book, timeline and metrics), `type` the timeline's ITCH message-type filter, `from` the event
+   * index the timeline page starts at.
+   */
+  marketDataset: (
+    id: string,
+    query?: { tab?: 'dataset' | 'validation' | 'book' | 'events' | 'metrics'; event?: number | null; type?: string | null; from?: number | null },
+  ) => withQuery(`/market/${enc(id)}`, query),
   strategy: (query?: { dataset?: string; from?: string }) => withQuery('/strategy', query),
   runs: () => '/forensics',
   run: (runId: string) => `/forensics/${enc(runId)}`,

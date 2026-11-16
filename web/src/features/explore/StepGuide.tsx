@@ -8,7 +8,9 @@ import { Link } from 'react-router-dom';
 import type { OrderDetail } from '../../api/model';
 import type { DecisionOutcome, InstrumentMeta, OrderPair, PairClass } from '../../api/types';
 import { EXCHANGE_MODEL_INFO, QUEUE_MODEL_INFO, STRATEGY_INFO, fractionToBps, latencyLabel, tifLabel } from '../../components/describe';
-import { DASH, fmtDuration, fmtDurationExact, fmtInt, fmtNum, fmtPrice, fmtQty, fmtSigned, humanizeNsText, words } from '../../components/fmt';
+import { DASH, fmtDuration, fmtInt, fmtNum, fmtPrice, fmtQty, fmtSigned, humanizeNsText, words } from '../../components/fmt';
+import { configCellText } from '../../components/configValue';
+import { pathLabel, valueLabel } from '../../components/labels';
 import { BasisBadge, HashText, Notice, Spinner, type AsyncResult } from '../../components/ui';
 import { paths } from '../../shell/paths';
 import { divergences, PNL_IDENTITY_TOLERANCE } from './story';
@@ -368,11 +370,6 @@ function OrderStep({ exp, names, focus, orderId, order, onSelectOrder, onPick }:
 
 // ----- 4 Assumptions ----------------------------------------------------------------------
 
-const VARIED_LABEL: Record<string, string> = {
-  'execution.order_latency.entry_ns': 'Order latency, strategy to exchange',
-  'execution.order_latency.response_ns': 'Response latency, exchange to strategy',
-};
-
 function AssumptionsStep({ exp, names }: StepGuideProps) {
   const { story, dataset } = exp;
   const cfg = story.fast.run.config;
@@ -405,10 +402,12 @@ function AssumptionsStep({ exp, names }: StepGuideProps) {
         <tbody>
           {(cmp?.config_diffs ?? []).map((d) => (
             <tr key={d.path}>
-              <th scope="row">{VARIED_LABEL[d.path] ?? words(d.path.split('.').at(-1) ?? d.path)}</th>
+              <th scope="row" title={d.path}>
+                {pathLabel(d.path)}
+              </th>
               {[d.a, d.b].map((v, i) => (
-                <td key={i} className="ex-num">
-                  {typeof v === 'number' && d.path.endsWith('_ns') ? fmtDurationExact(v) : JSON.stringify(v)}
+                <td key={i} className="ex-num" title={JSON.stringify(v)}>
+                  {configCellText(d.path, v)}
                 </td>
               ))}
             </tr>
@@ -425,7 +424,7 @@ function AssumptionsStep({ exp, names }: StepGuideProps) {
         </dd>
         <dt>Latency model</dt>
         <dd>
-          {words(e.order_latency.type)} ({latencyLabel(e.order_latency)} in the {names.fast} scenario): every order and cancel takes exactly this long
+          {valueLabel(e.order_latency.type)} ({latencyLabel(e.order_latency)} in the {names.fast} scenario): every order and cancel takes exactly this long
           each way.
         </dd>
         <dt>Fills</dt>
