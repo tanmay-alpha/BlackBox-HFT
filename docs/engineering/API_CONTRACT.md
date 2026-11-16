@@ -212,7 +212,29 @@ anonymously works on demo content.
 | `GET /datasets/{dataset_id}/versions/{version}/quality` | – | `checker_version` (default latest) | `{checker_version, passed, error_count, warning_count, book_valid_fraction, report: QualityReport, report_sha256}` |
 | `GET /datasets/{dataset_id}/versions/{version}/replay` | – | `t0_ns`, `t1_ns`, `step_ns`, `levels ≤ 100`, `max_trades ≤ 50000` | `ReplayWindow` (frames < 5,000 and ≤ 4 MiB; otherwise `truncated_by: "bytes"`) |
 | `GET /datasets/{dataset_id}/replay` | – | same | replay of the current version. Answers `Cache-Control: no-cache` plus `Content-Location` naming the versioned URL |
-| `GET /presets`, `GET /demos` | – | `dataset_id` | as today (`Preset[]`, `Demo[]`), ns as strings |
+| `GET /presets`, `GET /demos` | – | `dataset_id` | as today (`Preset[]`, `Demo[]`), ns as strings. `/demos` also includes `execution_validation`, whose runs span `synthetic-demo`, `synthetic-stress-depletion` and `synthetic-stress-wide-spreads`: each run's identity is computed on its own dataset's current manifest (read from the version row, never its events); if any of the three is unknown or invisible to the caller, that demo is omitted |
+
+### 8.2a Market Data Workbench (L3, synthetic only)
+
+`crates/bb-app/src/v1/market.rs`; tag `market`. Every route is public (anonymous or bearer). The catalogue is
+structural: the only servable id is `l3-demo`, an in-code synthetic ITCH session (`L3SynthConfig::default()`)
+generated once per process behind the heavy-read limit (2 s wait, then 503 `unavailable`/`busy`). Every other
+`dataset_id` answers 404. There is no upload, registration or private-file path in either profile; private ITCH is
+inspected only by the offline `blackbox market workbench` CLI and is never served. Responses are
+immutable-cached (§6) with conditional `ETag`/304. Timestamps are nanoseconds since synthetic session midnight, as
+strings; prices are ITCH `price4` integers.
+
+| Method & path | Query (bounds) | Response |
+|---|---|---|
+| `GET /market/datasets` | – | `Catalogue {items: Summary[]}` (one item) |
+| `GET /market/datasets/{dataset_id}` | – | `Summary {dataset_id, dataset_version, data_class: "synthetic", symbol, venue, session, timestamp_basis, events, first_ns, last_ns, messages_by_type, quality {passed, quarantined_total, checks}, generator, license_note}` |
+| `GET /market/datasets/{dataset_id}/events` | `limit` 1–500 (default 100); `message_type` one uppercase ITCH letter; `t0_ns`, `t1_ns` inclusive, within 0–86,400 s, `t1_ns ≥ t0_ns`; `from_event_index` 0–99,999; `cursor` (bound to version and filters) | `Page<MarketEvent>`: `{event_index, message_type, ts_ns, order_ref, new_order_ref, side, price4, shares, best_bid_price4, best_ask_price4, applied}`; page body ≤ min(caller cap, 256 KiB), else `truncated_by: "bytes"` |
+| `GET /market/datasets/{dataset_id}/book` | `event_index` (required, < `events`, else 404); `levels` 1–20 (default 5); `orders_per_level` 1–100 (default 20) | `MarketBook {event_index, ts_ns, levels, bids, asks}`; each level `{price4, shares, order_count, orders: [{order_ref, shares, queue_position, shares_ahead, entered_ns, entered_event_index}], orders_truncated}` |
+| `GET /market/datasets/{dataset_id}/comparison` | – | `Comparison`: L3-derived versus L2-visible view of the same session |
+| `GET /market/datasets/{dataset_id}/metrics` | `max_points` 2–500 (default 100) | `{basis, definitions, counts, rates_per_second, order_lifetime_ns, queue_position_at_execution, series (downsampled to ≤ max_points by event-index bucket), l2}` |
+
+Errors: 400 `invalid_field` for out-of-bound parameters, 404 for any other dataset id. Measured response sizes
+and method: [docs/research/MARKET_DATA_WORKBENCH.md](../research/MARKET_DATA_WORKBENCH.md).
 
 ### 8.3 Experiments (submit = enqueue job)
 

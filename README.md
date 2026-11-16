@@ -42,6 +42,8 @@ start ~1 minute after idle). Architecture and limits: [docs/DEPLOYMENT.md](docs/
 | **Explore** | `/`: the latency experiment as one guided page: the question, the answer, a P&L breakdown (net = realized + unrealized − fees, checked against the stored values before it is shown), equity, the first divergence, the replay and order lifecycles, and the model assumptions in plain words. Scenario, order and time live in the URL, so deep links and Back keep them. `/experiments`: the catalogue of curated demo experiments. |
 | **Research Studio** | **Strategy Lab** in Guided mode (strategy, order size, latency and fees, each explained) or Advanced mode: a strategy (touch maker, Avellaneda-Stoikov, GLFT, imbalance taker, scripted) and every execution assumption (exchange and queue model, constant / jittered / log-normal / heavy-tailed latency with separate cancel legs, think time, fees, risk limits, seed). **Jobs & Sweeps**: submit as a background job and follow it through queued, running and completed, or cancel it; `/api/v1/sweeps` accepts `SweepSpec` grid, seeded random and seed-ensemble designs, with optional in-/out-of-sample partitions. **Reports**: exportable, with configuration fingerprint, dataset version hash, platform class and result hash. |
 | **Market Lab** | **Datasets**: dataset identity and a data-quality report per version. **Order Book Replay**: heatmap reconstructed from L2 updates, best bid/ask, trades, a depth ladder and microstructure metrics (spread, depth, imbalance, microprice, order-flow imbalance, realised volatility), with a run's own orders and fills on the same clock. |
+| **Market Data Workbench** | `/market`: an order-level (L3) view of a generated synthetic ITCH session (`l3-demo`): event timeline, the book with per-order queue position at any event, native L3 metrics and an L3-versus-L2 comparison of the same session. Hosted and anonymous access is synthetic only; private ITCH files are inspected locally with `blackbox market workbench`. [docs/research/MARKET_DATA_WORKBENCH.md](docs/research/MARKET_DATA_WORKBENCH.md), [L3_L2_VALIDATION.md](docs/research/L3_L2_VALIDATION.md). |
+| **Execution Model Validation** | `blackbox study exec-validation` changes one execution assumption (queue model, latency shape and direction, cancel delay, feed staleness) or the synthetic liquidity regime at a time against the `maker_baseline` preset. The `execution_validation` demo carries the same contrasts on `synthetic-demo`, `synthetic-stress-depletion` and `synthetic-stress-wide-spreads`; the order page's evidence ledger separates what the simulator knows from what it estimates. A model sensitivity study, not validation against real executions: [docs/research/EXECUTION_MODEL_VALIDATION.md](docs/research/EXECUTION_MODEL_VALIDATION.md). |
 | **Execution Analysis** | **Runs & Forensics**: click any order and ask *why did this fill?* or *why did this not fill?* A two-clock timeline, the modeled queue trajectory, and a step-by-step explanation in which every statement is tagged Observed, Modeled, Derived or Unobservable. **Comparisons**: eligibility first (dataset, instrument, strategy, decision grid), then decision-aligned, timing-aware pair classes and the exact first divergence; sweep reports include selection-bias caveats and, where available, backtest-overfitting estimates or per-seed dispersion. **Risk & P&L**: equity, inventory, drawdown, fees and execution analytics (effective and realised spread, adverse selection, implementation shortfall, fill probability by queue position) with units and caveats; no annualised Sharpe where it would be meaningless. |
 | **System** | Worker (idle / busy / not responding), queue and readiness status; admin tabs need a key. |
 
@@ -50,7 +52,8 @@ start ~1 minute after idle). Architecture and limits: [docs/DEPLOYMENT.md](docs/
 All screenshots show the generated **synthetic** dataset; vendor market data is never published.
 Apart from the latency experiment, they were taken before the rebuild and show the earlier navigation shell
 (two-letter rail codes, inspector open); the current rail is labelled by section and the inspector starts closed.
-More current screenshots: [docs/rebuild/img/](docs/rebuild/img/).
+More current screenshots: [docs/rebuild/img/](docs/rebuild/img/). The Phase 3.1 responsiveness and accessibility
+pass (before/after at 360–1440 px) is recorded in [docs/rebuild/PHASE31_UI_REVIEW.md](docs/rebuild/PHASE31_UI_REVIEW.md).
 
 | | |
 |---|---|
@@ -132,6 +135,9 @@ blackbox synth                      generate the deterministic synthetic dataset
 blackbox ingest-tardis ...          convert Tardis.dev CSV files into a dataset (local use only)
 blackbox itch-reconstruct <file>    rebuild a NASDAQ ITCH 5.0 order book and print its manifest (local use only)
 blackbox run --preset <id>          run a simulation offline (no database)
+blackbox market l3-synth --out <new dir>     write synthetic ITCH bytes and a workbench artefact
+blackbox market workbench --input <itch> ... inspect a private ITCH file locally (outputs stay private)
+blackbox study exec-validation --out <dir>   Phase 5 execution-model sensitivity study (offline)
 blackbox explain <run> <order>      explain one order
 blackbox compare <run_a> <run_b>    compare two runs
 ```
@@ -206,7 +212,8 @@ explains the concepts from scratch and has a five-minute demo script.
 | [API.md](docs/API.md) | HTTP API |
 | [BUILDING.md](docs/BUILDING.md) | Build requirements and Windows notes |
 | [INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md) | Concepts explained from scratch, and a demo script |
-| [rebuild/](docs/rebuild/) | The product rebuild: [FINAL_REVIEW](docs/rebuild/FINAL_REVIEW.md), tracker, baseline, prototype review, validation, latency sensitivity, performance, security review, reuse matrix |
+| [rebuild/](docs/rebuild/) | The product rebuild: [FINAL_REVIEW](docs/rebuild/FINAL_REVIEW.md), tracker, [next phases](docs/rebuild/NEXT_PHASES_TRACKER.md), baseline, prototype review, validation, latency sensitivity, performance, security review, reuse matrix |
+| [research/](docs/research/) | Market Data Workbench, L3/L2 validation, execution model validation, microstructure |
 
 ## Acknowledgements
 

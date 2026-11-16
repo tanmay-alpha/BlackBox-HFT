@@ -163,6 +163,18 @@ The hosted stack and Docker image are implemented. See [DEPLOYMENT.md](DEPLOYMEN
 [TARGET_ARCHITECTURE.md](engineering/TARGET_ARCHITECTURE.md) for queue/bundle design and
 [PROJECT_STATE.md](engineering/PROJECT_STATE.md) for deployment provenance.
 
+### L3 workbench data path and the study CLI
+
+`bb-data::l3synth` generates a deterministic synthetic ITCH 5.0 session; `bb-data::l3workbench` replays its
+frames into an order-level book (per-order queue position, quarantine of inconsistent effects) and
+`bb-analytics::l3` derives native L3 metrics plus the L2-visible comparison. The public router
+(`crates/bb-app/src/v1/market.rs`) builds the fixed `l3-demo` session once per process in memory behind the
+heavy-read limit and serves bounded pages from it; it reads no file, database row or artefact, so no private
+data is reachable over HTTP. `blackbox market l3-synth|workbench` writes the same artefacts offline, the latter
+from a local private ITCH file. `blackbox study exec-validation` (`crates/bb-app/src/study.rs`) is an offline
+CLI with no HTTP route and no database writes: it generates the synthetic regimes
+(`bb-data::synthetic`) and runs the controlled contrasts into a new output directory.
+
 ## Conventions that cross every boundary
 
 Defined once in `crates/bb-core/src/lib.rs` and summarised for API users in [API.md](API.md):

@@ -58,8 +58,10 @@ page lists those assumptions and the things the simulation cannot know.
   book updates they belong to would produce. Feed latency in that file is 116 ms at minimum and
   129 ms at the median (the vendor captured from London that year), with a p99 of 911 ms. Results
   on that data inherit both effects; the dataset page shows them.
-- **Order latency** (entry and response) is a model: a constant, or a constant plus seeded
-  jitter. It is not calibrated to any venue.
+- **Order latency** (entry and response) is modeled by `constant`, seeded uniform `jitter`,
+  `log_normal`, or clipped cubic `heavy_tail`. The latter two permit a separate cancel-entry
+  distribution. `think_time_ns` adds constant decision-to-send delay; feed latency may also
+  receive a constant run-level offset. None is calibrated to any venue.
 - Requests and responses never overtake one another.
 - If the source contained events whose local time preceded their exchange time (clock skew), all
   local timestamps were shifted by a constant; the dataset manifest records the shift.
@@ -112,7 +114,9 @@ page lists those assumptions and the things the simulation cannot know.
 ## Determinism
 
 - The same dataset hash, engine version, configuration and seed give the same result hash on the
-  same binary and platform. The seed only affects jittered latency; nothing else is random.
+  same binary and platform. The run seed only affects stochastic latency draws (`jitter`,
+  `log_normal`, `heavy_tail`); nothing else in the simulation is random. A separate synthetic
+  generator seed determines the dataset, not an independent execution replicate.
 - The engine iterates hash maps internally; BlackBox canonicalizes the order of simultaneous
   events so this does not leak into results (docs/EXECUTION_MODEL.md).
 - Bit-identical results across different platforms are expected but not guaranteed for strategies
@@ -128,3 +132,17 @@ page lists those assumptions and the things the simulation cannot know.
 - The ingestion pipeline reports duplicates, gaps, crossed books and precision violations. It
   does not repair them: nothing is interpolated and no missing book event is invented. Exact
   duplicate trades are dropped and counted.
+
+## Synthetic L3 (Market Data Workbench)
+
+Figures from [docs/research/L3_L2_VALIDATION.md](research/L3_L2_VALIDATION.md) (30,034-frame demo session).
+
+- The generator always executes the head of the FIFO queue: queue position before execution was 1 for all
+  5,918 executions. This checks reconstruction consistency; it says nothing about where real executions hit.
+- Its message mix is generated, not fitted to any real feed: executions (`E`/`C`) are 19.7% of messages, and
+  the session spans only 9.61 s of synthetic time.
+- The cancellation-location reference is an illustrative middle order, not a trader's order; L2 cannot recover
+  which order lost shares.
+- The hosted and anonymous workbench serves the synthetic `l3-demo` only. Private ITCH (for example NASDAQ
+  samples) is inspected by the offline CLI; its event-level outputs must not be committed, uploaded or hosted
+  ([docs/research/MARKET_DATA_WORKBENCH.md](research/MARKET_DATA_WORKBENCH.md)).
