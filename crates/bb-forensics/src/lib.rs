@@ -27,8 +27,8 @@ pub use compare::{
     CompareInput, MetadataInput, compare_metadata, compare_runs, compare_runs_until, config_diffs,
 };
 pub use ensemble::{
-    ENSEMBLE_ANALYSIS_VERSION, EnsembleMember, EnsembleReport, EnsembleRunOutcome, EnsembleSegment,
-    MetricSpread, analyze_ensemble,
+    BootstrapMean, ENSEMBLE_ANALYSIS_VERSION, EnsembleMember, EnsembleReport, EnsembleRunOutcome,
+    EnsembleSegment, MetricSpread, analyze_ensemble, bootstrap_mean,
 };
 pub use explain::explain_order;
 pub use metrics::{compute_metrics, enrich_fills};

@@ -20,6 +20,8 @@
 pub mod book;
 mod decimal;
 pub mod itch;
+pub mod l3synth;
+pub mod l3workbench;
 pub mod normalize;
 pub mod quality;
 pub mod slice;

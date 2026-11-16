@@ -418,6 +418,83 @@ impl OrderBooks {
         })
     }
 
+    /// Whole-side shares and order count without allocating a depth snapshot.
+    pub fn side_totals(&self, locate: u16, side: Side) -> (u64, u64) {
+        let Some(book) = self.stocks.get(usize::from(locate)) else {
+            return (0, 0);
+        };
+        book.levels(side)
+            .values()
+            .fold((0, 0), |(shares, orders), level| {
+                (shares + level.shares, orders + u64::from(level.orders))
+            })
+    }
+
+    /// Best-first depth limited before allocation (for bounded replay responses).
+    pub fn top_levels(&self, locate: u16, side: Side, limit: usize) -> Vec<LevelView> {
+        let Some(book) = self.stocks.get(usize::from(locate)) else {
+            return Vec::new();
+        };
+        let row = |(&price, level): (&u32, &Level)| LevelView {
+            price: Price4(price),
+            shares: level.shares,
+            orders: level.orders,
+        };
+        match side {
+            Side::Buy => book
+                .levels(side)
+                .iter()
+                .rev()
+                .take(limit)
+                .map(row)
+                .collect(),
+            Side::Sell => book.levels(side).iter().take(limit).map(row).collect(),
+        }
+    }
+
+    /// FIFO prefix limited before allocation; totals remain available from the level view.
+    pub fn level_queue_prefix(
+        &self,
+        locate: u16,
+        side: Side,
+        price: Price4,
+        limit: usize,
+    ) -> Vec<QueuedOrder> {
+        let Some(level) = self
+            .stocks
+            .get(usize::from(locate))
+            .and_then(|b| b.levels(side).get(&price.0))
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity((level.orders as usize).min(limit));
+        let mut cursor = Some(level.head);
+        while let Some(order_ref) = cursor.filter(|_| out.len() < limit) {
+            let order = &self.orders[&order_ref];
+            out.push(QueuedOrder {
+                order_ref,
+                shares: order.shares,
+            });
+            cursor = order.next;
+        }
+        out
+    }
+
+    /// One-based FIFO position and total orders at the resting order's price.
+    pub fn queue_position(&self, order_ref: u64) -> Option<(u32, u32)> {
+        let order = self.orders.get(&order_ref)?;
+        let level = self.stocks[usize::from(order.locate)]
+            .levels(order.side)
+            .get(&order.price)?;
+        let mut cursor = level.head;
+        let mut position = 1;
+        while cursor != order_ref {
+            cursor = self.orders[&cursor].next?;
+            position += 1;
+        }
+        Some((position, level.orders))
+    }
+
     /// Live orders at one price in arrival (priority) order.
     pub fn level_queue(&self, locate: u16, side: Side, price: Price4) -> Vec<QueuedOrder> {
         let Some(level) = self

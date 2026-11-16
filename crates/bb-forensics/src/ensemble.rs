@@ -95,6 +95,42 @@ pub struct EnsembleReport {
     pub caveats: Vec<Caveat>,
 }
 
+/// Percentile bootstrap CI for a mean across independent stochastic run seeds only.
+/// Callers must not pass deterministic seed duplicates or pooled market regimes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BootstrapMean {
+    pub n: usize,
+    pub mean: f64,
+    pub lower_95: f64,
+    pub upper_95: f64,
+    pub replicates: usize,
+    pub seed: u64,
+}
+
+pub fn bootstrap_mean(values: &[f64], replicates: usize, seed: u64) -> Option<BootstrapMean> {
+    if values.len() < 2 || replicates < 40 || values.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let mut rng = bb_core::rng::Rng::for_stream(seed, "ensemble.bootstrap.mean");
+    let mut means = Vec::with_capacity(replicates);
+    for _ in 0..replicates {
+        let mut sum = 0.0;
+        for _ in values {
+            sum += values[rng.below(values.len() as u64) as usize];
+        }
+        means.push(sum / values.len() as f64);
+    }
+    means.sort_by(f64::total_cmp);
+    Some(BootstrapMean {
+        n: values.len(),
+        mean: values.iter().sum::<f64>() / values.len() as f64,
+        lower_95: means[(replicates as f64 * 0.025).ceil() as usize - 1],
+        upper_95: means[(replicates as f64 * 0.975).ceil() as usize - 1],
+        replicates,
+        seed,
+    })
+}
+
 fn spread(metric: ObjectiveMetric, values: &[f64]) -> Option<MetricSpread> {
     let n = values.len();
     if n == 0 {
@@ -267,6 +303,20 @@ pub fn analyze_ensemble(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bootstrap_fixtures() {
+        assert!(super::bootstrap_mean(&[1.0], 1000, 31).is_none());
+        assert!(super::bootstrap_mean(&[1.0, f64::NAN], 1000, 31).is_none());
+        let equal = super::bootstrap_mean(&[3.0; 5], 1000, 31).unwrap();
+        assert_eq!(
+            (equal.mean, equal.lower_95, equal.upper_95),
+            (3.0, 3.0, 3.0)
+        );
+        let pair = super::bootstrap_mean(&[0.0, 2.0], 1000, 31).unwrap();
+        assert_eq!((pair.mean, pair.lower_95, pair.upper_95), (1.0, 0.0, 2.0));
+        assert_eq!(Some(pair), super::bootstrap_mean(&[0.0, 2.0], 1000, 31));
+    }
+
     use bb_core::{
         config::OrderLatencyConfig,
         sweep::{Partition, TimeWindow},

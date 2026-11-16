@@ -65,6 +65,19 @@ const WIDE_SPREAD_TICKS: i64 = 3;
 /// Refuses configurations that would generate more events than this.
 const MAX_EVENTS: i64 = 20_000_000;
 
+/// Synthetic assumptions, not reconstructions of historical stress events.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StressRegime {
+    #[default]
+    NormalLiquidity,
+    WideningSpreads,
+    LiquidityDepletion,
+    VolatilityBurst,
+    ThinBook,
+    FeedStaleness,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyntheticConfig {
@@ -97,6 +110,9 @@ pub struct SyntheticConfig {
     pub feed_latency_ns: i64,
     /// Feed latency jitter, uniform in `[0, feed_jitter_ns]`.
     pub feed_jitter_ns: i64,
+    /// Absent preserves the original generator, including serialized configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regime: Option<StressRegime>,
 }
 
 impl Default for SyntheticConfig {
@@ -118,6 +134,7 @@ impl Default for SyntheticConfig {
             cancel_prob: 0.38,
             feed_latency_ns: 2_000_000,
             feed_jitter_ns: 1_500_000,
+            regime: None,
         }
     }
 }
@@ -142,7 +159,12 @@ fn validate(cfg: &SyntheticConfig) -> Result<(), DataError> {
     // Every serialized timestamp is relative to the origin and must stay exact in JSON.
     let span = i128::from(cfg.duration_ns)
         + i128::from(cfg.feed_latency_ns.max(0))
-        + i128::from(cfg.feed_jitter_ns.max(0));
+        + i128::from(cfg.feed_jitter_ns.max(0))
+        + if cfg.regime == Some(StressRegime::FeedStaleness) {
+            100_000_000
+        } else {
+            0
+        };
     if span > i128::from(bb_core::time::MAX_SPAN_NS) {
         problems.push(
             "duration_ns + feed_latency_ns + feed_jitter_ns must stay below 2^53 ns (about 104 \
@@ -158,10 +180,17 @@ fn validate(cfg: &SyntheticConfig) -> Result<(), DataError> {
     }
     if !(1..=3_600_000_000_000).contains(&cfg.mean_event_gap_ns) {
         problems.push("mean_event_gap_ns must be between 1 ns and 1 hour".to_string());
-    } else if cfg.duration_ns / cfg.mean_event_gap_ns > MAX_EVENTS {
-        problems.push(format!(
-            "duration_ns / mean_event_gap_ns must not exceed {MAX_EVENTS} events"
-        ));
+    } else {
+        let fastest_gap = if cfg.regime == Some(StressRegime::VolatilityBurst) {
+            (cfg.mean_event_gap_ns / 8).max(1)
+        } else {
+            cfg.mean_event_gap_ns
+        };
+        if cfg.duration_ns / fastest_gap > MAX_EVENTS {
+            problems.push(format!(
+                "duration_ns / fastest regime mean gap must not exceed {MAX_EVENTS} events"
+            ));
+        }
     }
     if !(REPLENISH_BELOW as u32..=1_000).contains(&cfg.levels) {
         problems.push(format!("levels must be between {REPLENISH_BELOW} and 1000"));
@@ -169,7 +198,14 @@ fn validate(cfg: &SyntheticConfig) -> Result<(), DataError> {
     if !(1..=1_000_000_000).contains(&cfg.base_level_lots) {
         problems.push("base_level_lots must be between 1 and 1e9".to_string());
     }
-    let lowest_bid = cfg.start_mid_tick.saturating_sub(cfg.levels as i64);
+    let extra_half_spread = if cfg.regime == Some(StressRegime::WideningSpreads) {
+        4
+    } else {
+        0
+    };
+    let lowest_bid = cfg
+        .start_mid_tick
+        .saturating_sub(cfg.levels as i64 + extra_half_spread);
     if lowest_bid < MIN_BID_TICK || cfg.start_mid_tick > 1_000_000_000_000 {
         problems.push(format!(
             "start_mid_tick must be at least levels + {MIN_BID_TICK} and at most 1e12"
@@ -324,7 +360,11 @@ impl<'a> Generator<'a> {
     /// overtake each other, which is what makes local order differ from exchange order.
     fn local_ts(&mut self, exch_ts: i64, stream: Stream) -> i64 {
         let jitter = self.rng_latency.range_i64(0, self.cfg.feed_jitter_ns);
-        let raw = exch_ts + self.cfg.feed_latency_ns + jitter;
+        let elapsed = exch_ts - self.cfg.origin_ns;
+        let stale = self.cfg.regime == Some(StressRegime::FeedStaleness)
+            && elapsed >= self.cfg.duration_ns / 2
+            && elapsed < self.cfg.duration_ns * 3 / 4;
+        let raw = exch_ts + self.cfg.feed_latency_ns + jitter + if stale { 100_000_000 } else { 0 };
         let last = match stream {
             Stream::Depth => &mut self.last_depth_local,
             Stream::Trade => &mut self.last_trade_local,
@@ -420,7 +460,12 @@ impl<'a> Generator<'a> {
     /// Posts a new best level one tick inside the spread, if the spread has room.
     fn improve(&mut self, side: BookSide, lots: i64, exch_ts: i64) -> bool {
         let (bid, ask) = (self.best_bid(), self.best_ask());
-        if ask - bid < 2 {
+        let minimum = if self.cfg.regime == Some(StressRegime::WideningSpreads) {
+            8
+        } else {
+            1
+        };
+        if ask - bid <= minimum {
             return false;
         }
         let tick = match side {
@@ -436,9 +481,14 @@ impl<'a> Generator<'a> {
         let levels = cfg.levels as i64;
         for k in 0..levels {
             let lots = self.full_level_lots();
-            self.bids.insert(cfg.start_mid_tick - 1 - k, lots);
+            let half = if cfg.regime == Some(StressRegime::WideningSpreads) {
+                5
+            } else {
+                1
+            };
+            self.bids.insert(cfg.start_mid_tick - half - k, lots);
             let lots = self.full_level_lots();
-            self.asks.insert(cfg.start_mid_tick + 1 + k, lots);
+            self.asks.insert(cfg.start_mid_tick + half + k, lots);
         }
         // One message: the clear and every level share a receipt time, otherwise the clear
         // could arrive after levels it is meant to precede.
@@ -581,15 +631,28 @@ impl<'a> Generator<'a> {
         let end = cfg.origin_ns + cfg.duration_ns;
         let mut exch_ts = cfg.origin_ns;
         loop {
-            exch_ts += self.rng_time.range_i64(1, 2 * cfg.mean_event_gap_ns);
+            let burst = cfg.regime == Some(StressRegime::VolatilityBurst)
+                && exch_ts - cfg.origin_ns >= cfg.duration_ns / 2
+                && exch_ts - cfg.origin_ns < cfg.duration_ns * 3 / 4;
+            let gap = if burst {
+                (cfg.mean_event_gap_ns / 8).max(1)
+            } else {
+                cfg.mean_event_gap_ns
+            };
+            exch_ts += self.rng_time.range_i64(1, 2 * gap);
             if exch_ts > end {
                 break;
             }
             self.step_pressure();
             let u = self.rng_kind.next_f64();
-            if u < cfg.trade_prob {
+            let (trade, cancel) = if burst {
+                (0.65, 0.20)
+            } else {
+                (cfg.trade_prob, cfg.cancel_prob)
+            };
+            if u < trade {
                 self.trade(exch_ts);
-            } else if u < cfg.trade_prob + cfg.cancel_prob {
+            } else if u < trade + cancel {
                 self.cancel(exch_ts);
             } else {
                 self.add(exch_ts);
@@ -607,7 +670,19 @@ pub fn generate(cfg: &SyntheticConfig) -> Result<BuiltDataset, DataError> {
         contract_size: cfg.contract_size,
     };
 
-    let mut generator = Generator::new(cfg, instrument);
+    // Depletion is a persistently depleted session, not a historical crash episode.
+    let mut effective = cfg.clone();
+    match cfg.regime {
+        Some(StressRegime::LiquidityDepletion) => {
+            effective.base_level_lots = (cfg.base_level_lots / 10).max(1)
+        }
+        Some(StressRegime::ThinBook) => {
+            effective.levels = REPLENISH_BELOW as u32;
+            effective.base_level_lots = (cfg.base_level_lots / 20).max(1);
+        }
+        _ => {}
+    }
+    let mut generator = Generator::new(&effective, instrument);
     generator.snapshot();
     generator.run();
     let Generator { rows, scan, .. } = generator;
@@ -676,7 +751,11 @@ pub fn generate(cfg: &SyntheticConfig) -> Result<BuiltDataset, DataError> {
                  in [0, {}] ns, kept in order within the depth stream and within the trade \
                  stream.",
                 cfg.feed_latency_ns, cfg.feed_jitter_ns
-            ),
+            ) + if cfg.regime == Some(StressRegime::FeedStaleness) {
+                " Additional 100 ms delay during the middle quarter of the session; ordered stream backlog persists until caught up."
+            } else {
+                ""
+            },
         },
         counts: analysis.counts,
         events_file: String::new(),
@@ -724,6 +803,77 @@ mod tests {
                 "fval differs at row {i}"
             );
         }
+    }
+
+    #[test]
+    fn default_archive_hash_is_unchanged() {
+        let root = std::env::temp_dir().join(format!("bb-default-synth-{}", std::process::id()));
+        let ds = generate(&SyntheticConfig::default()).unwrap();
+        let manifest = crate::store::save(&root, &ds).unwrap();
+        assert_eq!(
+            manifest.events_sha256,
+            "0bc26426a4c945630737db01e82921c28edf45c37f8de1671d45ce921e818f38"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stress_regimes_are_deterministic_and_preserve_books() {
+        for regime in [
+            StressRegime::NormalLiquidity,
+            StressRegime::WideningSpreads,
+            StressRegime::LiquidityDepletion,
+            StressRegime::VolatilityBurst,
+            StressRegime::ThinBook,
+            StressRegime::FeedStaleness,
+        ] {
+            let cfg = SyntheticConfig {
+                regime: Some(regime),
+                ..short(7)
+            };
+            let ds = generate(&cfg).unwrap();
+            assert_same_events(&ds.events, &generate(&cfg).unwrap().events);
+            validate_event_order(&ds.events).unwrap();
+            let mut book = L2Book::new();
+            for event in ds.events.iter().filter(|e| has(e, EXCH_EVENT)) {
+                book.apply(event, &ds.manifest.instrument);
+                if event.exch_ts > cfg.origin_ns {
+                    assert!(book.best_bid().unwrap().0 < book.best_ask().unwrap().0);
+                    assert!(book.bid_levels() >= MIN_LEVELS_PER_SIDE);
+                    assert!(book.ask_levels() >= MIN_LEVELS_PER_SIDE);
+                }
+            }
+        }
+        let normal = generate(&short(7)).unwrap();
+        let explicit_normal = generate(&SyntheticConfig {
+            regime: Some(StressRegime::NormalLiquidity),
+            ..short(7)
+        })
+        .unwrap();
+        assert_same_events(&normal.events, &explicit_normal.events);
+        let wide = generate(&SyntheticConfig {
+            regime: Some(StressRegime::WideningSpreads),
+            ..short(7)
+        })
+        .unwrap();
+        let depleted = generate(&SyntheticConfig {
+            regime: Some(StressRegime::LiquidityDepletion),
+            ..short(7)
+        })
+        .unwrap();
+        assert!(
+            wide.manifest.quality.spread_ticks.as_ref().unwrap().p50
+                > normal.manifest.quality.spread_ticks.as_ref().unwrap().p50
+        );
+        let touch = |ds: &BuiltDataset| {
+            let bbo = crate::book::bbo_series(
+                &ds.events,
+                &ds.manifest.instrument,
+                ds.manifest.origin().unwrap(),
+            );
+            bbo.bid_qty.iter().sum::<f64>() / bbo.bid_qty.len() as f64
+        };
+        assert!(touch(&depleted) < touch(&normal));
     }
 
     #[test]

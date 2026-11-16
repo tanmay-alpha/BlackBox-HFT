@@ -1,6 +1,8 @@
 //! Datasets, versions, quality, replay windows, market analytics, presets and demos
 //! (API_CONTRACT §8.2).
 
+use std::collections::HashMap;
+
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -675,13 +677,25 @@ pub async fn demos_for(
     let Some((_, manifest)) = catalogue_manifest(state, caller, dataset_id).await? else {
         return Ok(Vec::new());
     };
-    let demos = crate::demos::demos(&manifest);
-    let fingerprints: Vec<Vec<u8>> = demos
+    let mut demos = crate::demos::demos(&manifest);
+    // The other datasets of `execution_validation`: each one's current manifest, read once from
+    // its version row (never its events). An unknown or invisible one leaves that demo out.
+    let mut manifests = HashMap::from([(manifest.id.clone(), Some(manifest))]);
+    for id in crate::demos::EXECUTION_VALIDATION_DATASETS {
+        if !manifests.contains_key(id) {
+            let version = visible_version(state, caller, id, None).await.ok();
+            let other = version.and_then(|v| manifest_of(&v).ok());
+            manifests.insert(id.to_string(), other);
+        }
+    }
+    demos.extend(crate::demos::execution_validation(|id| {
+        manifests.get(id).and_then(Option::as_ref)
+    }));
+    let identities = demo_identities(&demos, &manifests);
+    let fingerprints: Vec<Vec<u8>> = identities
         .iter()
-        .flat_map(|d| d.runs.iter())
-        .filter_map(|r| {
-            hex::decode(pipeline::run_identity(&manifest, &r.config).config_sha256).ok()
-        })
+        .flatten()
+        .filter_map(|fp| hex::decode(fp).ok())
         .collect();
     let visible = state
         .db
@@ -691,6 +705,7 @@ pub async fn demos_for(
             &state.cfg.result_platform,
         )
         .await?;
+    let mut identities = identities.into_iter();
     Ok(demos
         .into_iter()
         .map(|d| Demo {
@@ -704,8 +719,9 @@ pub async fn demos_for(
                 .runs
                 .into_iter()
                 .map(|r| {
-                    let fp = pipeline::run_identity(&manifest, &r.config).config_sha256;
-                    let hit = visible.iter().find(|v| hex::encode(&v.fingerprint) == fp);
+                    let fp = identities.next().flatten();
+                    let hit = fp
+                        .and_then(|fp| visible.iter().find(|v| hex::encode(&v.fingerprint) == fp));
                     DemoRun {
                         label: r.label,
                         run_id: hit.map(|v| v.short_id.clone()),
@@ -719,5 +735,96 @@ pub async fn demos_for(
         .collect())
 }
 
+/// The identity (`config_sha256`) of every demo run in order, on its own dataset's manifest;
+/// `None` for a run whose dataset has none here.
+fn demo_identities(
+    demos: &[crate::api::Demo],
+    manifests: &HashMap<String, Option<bb_core::dataset::DatasetManifest>>,
+) -> Vec<Option<String>> {
+    demos
+        .iter()
+        .flat_map(|d| d.runs.iter())
+        .map(|r| {
+            let manifest = manifests.get(&r.config.dataset_id)?.as_ref()?;
+            Some(pipeline::run_identity(manifest, &r.config).config_sha256)
+        })
+        .collect()
+}
+
 #[allow(dead_code)]
 fn _schema_refs(_: Option<Value>) {}
+
+#[cfg(test)]
+mod tests {
+    use bb_core::dataset::DatasetManifest;
+    use bb_data::synthetic::{SyntheticConfig, generate};
+
+    use super::*;
+
+    /// Run ids of the canonical demos on the default synthetic dataset, as seeded before
+    /// `execution_validation` existed (local `demo seed` databases and RESPONSIVE_RESULTS.md).
+    const CANONICAL: [&str; 8] = [
+        "253bbc23b342f373",
+        "d6a57aed972e18d0",
+        "bc2d1df47e2b91fe",
+        "130d67fc371bd27f",
+        "253bbc23b342f373",
+        "253bbc23b342f373",
+        "6bcdf19136fd3059",
+        "586374188aae19b2",
+    ];
+
+    fn run_ids(identities: &[Option<String>]) -> Vec<&str> {
+        identities
+            .iter()
+            .map(|fp| &fp.as_deref().expect("resolved")[..16])
+            .collect()
+    }
+
+    /// The manifest a registered version stores: generated, then saved (hashing the events).
+    fn saved(config: &SyntheticConfig) -> DatasetManifest {
+        let dir = tempfile::tempdir().unwrap();
+        bb_data::store::save(dir.path(), &generate(config).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn demo_run_ids_resolve_on_each_runs_own_dataset() {
+        let manifest = saved(&SyntheticConfig::default());
+        let mut manifests = HashMap::from([(manifest.id.clone(), Some(manifest.clone()))]);
+        let canonical = crate::demos::demos(&manifest);
+        assert_eq!(run_ids(&demo_identities(&canonical, &manifests)), CANONICAL);
+
+        // An unknown stress dataset leaves `execution_validation` out, nothing else.
+        manifests.insert(crate::demos::DEPLETED_DATASET.into(), None);
+        assert!(
+            crate::demos::execution_validation(|id| manifests.get(id).and_then(Option::as_ref))
+                .is_none()
+        );
+
+        for config in crate::demos::stress_datasets() {
+            let m = saved(&config);
+            manifests.insert(m.id.clone(), Some(m));
+        }
+        let mut all = canonical;
+        all.extend(crate::demos::execution_validation(|id| {
+            manifests.get(id).and_then(Option::as_ref)
+        }));
+        let identities = demo_identities(&all, &manifests);
+        let ids = run_ids(&identities);
+        assert_eq!(ids.len(), 15);
+        // The canonical demos resolve exactly as before.
+        assert_eq!(ids[..8], CANONICAL);
+        // The normal-liquidity baseline is the existing 1 ms run; regime runs hash their own
+        // dataset's events.
+        let ev = &all[3];
+        assert_eq!(ids[8], CANONICAL[0]);
+        for (run, id) in ev.runs.iter().zip(&ids[8..]) {
+            let own = manifests[&run.config.dataset_id].as_ref().unwrap();
+            assert_eq!(*id, pipeline::run_identity(own, &run.config).run_id);
+            assert_eq!(
+                run.config.dataset_id == manifest.id,
+                own.events_sha256 == manifest.events_sha256
+            );
+        }
+    }
+}

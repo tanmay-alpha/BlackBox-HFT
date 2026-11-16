@@ -60,23 +60,23 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
     let tdb = db_or_skip!();
     let dir = tempfile::tempdir().unwrap();
 
-    // Seeding computes the demo runs, then curates: 5 comparisons and 3 saved reports.
+    // Seeding computes the demo runs, then curates: 11 comparisons and 4 saved reports.
     let first = seed(&tdb, dir.path()).await;
-    assert_eq!(first.experiments.len(), 8);
+    assert_eq!(first.experiments.len(), 15);
     let count = |r: &bb_app::seed::SeedReport, kind: &str, status: &str| {
         r.curated
             .iter()
             .filter(|c| c.kind == kind && c.status == status)
             .count()
     };
-    assert_eq!(count(&first, "comparison", "created"), 5);
-    assert_eq!(count(&first, "report", "created"), 3);
-    assert_eq!(first.curated.len(), 8);
+    assert_eq!(count(&first, "comparison", "created"), 11);
+    assert_eq!(count(&first, "report", "created"), 4);
+    assert_eq!(first.curated.len(), 15);
     // Idempotent: nothing new the second time.
     let second = seed(&tdb, dir.path()).await;
-    assert_eq!(count(&second, "comparison", "existing"), 5);
-    assert_eq!(count(&second, "report", "existing"), 3);
-    assert_eq!(second.curated.len(), 8);
+    assert_eq!(count(&second, "comparison", "existing"), 11);
+    assert_eq!(count(&second, "report", "existing"), 4);
+    assert_eq!(second.curated.len(), 15);
 
     let server = Server::start(&tdb, dir.path(), Options::default()).await;
 
@@ -84,7 +84,7 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
     let (status, _, comparisons) = server.get("/api/v1/comparisons?limit=20", None).await;
     assert_eq!(status, 200, "{comparisons}");
     let comparisons = comparisons["items"].as_array().unwrap().clone();
-    assert_eq!(comparisons.len(), 5);
+    assert_eq!(comparisons.len(), 11);
     for c in &comparisons {
         let id = c["id"].as_str().unwrap();
         let (status, _, body) = server.get(&format!("/api/v1/comparisons/{id}"), None).await;
@@ -101,7 +101,7 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
     let (status, _, reports) = server.get("/api/v1/reports?limit=20", None).await;
     assert_eq!(status, 200, "{reports}");
     let reports = reports["items"].as_array().unwrap().clone();
-    assert_eq!(reports.len(), 3);
+    assert_eq!(reports.len(), 4);
     for r in &reports {
         let id = r["id"].as_str().unwrap();
         let before = server.state.egress.today(true);
@@ -120,7 +120,7 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
         .iter()
         .map(|r| r["run_id"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(runs.len(), 6);
+    assert_eq!(runs.len(), 12);
     let mut largest = (0usize, String::new(), Value::Null);
     for run in &runs {
         let before = server.state.egress.today(true);
@@ -394,11 +394,18 @@ async fn oversize_bodies_are_refused_and_egress_counts_true_bytes() {
         .unwrap();
 
     // Bytes persisted by an earlier process today count against the budget after a restart:
-    // the first large keyed response adds the stored value once, plus its exact length.
-    let stored = 600_000;
+    // the first large keyed response adds the stored value once, plus its exact length. The stored
+    // value is derived from the document's size so the arithmetic holds as the API grows: one more
+    // document fits the budget, two do not.
+    let doc_len = bb_app::v1::OPENAPI_JSON.len() as i64;
+    let stored = KEYED_BUDGET - small - doc_len - doc_len / 2;
+    assert!(
+        stored > 0,
+        "KEYED_BUDGET is too small for a {doc_len}-byte document"
+    );
     server.db.add_egress("keyed", stored).await.unwrap();
     let (status, body) = get_raw(&server, "/api/v1/openapi.json", Some(&key)).await;
-    assert_eq!(status, 200);
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
     let doc = body.len() as i64;
     assert!(doc > 64 * 1024 && stored + small + doc <= KEYED_BUDGET);
     assert_eq!(server.state.egress.today(false), stored + small + doc);
