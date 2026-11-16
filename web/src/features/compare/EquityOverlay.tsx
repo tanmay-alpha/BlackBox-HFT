@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type PointerEvent } from "react";
 import { isBucketed, type EquityBucket, type EquityPage } from "../../api/model";
 import { fmtDuration, fmtNum, fmtSigned } from "../../components/fmt";
+import { useMediaQuery } from "../../components/PaneTabs";
 import { Empty, Notice } from "../../components/ui";
 import {
   decimalsForStep,
@@ -127,7 +128,10 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
   const [attach, size] = useElementSize<HTMLDivElement>();
   const [aroundDivergence, setAroundDivergence] = useState(false);
   const [cursorTs, setCursorTs] = useState<number | null>(null);
-  const width = Math.max(360, Math.floor(size.width));
+  const touch = useMediaQuery("(pointer: coarse)");
+  // Never wider than the stage's content box (its border-box less the 1 px border on each side):
+  // a fixed 360 px minimum and the border both made the chart scroll sideways.
+  const width = Math.max(240, Math.floor(size.width) - 2);
   const plotWidth = width - LEFT - RIGHT;
 
   const traceA = useMemo(() => toTrace(a), [a]);
@@ -183,7 +187,8 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
 
     const yStep = niceStep((yMax - yMin) / 5);
     const yDecimals = decimalsForStep(yStep);
-    const xStep = niceStep((t1 - t0) / Math.max(2, Math.floor(plotWidth / 130)));
+    // At least three intervals: `niceStep` rounds up, so two left one label on a phone.
+    const xStep = niceStep((t1 - t0) / Math.max(3, Math.floor(plotWidth / 80)));
     const xScale = Math.max(Math.abs(t0), Math.abs(t1));
 
     return {
@@ -225,6 +230,13 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
     return page.downsampled ? [{ tag, page }] : [];
   });
   const partial = (["A", "B"] as const).filter((tag) => (tag === "A" ? a : b).next_cursor !== null);
+  /** Mouse move, or a touch press and drag: read both curves at the pointer's time. */
+  const readPointer = (e: PointerEvent<SVGSVGElement>) => {
+    if (!chart) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const frac = (e.clientX - r.left - LEFT) / plotWidth;
+    setCursorTs(frac < 0 || frac > 1 ? null : Math.round(chart.t0 + frac * (chart.t1 - chart.t0)));
+  };
 
   return (
     <div className="cmp-equity">
@@ -260,20 +272,21 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
             </li>
           ) : null}
         </ul>
-        <span className="cmp-equity-read mono" aria-hidden="true">
+        <span className="cmp-equity-read" aria-hidden="true">
           {cursorTs === null ? (
-            <span className="dim">hover the chart to read both curves</span>
+            <span className="dim">
+              {touch ? "Touch or drag along the chart to read both curves" : "Hover over the chart to read both curves"}
+            </span>
           ) : (
-            <>
+            <span className="mono">
               <ClockText ns={cursorTs} /> A {atA?.text} B {atB?.text} B-A{" "}
               {fmtSigned(atA?.value != null && atB?.value != null ? atB.value - atA.value : null, 4)}
-            </>
+            </span>
           )}
         </span>
         {divergenceTs !== null ? (
           <button
             type="button"
-            className="cmp-btn"
             aria-pressed={aroundDivergence}
             onClick={() => setAroundDivergence((v) => !v)}
           >
@@ -290,15 +303,16 @@ export function EquityOverlay({ a, b, divergenceTs, sameDataset }: EquityOverlay
             viewBox={`0 0 ${width} ${HEIGHT}`}
             role="img"
             aria-label="Sampled equity of scenario A and scenario B over dataset-relative time, with a vertical marker at the first divergence. The metrics table lists the final values."
-            onPointerMove={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              const frac = (e.clientX - r.left - LEFT) / plotWidth;
-              setCursorTs(
-                frac < 0 || frac > 1 ? null : Math.round(chart.t0 + frac * (chart.t1 - chart.t0)),
-              );
+            onPointerMove={readPointer}
+            onPointerDown={readPointer}
+            onPointerLeave={(e) => {
+              // A lifted finger leaves the reading in place; a mouse leaving the chart clears it.
+              if (e.pointerType !== "touch") setCursorTs(null);
             }}
-            onPointerLeave={() => setCursorTs(null)}
           >
+            <text className="cmp-tick" x={LEFT - 8} y={TOP - 10} textAnchor="end">
+              quote
+            </text>
             {chart.yTicks.map((t) => (
               <g key={`y${t.y}`}>
                 <line className="cmp-grid" x1={LEFT} x2={right} y1={t.y} y2={t.y} />

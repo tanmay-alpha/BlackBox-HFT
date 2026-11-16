@@ -10,14 +10,16 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { Check, Layers, ListOrdered, TriangleAlert, Zap } from 'lucide-react';
 
 import { api } from '../../api/client';
 import { toWire } from '../../api/normalize';
 import type { DatasetSummary, Run, RunDetail, SubmitExperimentResult } from '../../api/model';
 import type { Preset, RunConfig } from '../../api/types';
 import { JsonBlock } from '../../components/data';
-import { assumptionsLabel, STRATEGY_INFO } from '../../components/describe';
+import { assumptionsLabel, queueModelLabel, STRATEGY_INFO } from '../../components/describe';
 import { fmtBytes, fmtDuration, fmtInt } from '../../components/fmt';
+import { pathLabel } from '../../components/labels';
 import { Tabs } from '../../components/Tabs';
 import { Badge, Empty, ErrorBox, Notice, Pill, Spinner, useAsync } from '../../components/ui';
 import { GatedButton, useAccess } from '../../shell/access';
@@ -26,16 +28,30 @@ import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { FieldRow, fieldDomId } from './FieldInput';
 import { ScriptedOrdersEditor } from './ScriptedOrdersEditor';
-import { buildSections, fieldProblem, startingConfig } from './fields';
+import { buildSections, startingConfig } from './fields';
 import type { Field, Section } from './fields';
-import { firstSentence, sizeEstimate, whyItMatters } from './review';
-import { configAdvisories, diffConfigs, ruleFieldPaths, validateRunConfig } from './validate';
+import { collectProblems } from './problems';
+import { jobStages, jobView, stepStates } from './progress';
+import type { Job, JobView, StepId } from './progress';
+import {
+  ROLE_LABEL,
+  assumptionChips,
+  assumptionRows,
+  changeDelta,
+  changeValue,
+  presetChips,
+  presetShortTitle,
+  sizeEstimate,
+  strategyRole,
+  whyItMatters,
+} from './review';
+import type { Chip, StrategyRole } from './review';
+import { configAdvisories, diffConfigs } from './validate';
 import type { ConfigChange } from './validate';
 import './lab.css';
 
 type SubmitMode = 'run' | 'scenario_b';
 type FormMode = 'guided' | 'advanced';
-type Job = NonNullable<SubmitExperimentResult['job']>;
 
 /** Where the values currently in the form came from. Shown so nothing looks like a preset by accident. */
 type Origin =
@@ -46,9 +62,10 @@ type Origin =
 /** The last accepted submission, kept on the page so the next steps stay one click away. */
 interface Submission {
   result: SubmitExperimentResult;
-  text: string;
   /** Scenario A of a counterfactual submission. */
   scenarioA: string | null;
+  /** The submitted configuration, serialized: the Run step reports the job only while the form still holds it. */
+  configKey: string;
 }
 
 const MODE_STORAGE_KEY = 'bb.lab.mode';
@@ -56,12 +73,14 @@ const SCOPE = 'lab';
 const STRATEGY_FIELD = 'strategy.kind.type';
 const TERMINAL: Record<string, true> = { completed: true, failed: true, cancelled: true, expired: true };
 
-const STEPS = [
+const STEPS: readonly { id: StepId; short: string }[] = [
   { id: 'lab-step-choose', short: 'Choose' },
   { id: 'lab-step-configure', short: 'Configure' },
   { id: 'lab-step-review', short: 'Review' },
   { id: 'lab-step-run', short: 'Run' },
-] as const;
+];
+
+const ROLE_ICON: Record<StrategyRole, typeof Layers> = { maker: Layers, taker: Zap, scripted: ListOrdered };
 
 const MODELED_TITLE =
   'An execution assumption. Results produced under it are estimates of what could have happened, not observations.';
@@ -121,26 +140,6 @@ function runOptionLabel(r: Run): string {
   return `${name}${r.run_id} \u00b7 ${strategyName(r.strategy_kind)} \u00b7 ${r.dataset.id}`;
 }
 
-/** A changed value in the unit the form uses (ms, bp, option names), or as stored when unknown. */
-function changeValue(field: Field<RunConfig> | undefined, raw: string, path = ''): string {
-  if (raw === '(absent)') return raw;
-  if (!field) {
-    const n = Number(raw);
-    return path.endsWith('_ns') && Number.isFinite(n) ? fmtDuration(n) : raw;
-  }
-  if (field.kind === 'select') {
-    const v: unknown = JSON.parse(raw);
-    return field.options.find((o) => o.value === v)?.label ?? raw;
-  }
-  if (field.kind === 'number' || field.kind === 'optional_number') {
-    const n = Number(raw);
-    if (raw === 'null' || !Number.isFinite(n)) return raw !== 'null' ? raw : field.kind === 'optional_number' ? 'off' : 'blank';
-    const shown = field.kind === 'number' && field.convert ? Number(field.convert.toDisplay(n).toPrecision(12)) : n;
-    return field.unit ? `${shown} ${field.unit}` : String(shown);
-  }
-  return raw;
-}
-
 /** A field's current value in display units, for the summary. */
 function shownValue(field: Field<RunConfig> | undefined, c: RunConfig): string | null {
   if (!field) return null;
@@ -173,7 +172,7 @@ function StepHead({ n, id, title, lede, aside }: { n: number; id: string; title:
   );
 }
 
-/** Changed settings as a list (readable on a phone): label, old → new in plain units, why it matters. */
+/** Changed settings as a list (readable on a phone): label, old → new (signed difference) in form units, why it matters. */
 function ChangeList({
   caption,
   a,
@@ -193,10 +192,11 @@ function ChangeList({
       <ul className="lab-changes">
         {changes.map((c) => {
           const f = fields.get(c.path);
+          const delta = changeDelta(f, c.a, c.b);
           return (
             <li key={c.path} className="lab-change">
               <div className="lab-change-head">
-                <span className="lab-change-label">{f ? f.label : c.path}</span>
+                <span className="lab-change-label" title={c.path}>{f ? f.label : pathLabel(c.path)}</span>
                 {c.path.startsWith('execution.') ? (
                   <Badge kind="modeled" title={MODELED_TITLE}>
                     modeled
@@ -208,10 +208,13 @@ function ChangeList({
                   <span aria-hidden="true"> {'\u2192'} </span>
                   <span className="visually-hidden">{`, ${b}: `}</span>
                   <span className="mono lab-change-new">{changeValue(f, c.b, c.path)}</span>
+                  {delta ? <span className="mono lab-change-delta"> ({delta})</span> : null}
                 </span>
               </div>
-              <p className="lab-change-why">{whyItMatters(c.path)}</p>
-              {f ? <span className="lab-change-path mono">{c.path}</span> : null}
+              <p className="lab-change-why">
+                {whyItMatters(c.path)}
+                {f ? <span className="lab-change-path dim" title={c.path}> ({pathLabel(c.path)})</span> : null}
+              </p>
             </li>
           );
         })}
@@ -220,18 +223,72 @@ function ChangeList({
   );
 }
 
-/** Job → Results → Replay → Forensics → Risk → Compare; links once a run exists. */
-function NextSteps({ submission, job: polled }: { submission: Submission | null; job: Job | null }) {
-  // The submit response names the job; the poll only refreshes it (until the first poll lands,
-  // or while an earlier submission's job is still in state, the response's own job is shown).
-  const submitted = submission?.result.job ?? null;
-  const job = submitted && polled?.id === submitted.id ? polled : submitted;
+/** A card's key assumptions as compact chips; one a variant changes is marked in text, not colour only. */
+function ChipList({ id, chips }: { id: string; chips: Chip[] }) {
+  if (chips.length === 0) return null;
+  return (
+    <span className="lab-chips" id={id}>
+      <span className="visually-hidden">Key assumptions: </span>
+      {chips.map((c) => (
+        <span
+          key={c.key}
+          className={c.differs ? 'lab-chip lab-chip-diff' : 'lab-chip'}
+          title={c.differs ? 'Differs from the value most presets share' : undefined}
+        >
+          {c.differs ? <span className="lab-chip-mark" aria-hidden="true">{'\u2260'}</span> : null}
+          {c.text}
+          {c.differs ? <span className="visually-hidden"> (differs from most presets)</span> : null}
+          <span className="visually-hidden">;</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+const STAGE_WORD = { done: 'done', current: 'current', todo: 'not yet', error: 'ended', skipped: 'did not start' } as const;
+
+/** After a submission: Queued → Running → Completed with honest wording, and the job's page. */
+function JobProgress({ view }: { view: JobView }) {
+  const stages = jobStages(view);
+  const job = view.job;
+  return (
+    <div className="lab-job">
+      {stages.length > 0 ? (
+        <ol className="lab-job-stages" aria-label="Job progress">
+          {stages.map((s) => (
+            <li key={s.label} className={`lab-stage lab-stage-${s.state}`} aria-current={s.state === 'current' ? 'step' : undefined}>
+              <span className="lab-stage-mark" aria-hidden="true">
+                {s.state === 'done' ? <Check size={12} /> : s.state === 'error' ? <TriangleAlert size={12} /> : null}
+              </span>
+              <span>{s.label}</span>
+              <span className="visually-hidden">{`: ${STAGE_WORD[s.state]}`}</span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      <p className="lab-lede" role="status" data-testid="lab-job-status">
+        <strong className="lab-job-headline">{view.headline}.</strong> {view.detail}
+      </p>
+      {job ? (
+        <p className="lab-lede">
+          <Link to={paths.job(job.id)} className="lab-job-link" data-testid="lab-next-job">
+            Job <span className="mono">{job.id}</span>
+          </Link>{' '}
+          <Pill tone={job.state === 'completed' ? 'ok' : view.phase === 'failed' ? 'error' : 'info'}>{job.state}</Pill>{' '}
+          {TERMINAL[job.state] ? 'its page keeps the timings and any error.' : 'its page shows progress and can cancel it.'}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Report → Replay → Forensics → Risk → Compare for the submitted run; links once it exists. */
+function RunLinks({ submission, view }: { submission: Submission | null; view: JobView | null }) {
   const runId = submission?.result.experiment.run_id ?? null;
-  const ready = submission !== null && (submission.result.run !== null || job?.state === 'completed');
-  const failed = job !== null && TERMINAL[job.state] === true && job.state !== 'completed';
-  const pending = failed ? `not available: the job ${job?.state ?? 'ended'}` : 'available when the job completes';
+  const ready = view?.ready === true;
+  const pending = view === null ? null : view.phase === 'failed' || view.phase === 'none' ? 'not available: no run was produced' : 'opens when the job completes';
   const items: { key: string; label: string; what: string; to: string | null }[] = [
-    { key: 'results', label: 'Results', what: 'the run\u2019s report: measured outcomes and the reproducibility manifest', to: runId ? paths.report(runId) : null },
+    { key: 'report', label: 'Report', what: 'measured outcomes and the reproducibility manifest', to: runId ? paths.report(runId) : null },
     { key: 'replay', label: 'Replay', what: 'the order book with the simulated orders on it', to: runId ? paths.bookRun(runId) : null },
     { key: 'forensics', label: 'Forensics', what: 'the order blotter; each order explains its fill or non-fill', to: runId ? paths.run(runId) : null },
     { key: 'risk', label: 'Risk', what: 'P&L, inventory and drawdown over the run', to: runId ? paths.riskRun(runId) : null },
@@ -243,40 +300,23 @@ function NextSteps({ submission, job: polled }: { submission: Submission | null;
     },
   ];
   return (
-    <ol className="lab-next">
-      <li className="lab-next-item">
-        <span className="lab-next-name">Job</span>
-        {submission === null ? (
-          <span className="lab-next-what">queued on the worker; its page shows progress and can cancel it</span>
-        ) : job ? (
-          <span className="lab-next-what">
-            <Link to={paths.job(job.id)} data-testid="lab-next-job">
-              Job <span className="mono">{job.id}</span>
-            </Link>{' '}
-            <Pill tone={job.state === 'completed' ? 'ok' : failed ? 'error' : 'info'}>{job.state}</Pill>
-            {job.queue_position !== null && !TERMINAL[job.state] ? <span className="mono"> #{job.queue_position} in queue</span> : null}
-          </span>
-        ) : submission.result.run !== null ? (
-          <span className="lab-next-what">not needed: this configuration was already simulated</span>
-        ) : (
-          <span className="lab-next-what">no job was returned for this submission</span>
-        )}
-      </li>
+    <ul className="lab-links" aria-label="Views of the run">
       {items.map((it) => (
-        <li key={it.key} className="lab-next-item">
-          <span className="lab-next-name">{it.label}</span>
-          <span className="lab-next-what">
-            {ready && it.to ? (
-              <Link to={it.to} data-testid={`lab-next-${it.key}`}>
-                Open {it.label.toLowerCase()}
-              </Link>
-            ) : null}{' '}
+        <li key={it.key} className="lab-link-item">
+          {ready && it.to ? (
+            <Link to={it.to} className="btn lab-link" data-testid={`lab-next-${it.key}`}>
+              {it.label}
+            </Link>
+          ) : (
+            <span className="lab-link lab-link-off">{it.label}</span>
+          )}
+          <span className="lab-link-what">
             {it.what}
-            {submission !== null && !ready ? <span className="lab-next-pending"> ({pending})</span> : null}
+            {pending !== null && !ready ? <span className="lab-next-pending"> ({pending})</span> : null}
           </span>
         </li>
       ))}
-    </ol>
+    </ul>
   );
 }
 
@@ -358,36 +398,15 @@ export default function LabPage() {
     [sections],
   );
 
-  const fieldProblems = useMemo(() => {
-    const out: { sectionId: string; fieldId: string; text: string }[] = [];
-    if (!config) return out;
-    for (const s of sections) {
-      for (const f of s.fields) {
-        const p = fieldProblem(f, config);
-        if (p) out.push({ sectionId: s.id, fieldId: f.id, text: `${s.title} \u203a ${f.label}: ${p}` });
-      }
-    }
-    return out;
-  }, [config, sections]);
+  // One problem per field; a server rule about a flagged field is attached to it (D3).
+  const problems = useMemo(() => (config ? collectProblems(sections, config) : null), [config, sections]);
+  const fieldProblems = problems?.fields ?? [];
+  const ruleProblems = problems?.rules ?? [];
   const invalidBySection = useMemo(() => {
     const m = new Map<string, number>();
-    for (const p of fieldProblems) m.set(p.sectionId, (m.get(p.sectionId) ?? 0) + 1);
+    for (const p of problems?.fields ?? []) m.set(p.sectionId, (m.get(p.sectionId) ?? 0) + 1);
     return m;
-  }, [fieldProblems]);
-
-  // A server rule about a field that already shows its own problem is the same mistake: keep the
-  // field's message (display units) and attach the rule's raw text to it instead of counting twice.
-  const { ruleProblems, rawByField } = useMemo(() => {
-    const rules: string[] = [];
-    const raw = new Map<string, string[]>();
-    const flagged = new Set(fieldProblems.map((p) => p.fieldId));
-    for (const text of config ? validateRunConfig(config) : []) {
-      const hit = ruleFieldPaths(text).filter((id) => flagged.has(id));
-      if (hit.length === 0) rules.push(text);
-      for (const id of hit) raw.set(id, [...(raw.get(id) ?? []), text]);
-    }
-    return { ruleProblems: rules, rawByField: raw };
-  }, [config, fieldProblems]);
+  }, [problems]);
   const advisories = useMemo(() => (config ? configAdvisories(config, instrument) : []), [config, instrument]);
 
   // List items carry no configuration; scenario A's comes from `GET /runs/{id}`.
@@ -399,10 +418,8 @@ export default function LabPage() {
   const baseRun = baseRunDetail.data?.run_id === baseRunId ? baseRunDetail.data : null;
   const changesVsA = useMemo(() => (config && baseRun ? diffConfigs(baseRun.config, config) : []), [config, baseRun]);
   // With no preset loaded, the review compares against the starting values of the dataset.
-  const reference = useMemo(
-    () => (origin.type !== 'defaults' ? origin.loaded : datasetId ? startingConfig(datasetId, instrument) : null),
-    [origin, datasetId, instrument],
-  );
+  const startConfig = useMemo(() => (datasetId ? startingConfig(datasetId, instrument) : null), [datasetId, instrument]);
+  const reference = origin.type !== 'defaults' ? origin.loaded : startConfig;
   const originChanges = useMemo(() => (config && reference ? diffConfigs(reference, config) : []), [config, reference]);
   const estimate = useMemo(() => (config ? sizeEstimate(config, dataset) : null), [config, dataset]);
 
@@ -439,6 +456,37 @@ export default function LabPage() {
     el?.scrollIntoView({ block: 'center' });
     el?.focus({ preventScroll: true });
   }, [focusRequest]);
+
+  // The step in view, for the step bar: the last step whose top has passed the upper third of
+  // the scroll area (the last step once the area is scrolled to its end).
+  const [currentStep, setCurrentStep] = useState<StepId>('lab-step-choose');
+  const hasConfig = config !== null;
+  useEffect(() => {
+    if (!hasConfig) return;
+    const first = document.getElementById(STEPS[0].id);
+    const scroller = first?.closest<HTMLElement>('.ws-body-scroll');
+    if (!scroller) return;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const top = scroller.getBoundingClientRect().top + scroller.clientHeight / 3;
+      let id: StepId = STEPS[0].id;
+      if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4) id = STEPS[STEPS.length - 1].id;
+      else for (const s of STEPS) if ((document.getElementById(s.id)?.getBoundingClientRect().top ?? Infinity) <= top) id = s.id;
+      setCurrentStep(id);
+    };
+    const onScroll = () => {
+      if (frame === 0) frame = window.requestAnimationFrame(update);
+    };
+    update();
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+      window.cancelAnimationFrame(frame);
+    };
+  }, [hasConfig]);
 
   /** Shows a field (Advanced and its section unless Guided or step 1 has it) and focuses it. */
   const focusField = (fieldId: string) => {
@@ -484,8 +532,14 @@ export default function LabPage() {
     setOrigin({ type: 'run', runId: baseRun.run_id, loaded: baseRun.config });
   };
 
-  const blocked = fieldProblems.length > 0 || ruleProblems.length > 0;
-  const problemCount = fieldProblems.length + ruleProblems.length;
+  const problemCount = problems?.count ?? 0;
+  const blocked = problemCount > 0;
+  /** Jump to the first problem: its field when it has one, else the Review step's list. */
+  const jumpToProblem = () => {
+    const first = fieldProblems[0];
+    if (first) focusField(first.fieldId);
+    else scrollToStep('lab-step-review');
+  };
 
   /** What the submission returned, in words (UI_DESIGN_SPEC §11.4: idempotence reported honestly). */
   const outcomeText = (r: SubmitExperimentResult): string => {
@@ -508,14 +562,13 @@ export default function LabPage() {
       const trimmed = label.trim();
       const result = await api.submitExperiment(config, trimmed === '' ? null : trimmed);
       const runId = result.experiment.run_id;
-      const text = outcomeText(result);
-      announce(text);
+      announce(outcomeText(result));
       if (how === 'scenario_b' && runId === baseRunId) {
         setSubmitNote(
           `This configuration is the same experiment as scenario A (run ${runId}): identical inputs give an identical run. Change at least one assumption to get a scenario B.`,
         );
       } else {
-        setSubmission({ result, text, scenarioA: how === 'scenario_b' ? baseRunId : null });
+        setSubmission({ result, scenarioA: how === 'scenario_b' ? baseRunId : null, configKey: JSON.stringify(config) });
         window.requestAnimationFrame(() => {
           resultRef.current?.scrollIntoView({ block: 'nearest' });
           resultRef.current?.focus({ preventScroll: true });
@@ -542,47 +595,66 @@ export default function LabPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const loadingInitial = (datasets.loading && !datasets.data) || fromLoading || (config === null && !datasets.error);
+  // The preset cards decide the layout of step 1; rendering the steps before the first preset list
+  // arrives made the whole page jump when the cards appeared (CLS 0.20, PHASE32_PERFORMANCE).
+  const presetsPending = presets.loading && !presets.data && !presets.error;
+  const loadingInitial = (datasets.loading && !datasets.data) || fromLoading || (config === null && !datasets.error) || presetsPending;
   const noDatasets = datasets.data !== null && datasets.data !== undefined && datasets.data.length === 0;
   const ready = config !== null && datasets.data;
   const notReady = !ready ? 'Loading\u2026' : blocked ? 'Fix the invalid configuration first (step 3 lists it).' : submitting !== null ? 'Submitting\u2026' : null;
 
-  const stepStatus: Record<(typeof STEPS)[number]['id'], ReactNode> = {
-    'lab-step-choose': origin.type === 'preset' ? 'preset' : origin.type === 'run' ? 'from run' : 'defaults',
-    'lab-step-configure': `${originChanges.length} edit${originChanges.length === 1 ? '' : 's'}`,
-    'lab-step-review': blocked ? `${problemCount} to fix` : 'valid',
-    'lab-step-run': submission ? 'submitted' : blocked ? 'blocked' : 'ready',
-  };
+  const view = submission ? jobView(submission.result, job) : null;
+  // The Run step reports the job only while the form still holds the submitted configuration.
+  const steps = stepStates({
+    origin: origin.type,
+    edits: originChanges.length,
+    problems: problemCount,
+    submitted: view && submission?.configKey === JSON.stringify(config) ? view.phase : null,
+  });
 
   const toolbar = (
     <nav className="lab-stepper" aria-label="Lab steps">
       <ol>
-        {STEPS.map((s, i) => (
-          <li key={s.id}>
-            <button
-              type="button"
-              className={s.id === 'lab-step-review' && blocked ? 'lab-stepper-btn lab-stepper-bad' : 'lab-stepper-btn'}
-              onClick={() => scrollToStep(s.id)}
-              disabled={!ready}
-            >
-              <span className="lab-stepper-num" aria-hidden="true">
-                {i + 1}
-              </span>
-              <span>{s.short}</span>
-              {ready ? <span className="lab-stepper-status">{stepStatus[s.id]}</span> : null}
-            </button>
-          </li>
-        ))}
+        {STEPS.map((s, i) => {
+          const st = steps[s.id];
+          return (
+            <li key={s.id}>
+              <button
+                type="button"
+                className={`lab-stepper-btn lab-stepper-${st.state}`}
+                aria-current={ready && currentStep === s.id ? 'step' : undefined}
+                onClick={() => scrollToStep(s.id)}
+                disabled={!ready}
+              >
+                <span className="lab-stepper-num" aria-hidden="true">
+                  {!ready ? i + 1 : st.state === 'done' ? <Check size={12} strokeWidth={3} /> : st.state === 'error' ? <TriangleAlert size={12} /> : i + 1}
+                </span>
+                <span>{s.short}</span>
+                {ready ? <span className="lab-stepper-status">{st.status}</span> : null}
+              </button>
+            </li>
+          );
+        })}
       </ol>
+      {ready && blocked ? (
+        <button type="button" className="lab-fix" onClick={jumpToProblem} data-testid="lab-fix" title="Go to the first problem">
+          <TriangleAlert size={14} aria-hidden="true" />
+          <span>
+            Fix {problemCount} problem{problemCount === 1 ? '' : 's'}
+          </span>
+        </button>
+      ) : null}
     </nav>
   );
 
-  const selectedPreset = origin.type === 'preset' ? (presets.data?.find((p) => p.id === origin.id) ?? null) : null;
   const active = advancedSections.find((s) => s.id === activeSection) ?? advancedSections[0] ?? null;
   const latencyModel = changeValue(fieldsById.get('execution.order_latency.type'), JSON.stringify(config?.execution.order_latency.type ?? null));
   const strategyField = fieldsById.get(STRATEGY_FIELD);
   const synthetic = dataset?.kind === 'synthetic';
   const startName = origin.type === 'preset' ? `preset \u201c${origin.title}\u201d` : origin.type === 'run' ? `run ${origin.runId}` : 'starting values';
+  const presetList = presets.data ?? [];
+  const chips = useMemo(() => presetChips((presets.data ?? []).map((p) => p.config)), [presets.data]);
+  const startChips = startConfig ? assumptionChips(startConfig).map((c) => ({ ...c, differs: false })) : [];
 
   // ----- step 1 --------------------------------------------------------------------------------
 
@@ -627,7 +699,9 @@ export default function LabPage() {
                 ) : (
                   'No current version. '
                 )}
-                <Link to={paths.bookDataset(dataset.id)}>Open in Order Book Replay</Link>
+                <Link to={paths.bookDataset(dataset.id)} className="lab-ds-link">
+                  Open in Order Book Replay
+                </Link>
               </>
             ) : (
               'This dataset is not installed on the server; a run on it will be rejected.'
@@ -642,79 +716,89 @@ export default function LabPage() {
         {presets.error ? <ErrorBox error={presets.error} onRetry={presets.reload} /> : null}
         {presets.loading ? <Spinner label="Loading presets" /> : null}
         <div className="lab-cards">
-          {(presets.data ?? []).map((p) => {
+          {presetList.map((p, i) => {
             const checked = origin.type === 'preset' && origin.id === p.id;
             const t = `${uid}-p-${p.id}`;
+            const kind = p.config.strategy.kind.type;
+            const role = strategyRole(kind);
+            const Icon = role ? ROLE_ICON[role] : null;
             return (
-              <label key={p.id} className={checked ? 'lab-card lab-card-on' : 'lab-card'}>
-                <span className="lab-card-top">
-                  <input
-                    type="radio"
-                    name={presetName}
-                    value={p.id}
-                    checked={checked}
-                    onChange={() => applyPreset(p)}
-                    aria-labelledby={`${t}-t`}
-                    aria-describedby={`${t}-d ${t}-q`}
-                  />
-                  <span className="lab-card-title" id={`${t}-t`}>
-                    {p.title}
+              <div key={p.id} className={checked ? 'lab-preset lab-preset-on' : 'lab-preset'} data-role={role ?? undefined}>
+                <label className="lab-card" title={p.title}>
+                  <span className="lab-card-top">
+                    <input
+                      type="radio"
+                      name={presetName}
+                      value={p.id}
+                      checked={checked}
+                      onChange={() => applyPreset(p)}
+                      aria-labelledby={`${t}-t ${t}-k`}
+                      aria-describedby={`${t}-q ${t}-a`}
+                    />
+                    <span className="lab-card-title" id={`${t}-t`}>
+                      {presetShortTitle(p.title, kind)}
+                    </span>
+                    {checked ? <span className="lab-card-state">loaded</span> : null}
                   </span>
-                  {checked ? <span className="lab-card-state">loaded</span> : null}
-                </span>
-                <span className="lab-card-kind">{strategyName(p.config.strategy.kind.type)}</span>
-                <span className="lab-card-desc" id={`${t}-d`}>
-                  {firstSentence(p.description)}
-                </span>
-                <span className="lab-card-q" id={`${t}-q`}>
-                  <span className="lab-card-q-tag">Question</span> {p.demonstrates}
-                </span>
-              </label>
+                  <span className="lab-card-kind" id={`${t}-k`}>
+                    {Icon ? <Icon size={14} aria-hidden="true" /> : null}
+                    <span>{strategyName(kind)}</span>
+                    {role ? <span className="lab-card-role">{ROLE_LABEL[role]}</span> : null}
+                  </span>
+                  <span className="lab-card-q" id={`${t}-q`}>
+                    <span className="lab-card-q-tag">Question</span> {p.demonstrates}
+                  </span>
+                  <ChipList id={`${t}-a`} chips={chips[i] ?? []} />
+                </label>
+                <details className="lab-card-more">
+                  <summary>Details</summary>
+                  <p className="lab-lede">{p.description}</p>
+                  <p className="mono small wrap-anywhere">{assumptionsLabel(p.config)}</p>
+                </details>
+              </div>
             );
           })}
-          <label className={origin.type === 'defaults' ? 'lab-card lab-card-on' : 'lab-card'}>
-            <span className="lab-card-top">
-              <input
-                type="radio"
-                name={presetName}
-                value=""
-                checked={origin.type === 'defaults'}
-                onChange={applyDefaults}
-                aria-labelledby={`${uid}-def-t`}
-                aria-describedby={`${uid}-def-d`}
-              />
-              <span className="lab-card-title" id={`${uid}-def-t`}>
-                Starting values
-              </span>
-              {origin.type === 'defaults' ? <span className="lab-card-state">loaded</span> : null}
-            </span>
-            <span className="lab-card-kind">any strategy</span>
-            <span className="lab-card-desc" id={`${uid}-def-d`}>
-              Smallest valid sizes for the instrument and the most conservative execution assumptions; not a preset.
-            </span>
-          </label>
-          {origin.type === 'run' ? (
-            <label className="lab-card lab-card-on">
+          <div className={origin.type === 'defaults' ? 'lab-preset lab-preset-on' : 'lab-preset'}>
+            <label className="lab-card">
               <span className="lab-card-top">
-                <input type="radio" name={presetName} value={origin.runId} checked readOnly aria-labelledby={`${uid}-run-t`} />
-                <span className="lab-card-title" id={`${uid}-run-t`}>
-                  Run <span className="mono">{origin.runId}</span>
+                <input
+                  type="radio"
+                  name={presetName}
+                  value=""
+                  checked={origin.type === 'defaults'}
+                  onChange={applyDefaults}
+                  aria-labelledby={`${uid}-def-t`}
+                  aria-describedby={`${uid}-def-d ${uid}-def-a`}
+                />
+                <span className="lab-card-title" id={`${uid}-def-t`}>
+                  Starting values
                 </span>
-                <span className="lab-card-state">loaded</span>
+                {origin.type === 'defaults' ? <span className="lab-card-state">loaded</span> : null}
               </span>
-              <span className="lab-card-desc">The configuration of an earlier run, to change and run again.</span>
+              <span className="lab-card-kind">any strategy {'\u00b7'} not a preset</span>
+              <span className="lab-card-q" id={`${uid}-def-d`}>
+                Smallest valid sizes for the instrument and the most conservative execution assumptions.
+              </span>
+              <ChipList id={`${uid}-def-a`} chips={startChips} />
             </label>
+          </div>
+          {origin.type === 'run' ? (
+            <div className="lab-preset lab-preset-on">
+              <label className="lab-card">
+                <span className="lab-card-top">
+                  <input type="radio" name={presetName} value={origin.runId} checked readOnly aria-labelledby={`${uid}-run-t`} />
+                  <span className="lab-card-title" id={`${uid}-run-t`}>
+                    Run <span className="mono">{origin.runId}</span>
+                  </span>
+                  <span className="lab-card-state">loaded</span>
+                </span>
+                <span className="lab-card-q">The configuration of an earlier run, to change and run again.</span>
+              </label>
+            </div>
           ) : null}
         </div>
         {presets.data && presets.data.length === 0 ? (
           <p className="lab-lede">The server offers no presets for this dataset; start from the starting values and edit as needed.</p>
-        ) : null}
-        {selectedPreset ? (
-          <details className="lab-preset-more">
-            <summary>About {selectedPreset.title}</summary>
-            <p className="prose">{selectedPreset.description}</p>
-            <p className="mono small wrap-anywhere">{assumptionsLabel(selectedPreset.config)}</p>
-          </details>
         ) : null}
       </fieldset>
     </section>
@@ -847,10 +931,10 @@ export default function LabPage() {
                   <button type="button" className="btn-link" onClick={() => focusField(p.fieldId)}>
                     {p.text}
                   </button>
-                  {rawByField.has(p.fieldId) ? (
+                  {problems?.rawByField.has(p.fieldId) ? (
                     <details className="lab-problem-raw">
                       <summary>Server rule</summary>
-                      {rawByField.get(p.fieldId)?.map((t) => (
+                      {problems.rawByField.get(p.fieldId)?.map((t) => (
                         <p key={t} className="mono">
                           {t}
                         </p>
@@ -902,6 +986,40 @@ export default function LabPage() {
             fields={fieldsById}
           />
         )}
+      </section>
+
+      <section className="lab-block" aria-label="Modeling assumptions">
+        <h3 className="lab-group-title">
+          <span>Modeling assumptions</span>
+          <Badge kind="modeled" title={MODELED_TITLE}>
+            modeled
+          </Badge>
+        </h3>
+        <p className="lab-lede">
+          How the simulator turns the strategy&apos;s orders into fills and costs. They are assumptions, not observations: every fill and fee
+          in the results is an estimate under them.
+        </p>
+        <dl className="lab-assume">
+          {assumptionRows(config, reference).map((r) => (
+            <div key={r.key} className="lab-assume-row">
+              <dt>
+                {r.label}
+                {r.changed ? (
+                  <>
+                    {' '}
+                    <Badge kind="neutral" title={`Differs from the ${startName}`}>
+                      changed
+                    </Badge>
+                  </>
+                ) : null}
+              </dt>
+              <dd>
+                <span className={r.key === 'queue' || r.key === 'fill' ? 'lab-assume-value' : 'mono'}>{r.value}</span>
+                <span className="lab-assume-help">{r.help}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
       </section>
 
       <section className="lab-block" aria-label="Size estimate">
@@ -981,29 +1099,33 @@ export default function LabPage() {
         </p>
       ) : null}
 
-      <section className="lab-block" aria-label="Next steps">
+      <section className="lab-block" aria-label="Job and results">
         <h3 className="lab-group-title" ref={resultRef} tabIndex={-1}>
-          {submission ? 'Submitted' : 'What happens next'}
+          {view ? 'Job and results' : 'What happens next'}
         </h3>
-        {submission ? (
-          <p className="lab-lede" role="status">
-            At submission: {submission.text}
-            {submission.result.run ? null : (
-              <>
-                {' '}
-                Run id <span className="mono">{submission.result.experiment.run_id}</span>.
-              </>
-            )}
-            {est ? (
-              <>
-                {' '}
-                Server estimate: <span className="mono">{fmtInt(est.ticks)}</span> evaluations, at most{' '}
-                <span className="mono">{fmtInt(est.tape_events_upper)}</span> tape events (<span className="mono">{fmtBytes(est.output_bytes_upper)}</span>).
-              </>
+        {view && submission ? (
+          <>
+            <JobProgress view={view} />
+            {submission.configKey !== JSON.stringify(config) ? (
+              <p className="lab-lede">The form has changed since this submission; the job and links here are for the configuration that was submitted.</p>
             ) : null}
+            <p className="lab-lede">
+              Run id <span className="mono">{submission.result.experiment.run_id}</span>.
+              {est ? (
+                <>
+                  {' '}
+                  Server estimate: <span className="mono">{fmtInt(est.ticks)}</span> evaluations, at most{' '}
+                  <span className="mono">{fmtInt(est.tape_events_upper)}</span> tape events (<span className="mono">{fmtBytes(est.output_bytes_upper)}</span>).
+                </>
+              ) : null}
+            </p>
+          </>
+        ) : (
+          <p className="lab-lede">
+            Submitting queues a job for the worker: queued, then running, then completed. Once the run exists, its views open from here.
           </p>
-        ) : null}
-        <NextSteps submission={submission} job={job} />
+        )}
+        <RunLinks submission={submission} view={view} />
       </section>
 
       <details className="lab-compare" open={fromParam !== null || undefined}>
@@ -1113,8 +1235,27 @@ export default function LabPage() {
         <dd>{strategyName(config.strategy.kind.type)}</dd>
         <dt>Starting point</dt>
         <dd>{origin.type === 'preset' ? origin.title : origin.type === 'run' ? <span className="mono">{origin.runId}</span> : 'Starting values'}</dd>
-        <dt>Edits</dt>
-        <dd className="mono">{originChanges.length}</dd>
+        <dt>{origin.type === 'preset' ? 'Changed vs preset' : origin.type === 'run' ? 'Changed vs run' : 'Changed vs starting values'}</dt>
+        <dd>
+          {originChanges.length === 0 ? (
+            'nothing'
+          ) : (
+            <ul className="lab-summary-changes">
+              {originChanges.slice(0, 4).map((c) => {
+                const f = fieldsById.get(c.path);
+                return (
+                  <li key={c.path}>
+                    <span title={c.path}>{f ? f.label : pathLabel(c.path)}</span>{' '}
+                    <span className="mono">
+                      {changeValue(f, c.a, c.path)} {'\u2192'} {changeValue(f, c.b, c.path)}
+                    </span>
+                  </li>
+                );
+              })}
+              {originChanges.length > 4 ? <li>{`+${originChanges.length - 4} more (step 3)`}</li> : null}
+            </ul>
+          )}
+        </dd>
         {fieldsById.has('strategy.kind.order_qty') ? (
           <>
             <dt>Order quantity</dt>
@@ -1123,6 +1264,8 @@ export default function LabPage() {
         ) : null}
         <dt>Latency entry / response</dt>
         <dd className="mono">{latencySummary}</dd>
+        <dt>Queue model</dt>
+        <dd>{queueModelLabel(config.execution.queue_model)}</dd>
         <dt>Fees maker / taker</dt>
         <dd className="mono">
           {shownValue(fieldsById.get('execution.fees.maker'), config)} / {shownValue(fieldsById.get('execution.fees.taker'), config)}
@@ -1141,13 +1284,12 @@ export default function LabPage() {
           </>
         )}
       </p>
-      <button type="button" className="btn-primary" onClick={() => scrollToStep(blocked ? 'lab-step-review' : 'lab-step-run')}>
-        {blocked ? 'Review problems' : 'Go to Run'}
+      <button type="button" className="btn-primary" onClick={blocked ? jumpToProblem : () => scrollToStep('lab-step-run')}>
+        {blocked ? 'Fix first problem' : 'Go to Run'}
       </button>
-      {submission ? (
+      {view && submission ? (
         <p className="lab-lede">
-          Last submission: run <span className="mono">{submission.result.experiment.run_id}</span>
-          {job ? ` \u00b7 job ${job.state}` : ''}
+          Last submission: run <span className="mono">{submission.result.experiment.run_id}</span> {'\u00b7'} {view.headline.toLowerCase()}
         </p>
       ) : null}
     </aside>

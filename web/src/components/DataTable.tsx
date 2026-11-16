@@ -4,9 +4,11 @@
 // total aria-rowcount/aria-colcount, aria-rowindex per rendered row, aria-sort on headers.
 // Keyboard: Up/Down, PageUp/PageDown, Home/End (Ctrl: first/last row) move the row focus; Enter
 // activates the row (its primary link), Space selects it, Ctrl+C copies it as raw TSV.
+// Pointer: click selects, double click activates. On a touch screen (coarse pointer), where a
+// double tap zooms, one tap activates a row of a table that has no selection.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, ReactNode } from 'react';
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import {
   flexRender,
   getCoreRowModel,
@@ -52,7 +54,7 @@ export interface DataTableProps<T> {
   rowKey: (row: T) => string;
   /** Accessible name of the grid. */
   label: string;
-  /** Enter or double click on a row. */
+  /** Enter or double click on a row; one tap on a touch screen when there is no `onSelect`. */
   onActivate?: (row: T) => void;
   /** Click or Space on a row. */
   onSelect?: (row: T) => void;
@@ -84,6 +86,14 @@ function rowHeightPx(el: HTMLElement | null): number {
   if (!el) return 24;
   const v = Number.parseFloat(getComputedStyle(el).getPropertyValue('--h-row'));
   return Number.isFinite(v) && v > 0 ? v : 24;
+}
+
+const COARSE_POINTER = '(pointer: coarse)';
+
+/** A click on a control inside a cell (its link, button or input) belongs to that control. */
+function fromControl(e: MouseEvent<HTMLTableRowElement>): boolean {
+  const control = (e.target as Element).closest('a, button, input, select, textarea, label, summary');
+  return control !== null && e.currentTarget.contains(control);
 }
 
 export function DataTable<T>({
@@ -165,6 +175,26 @@ export function DataTable<T>({
       el.focus({ preventScroll: true });
       el.scrollIntoView({ block: 'nearest' });
     }
+  });
+
+  // A table that opens with a selected row (e.g. the order visited before Back) scrolls its own
+  // body, never the page, to show that row once, and makes it the row keyboard focus enters.
+  const revealed = useRef(false);
+  useLayoutEffect(() => {
+    if (revealed.current || model.length === 0) return;
+    revealed.current = true;
+    const index = selectedKey === null ? -1 : model.findIndex((r) => r.id === selectedKey);
+    const scroller = scrollRef.current;
+    if (index < 0 || !scroller) return;
+    setFocusIndex(index);
+    if (virtual) {
+      virtualizer.scrollToIndex(index, { align: 'center' });
+      return;
+    }
+    const tr = scroller.querySelector<HTMLElement>(`tr[data-index="${index}"]`);
+    if (!tr) return;
+    const top = tr.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    scroller.scrollTop = Math.max(0, top - (scroller.clientHeight - tr.offsetHeight) / 2);
   });
 
   const moveTo = (i: number) => {
@@ -305,7 +335,15 @@ export function DataTable<T>({
                   tabIndex={index === clampedFocus ? 0 : -1}
                   className={[selected ? 'selected' : '', extra ?? ''].filter(Boolean).join(' ') || undefined}
                   onFocus={() => setFocusIndex(index)}
-                  onClick={onSelect ? () => onSelect(row.original) : undefined}
+                  onClick={
+                    onSelect
+                      ? () => onSelect(row.original)
+                      : onActivate
+                        ? (e) => {
+                            if (!fromControl(e) && window.matchMedia(COARSE_POINTER).matches) onActivate(row.original);
+                          }
+                        : undefined
+                  }
                   onDoubleClick={onActivate ? () => onActivate(row.original) : undefined}
                   onKeyDown={(e) => onKeyDown(e, index)}
                 >

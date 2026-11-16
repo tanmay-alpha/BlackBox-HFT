@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { api, ApiError, saveDownload, saveText } from '../../api/client';
 import { isBucketed, type DatasetVersion, type RunDetail } from '../../api/model';
@@ -13,8 +13,10 @@ import { latencyLabel, ORDER_OUTCOMES, OUTCOME_MEANING, strategyName, tifLabel }
 import {
   DASH, fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtQty, fmtTicks, words,
 } from '../../components/fmt';
+import { runLabelText, useDemoTitles } from '../../components/labels';
 import { digitsForUnit, fmtNsUtc } from '../../components/ns';
-import { SplitPane } from '../../components/SplitPane';
+import { useMediaQuery, usePhone } from '../../components/PaneTabs';
+import { SplitPane, type Pane } from '../../components/SplitPane';
 import { Tabs } from '../../components/Tabs';
 import { cssVar } from '../../components/theme';
 import { Term } from '../../components/Tooltip';
@@ -34,6 +36,9 @@ import type { ChartSeries } from './TimeSeriesChart';
 import './runs.css';
 
 const PAGE_SIZE = 100;
+
+/** The width below which SplitPane stacks its panes in one scrolling flow. */
+const STACK_QUERY = '(max-width: 959px)';
 
 /** Equity points requested per chart; longer runs come back as DOWNSAMPLED buckets. */
 const EQUITY_POINTS = 2000;
@@ -83,7 +88,12 @@ export default function RunOverviewPage() {
 function RunOverview({ runId }: { runId: string }) {
   const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
   const access = useAccess();
-  const label = run.data?.label ?? '';
+  const phone = usePhone();
+  const rawLabel = run.data?.label ?? '';
+  const label = runLabelText(rawLabel, useDemoTitles());
+  const meta = run.data
+    ? `${strategyName(run.data.strategy_kind)} \u00b7 ${run.data.dataset.id} v${run.data.dataset.version} \u00b7 latency ${latencyLabel(run.data.config.execution.order_latency)}`
+    : null;
   // Until the run is read (and when it is not found) its actions have nothing to act on.
   const off = !run.data;
   const action = (to: string, text: string, primary = false) =>
@@ -104,21 +114,26 @@ function RunOverview({ runId }: { runId: string }) {
         <>
           <Link className="btn" to={paths.runs()}>All runs</Link>
           <span className="run-context">
-            {label ? <span className="run-context-label">{label}</span> : null}
-            {run.data ? (
-              <span className="run-context-meta dim">
-                {`${strategyName(run.data.strategy_kind)} \u00b7 ${run.data.dataset.id} v${run.data.dataset.version} \u00b7 latency ${latencyLabel(run.data.config.execution.order_latency)}`}
-              </span>
-            ) : null}
+            {label ? <span className="run-context-label" title={rawLabel}>{label}</span> : null}
+            {meta ? <span className="run-context-meta dim" title={meta}>{meta}</span> : null}
             <HashText hash={runId} />
           </span>
           {action(paths.bookRun(runId), 'Open in Order Book Replay', true)}
-          <DownloadButtons runId={runId} disabled={off} />
-          {action(paths.comparePair(runId), 'Compare with\u2026')}
-          <RunContextLinks runId={runId} omit={['overview', 'replay', 'compare']} disabled={off} />
-          {action(paths.sweepForm(runId), 'Sweep from this run')}
-          {action(paths.strategy({ from: runId }), 'Open in Strategy Lab')}
-          <button type="button" onClick={run.reload} disabled={run.loading}>Reload run</button>
+          {phone ? null : action(paths.comparePair(runId), 'Compare with\u2026')}
+          {phone ? null : <RunContextLinks runId={runId} omit={['overview', 'replay', 'compare']} disabled={off} />}
+          {/* Downloads and rarer actions behind one disclosure: eleven buttons wrapped into a
+              424 px toolbar on a phone and four rows on a 1024 px screen. */}
+          <details className="ws-more">
+            <summary title="Downloads, sweep from this run, open in the Strategy Lab, reload">{phone ? 'More actions' : 'More'}</summary>
+            <div className="ws-more-body">
+              {phone ? action(paths.comparePair(runId), 'Compare with\u2026') : null}
+              {phone ? <RunContextLinks runId={runId} omit={['overview', 'replay', 'compare']} disabled={off} /> : null}
+              <DownloadButtons runId={runId} disabled={off} />
+              {action(paths.sweepForm(runId), 'Sweep from this run')}
+              {action(paths.strategy({ from: runId }), 'Open in Strategy Lab')}
+              <button type="button" onClick={run.reload} disabled={run.loading}>Reload run</button>
+            </div>
+          </details>
         </>
       }
     >
@@ -175,56 +190,75 @@ function RunContents({ run }: { run: RunDetail }) {
   const instrument = manifest?.instrument ?? null;
   const digits = manifest ? digitsForUnit(manifest.timestamps.input_unit) : 9;
   const [tab, setTab] = useState<RunTab>('metrics');
+  // Below 960 px the panes stack in one scrolling flow; the key figures join that flow instead of
+  // sitting fixed above it, and the blotter and details each take one screen of the scroller.
+  const narrow = useMediaQuery(STACK_QUERY);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const [params] = useSearchParams();
+  const returning = useRef(params.get('order') !== null);
+  // Back from an order on a narrow screen: bring the blotter, not the key figures, into view.
+  useEffect(() => {
+    if (!returning.current || !narrow) return;
+    returning.current = false;
+    const root = splitRef.current?.querySelector<HTMLElement>('.split-stack');
+    const pane = root?.querySelector<HTMLElement>('[data-pane="orders"]');
+    if (root && pane) root.scrollTop = pane.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+  }, [narrow]);
+
+  const panes: Pane[] = [
+    {
+      id: 'orders',
+      label: 'Order blotter',
+      defaultSize: '55%',
+      minSize: '30%',
+      stackHeight: '100%',
+      content: <OrdersBlotter runId={run.run_id} instrument={instrument} />,
+    },
+    {
+      id: 'details',
+      label: 'Run details',
+      defaultSize: '45%',
+      minSize: '25%',
+      collapsible: true,
+      stackHeight: '100%',
+      content: (
+        <Tabs<RunTab>
+          label="Run details"
+          active={tab}
+          onChange={setTab}
+          tabs={[
+            { id: 'metrics', label: 'Metrics' },
+            { id: 'charts', label: 'Account charts' },
+            { id: 'fills', label: 'Fills', count: fmtInt(run.counts.fills) },
+            { id: 'manifest', label: 'Manifest' },
+            { id: 'engine', label: 'Engine cross-check' },
+          ]}
+        >
+          {tab === 'metrics' ? <RunMetrics metrics={run.metrics} instrument={instrument} /> : null}
+          {tab === 'charts' ? <AccountCharts runId={run.run_id} instrument={instrument} /> : null}
+          {tab === 'fills' ? <FillsTable runId={run.run_id} instrument={instrument} /> : null}
+          {tab === 'manifest' ? <Manifest run={run} dataset={dataset} /> : null}
+          {tab === 'engine' ? (
+            <EngineCheck
+              check={run.engine_check}
+              instrument={instrument}
+              partialFill={run.config.execution.exchange_model === 'partial_fill'}
+            />
+          ) : null}
+        </Tabs>
+      ),
+    },
+  ];
+  const kpis = <KpiStrip metrics={run.metrics} />;
 
   return (
     <TimeDigitsContext.Provider value={digits}>
       <div className="run-body">
-        <KpiStrip metrics={run.metrics} />
-        <div className="run-split">
+        {narrow ? null : kpis}
+        <div className="run-split" ref={splitRef}>
           <SplitPane
             id="forensics.run"
-            panes={[
-              {
-                id: 'orders',
-                label: 'Order blotter',
-                defaultSize: '55%',
-                minSize: '30%',
-                content: <OrdersBlotter runId={run.run_id} instrument={instrument} />,
-              },
-              {
-                id: 'details',
-                label: 'Run details',
-                defaultSize: '45%',
-                minSize: '25%',
-                collapsible: true,
-                content: (
-                  <Tabs<RunTab>
-                    label="Run details"
-                    active={tab}
-                    onChange={setTab}
-                    tabs={[
-                      { id: 'metrics', label: 'Metrics' },
-                      { id: 'charts', label: 'Account charts' },
-                      { id: 'fills', label: 'Fills', count: fmtInt(run.counts.fills) },
-                      { id: 'manifest', label: 'Manifest' },
-                      { id: 'engine', label: 'Engine cross-check' },
-                    ]}
-                  >
-                    {tab === 'metrics' ? <RunMetrics metrics={run.metrics} instrument={instrument} /> : null}
-                    {tab === 'charts' ? <AccountCharts runId={run.run_id} instrument={instrument} /> : null}
-                    {tab === 'fills' ? <FillsTable runId={run.run_id} instrument={instrument} /> : null}
-                    {tab === 'manifest' ? <Manifest run={run} dataset={dataset} /> : null}
-                    {tab === 'engine' ? (
-                      <EngineCheck
-                        check={run.engine_check}
-                        instrument={instrument}
-                        partialFill={run.config.execution.exchange_model === 'partial_fill'}
-                      />
-                    ) : null}
-                  </Tabs>
-                ),
-              },
-            ]}
+            panes={narrow ? [{ id: 'kpis', label: 'Key figures', stackHeight: 'auto', content: kpis }, ...panes] : panes}
           />
         </div>
       </div>
@@ -238,7 +272,7 @@ function KpiStrip({ metrics: m }: { metrics: Metrics }) {
     <div className="stats run-kpis" aria-label="Run key figures">
       <Stat label={<>Net P&amp;L <span className="unit">quote</span></>} value={<span className={signClass(m.net_pnl)}>{fmtPnl(m.net_pnl, 2)}</span>} hint="simulated" />
       <Stat label={<>Realized P&amp;L <span className="unit">quote</span></>} value={<span className={signClass(m.realized_pnl)}>{fmtPnl(m.realized_pnl, 2)}</span>} hint="before fees" />
-      <Stat label={<><Term term="fees">Fees</Term> <span className="unit">quote</span></>} value={fmtPnl(m.fees, 2)} hint="negative is a rebate" />
+      <Stat label={<><Term term="fees">Fees</Term> <span className="unit">quote</span></>} value={fmtMoney(m.fees, 2)} hint="negative is a rebate" />
       <Stat label="Orders submitted" value={fmtInt(m.orders_submitted)} />
       <Stat label="Simulated fills" value={fmtInt(m.fill_count)} />
       <Stat label={<Term term="fill_ratio">Order fill ratio</Term>} value={fmtPct(m.fill_ratio_orders)} />
@@ -248,7 +282,7 @@ function KpiStrip({ metrics: m }: { metrics: Metrics }) {
         hint={markout ? `${fmtInt(markout.fills)} measured fills` : 'no horizon recorded'}
       />
       <Stat label={<><Term term="spread_capture">Spread capture</Term> <span className="unit">ticks</span></>} value={fmtTicks(m.spread_capture_ticks)} hint="maker fills" />
-      <Stat label={<><Term term="drawdown">Max drawdown</Term> <span className="unit">quote</span></>} value={fmtPnl(m.max_drawdown, 2)} hint="sampled equity" />
+      <Stat label={<><Term term="drawdown">Max drawdown</Term> <span className="unit">quote</span></>} value={fmtMoney(m.max_drawdown, 2)} hint="sampled equity" />
     </div>
   );
 }
@@ -312,7 +346,7 @@ function EngineCheck({ check: c, instrument, partialFill }: { check: EngineState
               <tbody>
                 <tr><th scope="row">Position{qtyUnit}</th><td className="num">{quantity(c.ledger_position, instrument)}</td><td className="num">{quantity(c.engine_position, instrument)}</td></tr>
                 <tr><th scope="row">Cash / balance (quote, before fees)</th><td className="num">{fmtPnl(c.ledger_cash, 4)}</td><td className="num">{fmtPnl(c.engine_balance, 4)}</td></tr>
-                <tr><th scope="row">Fees (quote)</th><td className="num">{fmtPnl(c.ledger_fees, 4)}</td><td className="num">{fmtPnl(c.engine_fee, 4)}</td></tr>
+                <tr><th scope="row">Fees (quote)</th><td className="num">{fmtMoney(c.ledger_fees, 4)}</td><td className="num">{fmtMoney(c.engine_fee, 4)}</td></tr>
                 <tr><th scope="row">Fill / trade count</th><td className="num">{fmtInt(c.ledger_fills)}</td><td className="num">{fmtInt(c.engine_num_trades)}</td></tr>
               </tbody>
             </table>
@@ -368,7 +402,7 @@ function RunMetrics({ metrics: m, instrument: inst }: { metrics: Metrics; instru
         <MetricGroup title="P&L (quote)">
           <Stat label="Realized P&L" value={fmtPnl(m.realized_pnl, 4)} hint="Before fees" />
           <Stat label="Unrealized P&L" value={fmtPnl(m.unrealized_pnl, 4)} />
-          <Stat label={<Term term="fees">Fees</Term>} value={fmtPnl(m.fees, 4)} hint="Negative is a rebate" />
+          <Stat label={<Term term="fees">Fees</Term>} value={fmtMoney(m.fees, 4)} hint="Negative is a rebate" />
           <Stat label="Net P&L" value={fmtPnl(m.net_pnl, 4)} hint="Realized + unrealized − fees, last sample" />
         </MetricGroup>
         <MetricGroup title="Execution quality">
@@ -388,7 +422,7 @@ function RunMetrics({ metrics: m, instrument: inst }: { metrics: Metrics; instru
         <MetricGroup title="Risk">
           <Stat label="Risk blocks" value={fmtInt(m.risk_blocks)} />
           <Stat label="Risk halted" value={<Pill tone={m.risk_halted ? 'warn' : 'neutral'}>{m.risk_halted ? 'yes' : 'no'}</Pill>} />
-          <Stat label={<><Term term="drawdown">Maximum drawdown</Term> <span className="unit">quote</span></>} value={fmtPnl(m.max_drawdown, 4)} hint="Peak-to-trough sampled equity" />
+          <Stat label={<><Term term="drawdown">Maximum drawdown</Term> <span className="unit">quote</span></>} value={fmtMoney(m.max_drawdown, 4)} hint="Peak-to-trough sampled equity" />
         </MetricGroup>
       </div>
     </Panel>
@@ -452,18 +486,49 @@ function AccountCharts({ runId, instrument }: { runId: string; instrument: Instr
   );
 }
 
+const SIDES: readonly Side[] = ['buy', 'sell'];
+
+/** Blotter filters, page and last opened order in the address, so Back from an order restores them. */
+function useBlotterState() {
+  const [params, setParams] = useSearchParams();
+  const outcomeRaw = params.get('outcome');
+  const outcome: OrderOutcome | '' = ORDER_OUTCOMES.find((o) => o === outcomeRaw) ?? '';
+  const sideRaw = params.get('side');
+  const side: Side | '' = SIDES.find((s) => s === sideRaw) ?? '';
+  const offsetRaw = params.get('offset');
+  const offset = offsetRaw !== null && /^\d{1,9}$/.test(offsetRaw) ? Number(offsetRaw) : 0;
+  const orderRaw = params.get('order');
+  const order = orderRaw !== null && /^\d{1,15}$/.test(orderRaw) ? orderRaw : null;
+  const update = useCallback(
+    (patch: Record<string, string | number | null>) =>
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          for (const [k, v] of Object.entries(patch)) {
+            if (v === null || v === '' || (k === 'offset' && v === 0)) next.delete(k);
+            else next.set(k, String(v));
+          }
+          return next;
+        },
+        { replace: true },
+      ),
+    [setParams],
+  );
+  return { outcome, side, offset, order, update };
+}
+
 function OrdersBlotter({ runId, instrument }: { runId: string; instrument: InstrumentMeta | null }) {
   const navigate = useNavigate();
-  const [outcome, setOutcome] = useState<OrderOutcome | ''>('');
-  const [side, setSide] = useState<Side | ''>('');
-  const [offset, setOffset] = useState(0);
+  const { outcome, side, offset, order, update } = useBlotterState();
   const orders = useAsync((signal) => api.orders(runId, { outcome: outcome || undefined, side: side || undefined, offset, limit: PAGE_SIZE }, { signal }), [runId, outcome, side, offset]);
   const page = orders.data;
   const priceUnit = instrument ? undefined : 'ticks';
   const qtyUnit = instrument ? undefined : 'base units';
+  // The opened order is remembered (replacing this entry) before the order page is pushed.
+  const remember = useCallback((orderId: number) => update({ order: orderId }), [update]);
 
   const columns = useMemo<Column<OrderRecord>[]>(() => [
-    { id: 'order', header: 'Order', rowHeader: true, cell: (o) => <Link className="mono" to={paths.order(runId, o.order_id)} tabIndex={-1}>{o.order_id}</Link>, raw: (o) => String(o.order_id), sortValue: (o) => o.order_id },
+    { id: 'order', header: 'Order', rowHeader: true, cell: (o) => <Link className="mono" to={paths.order(runId, o.order_id)} tabIndex={-1} onClick={() => remember(o.order_id)}>{o.order_id}</Link>, raw: (o) => String(o.order_id), sortValue: (o) => o.order_id },
     { id: 'decision', header: 'Decision time', unit: 'local', cell: (o) => <ClockText ns={o.decision_ts} />, raw: (o) => String(o.decision_ts), sortValue: (o) => o.decision_ts },
     { id: 'side', header: 'Side', cell: (o) => <SideBadge side={o.side} />, sortValue: (o) => o.side },
     { id: 'price', header: 'Price', unit: priceUnit, numeric: true, cell: (o) => price(o.price_tick, instrument), sortValue: (o) => o.price_tick },
@@ -474,7 +539,7 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
     { id: 'qentry', header: 'Queue ahead at entry', unit: qtyUnit, term: 'queue_position', numeric: true, cell: (o) => quantity(o.queue_ahead_at_entry, instrument), sortValue: (o) => o.queue_ahead_at_entry },
     { id: 'qmin', header: 'Min queue ahead', unit: qtyUnit, term: 'queue_position', numeric: true, cell: (o) => quantity(o.min_queue_ahead, instrument), sortValue: (o) => o.min_queue_ahead },
     { id: 'reason', header: 'Reason', cell: (o) => o.reason || DASH, sortValue: (o) => o.reason },
-  ], [runId, instrument, priceUnit, qtyUnit]);
+  ], [runId, instrument, priceUnit, qtyUnit, remember]);
 
   return (
     <Panel
@@ -486,13 +551,13 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
       actions={
         <>
           <label className="row" htmlFor="run-outcome">Outcome
-            <select id="run-outcome" value={outcome} onChange={(event) => { setOutcome(event.target.value as OrderOutcome | ''); setOffset(0); }}>
+            <select id="run-outcome" value={outcome} onChange={(event) => update({ outcome: event.target.value, offset: 0, order: null })}>
               <option value="">All outcomes</option>
               {ORDER_OUTCOMES.map((value) => <option key={value} value={value}>{words(value)}</option>)}
             </select>
           </label>
           <label className="row" htmlFor="run-side">Side
-            <select id="run-side" value={side} onChange={(event) => { setSide(event.target.value as Side | ''); setOffset(0); }}>
+            <select id="run-side" value={side} onChange={(event) => update({ side: event.target.value, offset: 0, order: null })}>
               <option value="">Both sides</option><option value="buy">Buy</option><option value="sell">Sell</option>
             </select>
           </label>
@@ -507,11 +572,15 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
           rows={page.items}
           rowKey={(o) => String(o.order_id)}
           columns={columns}
-          onActivate={(o) => navigate(paths.order(runId, o.order_id))}
+          selectedKey={order}
+          onActivate={(o) => {
+            remember(o.order_id);
+            navigate(paths.order(runId, o.order_id));
+          }}
           empty={page.total === 0 ? 'No orders match these filters.' : 'No orders on this page. Return to the first page.'}
           footer={
             // A byte-capped page holds fewer rows than asked; paging continues at `next_offset`.
-            <Pager offset={page.offset} limit={page.next_offset !== null ? page.next_offset - page.offset : PAGE_SIZE} total={page.total} onOffset={setOffset} noun="orders" />
+            <Pager offset={page.offset} limit={page.next_offset !== null ? page.next_offset - page.offset : PAGE_SIZE} total={page.total} onOffset={(next) => update({ offset: next, order: null })} noun="orders" />
           }
           fill
         />
@@ -533,7 +602,7 @@ function FillsTable({ runId, instrument }: { runId: string; instrument: Instrume
     { id: 'price', header: 'Price', unit: priceUnit, numeric: true, cell: (f) => price(f.price_tick, instrument), sortValue: (f) => f.price_tick },
     { id: 'qty', header: 'Qty', unit: qtyUnit, numeric: true, cell: (f) => quantity(f.qty, instrument), sortValue: (f) => f.qty },
     { id: 'liq', header: 'Liquidity', cell: (f) => (f.maker ? 'maker' : 'taker'), sortValue: (f) => (f.maker ? 'maker' : 'taker') },
-    { id: 'fee', header: 'Fee', unit: 'quote', term: 'fees', numeric: true, cell: (f) => fmtPnl(f.fee, 4), sortValue: (f) => f.fee },
+    { id: 'fee', header: 'Fee', unit: 'quote', term: 'fees', numeric: true, cell: (f) => fmtMoney(f.fee, 4), sortValue: (f) => f.fee },
     { id: 'value', header: 'Value', unit: 'quote', numeric: true, cell: (f) => fmtMoney(f.value, 4), sortValue: (f) => f.value },
     { id: 'pos', header: 'Position after', unit: qtyUnit, numeric: true, cell: (f) => quantity(f.position_after, instrument), sortValue: (f) => f.position_after },
     { id: 'rpnl', header: 'Realized P&L', unit: 'quote', numeric: true, cell: (f) => fmtPnl(f.realized_pnl, 4), className: (f) => signClass(f.realized_pnl), sortValue: (f) => f.realized_pnl },

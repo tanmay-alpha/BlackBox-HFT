@@ -156,6 +156,14 @@
 
 /* ----- stepper (toolbar) ------------------------------------------------------------------ */
 
+.lab-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  min-width: 0;
+}
+
 .lab-stepper ol {
   display: flex;
   flex-wrap: wrap;
@@ -166,13 +174,22 @@
 }
 
 .lab-stepper-btn {
+  position: relative;
   gap: var(--sp-2);
   border-color: transparent;
   background: none;
 }
 
+/* The step in view: accent underline and full-strength label (the number ring fills too). */
+.lab-stepper-btn[aria-current='step'] {
+  color: var(--fg-0);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 .lab-stepper-num {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   width: 20px;
@@ -181,50 +198,88 @@
   border-radius: 50%;
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
+  font-weight: 400;
+}
+
+.lab-stepper-done .lab-stepper-num {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.lab-stepper-error .lab-stepper-num {
+  border-color: var(--error);
+  border-style: dashed;
+  color: var(--error);
+}
+
+.lab-stepper-btn[aria-current='step'] .lab-stepper-num {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 .lab-stepper-status {
   color: var(--fg-2);
   font-size: var(--text-xs);
+  font-weight: 400;
 }
 
-.lab-stepper-bad .lab-stepper-status {
+.lab-stepper-error .lab-stepper-status {
   color: var(--error);
+}
+
+/* Validation in reach from anywhere: the count, and a jump to the first invalid field. */
+.lab-fix {
+  gap: var(--sp-1);
+  border-color: color-mix(in srgb, var(--error) 55%, var(--border-subtle));
+  color: var(--error);
+  font-weight: 600;
+}
+
+.lab-fix:hover {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
 }
 
 /* ----- preset cards ----------------------------------------------------------------------- */
 
 .lab-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
   gap: var(--sp-3);
+}
+
+.lab-preset {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  background: var(--bg-0);
+  transition: border-color var(--dur-fast), background-color var(--dur-fast);
+}
+
+.lab-preset:hover {
+  border-color: var(--border-strong);
+}
+
+.lab-preset:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.lab-preset-on {
+  border-color: var(--accent);
+  background: var(--bg-selected);
 }
 
 .lab-card {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
   min-width: 0;
   padding: var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-1);
-  background: var(--bg-0);
   cursor: pointer;
-  transition: border-color var(--dur-fast), background-color var(--dur-fast);
-}
-
-.lab-card:hover {
-  border-color: var(--border-strong);
-}
-
-.lab-card:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.lab-card-on {
-  border-color: var(--accent);
-  background: var(--bg-selected);
 }
 
 .lab-card-top {
@@ -249,7 +304,8 @@
   flex: 1 1 auto;
   min-width: 0;
   color: var(--fg-0);
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
+  line-height: var(--lh-md);
   font-weight: 600;
 }
 
@@ -257,25 +313,51 @@
   flex: none;
   color: var(--accent);
   font-size: var(--text-xs);
+  font-weight: 600;
 }
 
 .lab-card-kind {
-  color: var(--fg-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  color: var(--fg-1);
   font-size: var(--text-xs);
+  line-height: var(--lh-xs);
 }
 
-.lab-card-desc {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+.lab-card-kind > svg {
+  flex: none;
+  color: var(--fg-0);
+}
+
+/* Strategy family as a tag: an icon and words, never colour alone. */
+.lab-card-role {
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-1);
   color: var(--fg-1);
-  font-size: var(--text-sm);
-  line-height: var(--lh-sm);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-2xs);
+  font-weight: 600;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+}
+
+.lab-preset[data-role='taker'] .lab-card-role {
+  border-style: dashed;
+}
+
+.lab-preset[data-role='scripted'] .lab-card-role {
+  border-style: dotted;
 }
 
 .lab-card-q {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
   color: var(--fg-0);
   font-size: var(--text-sm);
   line-height: var(--lh-sm);
@@ -283,19 +365,69 @@
 
 .lab-card-q-tag {
   color: var(--fg-2);
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--track-caps);
 }
 
-.lab-preset-more > summary {
-  font-size: var(--text-sm);
+.lab-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: auto;
 }
 
-.lab-preset-more[open] {
+.lab-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  overflow-wrap: anywhere;
+}
+
+.lab-chip-diff {
+  border-color: var(--accent);
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.lab-chip-mark {
+  margin-right: var(--sp-1);
+}
+
+.lab-card-more {
+  padding: 0 var(--sp-3) var(--sp-1);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.lab-card-more > summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-control);
+  font-size: var(--text-xs);
+}
+
+.lab-card-more > summary::before {
+  content: '\25B8';
+  margin-right: var(--sp-1);
+}
+
+.lab-card-more[open] > summary::before {
+  content: '\25BE';
+}
+
+.lab-card-more[open] {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+  padding-bottom: var(--sp-3);
 }
 
 /* ----- review ----------------------------------------------------------------------------- */
@@ -367,10 +499,56 @@
   line-height: var(--lh-sm);
 }
 
+.lab-change-delta {
+  color: var(--fg-2);
+}
+
 .lab-change-path {
   color: var(--fg-2);
   font-size: var(--text-2xs);
   overflow-wrap: anywhere;
+}
+
+/* Modeling assumptions: label left, value and its one-line meaning right (stacked on phones). */
+.lab-assume {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.lab-assume-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-4);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.lab-assume-row dt {
+  color: var(--fg-1);
+}
+
+.lab-assume-row dd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+  color: var(--fg-0);
+  overflow-wrap: anywhere;
+}
+
+.lab-assume-help {
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+}
+
+.lab-assume-value {
+  font-weight: 600;
 }
 
 /* ----- run -------------------------------------------------------------------------------- */
@@ -393,44 +571,130 @@
 }
 
 .lab-submit {
-  min-height: 40px;
+  min-height: var(--h-touch);
   padding: var(--sp-2) var(--sp-5);
   font-weight: 600;
 }
 
-.lab-next {
+/* Job progress after a submission: Queued → Running → Completed, each state in words and a mark. */
+.lab-job {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.lab-job-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lab-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 28px;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  color: var(--fg-2);
+  font-size: var(--text-xs);
+}
+
+.lab-stage + .lab-stage::before {
+  content: '\2192';
+  margin-right: var(--sp-1);
+  color: var(--fg-2);
+}
+
+.lab-stage-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.lab-stage-done {
+  color: var(--ok);
+}
+
+.lab-stage-current {
+  border-color: var(--accent);
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.lab-stage-current .lab-stage-mark {
+  border-width: 4px;
+  border-color: var(--accent);
+}
+
+.lab-stage-error {
+  border-color: color-mix(in srgb, var(--error) 55%, var(--border-subtle));
+  color: var(--error);
+  font-weight: 600;
+}
+
+.lab-stage-error .lab-stage-mark {
+  border: 0;
+}
+
+.lab-stage-skipped {
+  text-decoration: line-through;
+}
+
+.lab-stage-skipped .lab-stage-mark,
+.lab-stage-todo .lab-stage-mark {
+  border-style: dashed;
+}
+
+.lab-job-headline {
+  color: var(--fg-0);
+}
+
+/* The run's views: a button per view (enabled once the run exists) and what it shows. */
+.lab-links {
   display: flex;
   flex-direction: column;
   margin: 0;
   padding: 0;
   list-style: none;
-  counter-reset: lab-next;
 }
 
-.lab-next-item {
+.lab-link-item {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
+  align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-2) 0;
+  padding: var(--sp-1) 0;
   border-bottom: 1px solid var(--border-subtle);
   font-size: var(--text-sm);
   line-height: var(--lh-sm);
-  counter-increment: lab-next;
 }
 
-.lab-next-name {
-  color: var(--fg-0);
-  font-weight: 600;
+.lab-link {
+  justify-content: center;
+  min-height: var(--h-control);
+  text-decoration: none;
 }
 
-.lab-next-name::before {
-  content: counter(lab-next) '. ';
+.lab-link-off {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--sp-3);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-1);
   color: var(--fg-2);
-  font-family: var(--font-mono);
-  font-weight: 400;
 }
 
-.lab-next-what {
+.lab-link-what {
   color: var(--fg-1);
 }
 
@@ -444,7 +708,7 @@
 }
 
 .lab-compare > summary {
-  min-height: 40px;
+  min-height: var(--h-touch);
   display: flex;
   align-items: center;
   font-size: var(--text-sm);
@@ -465,6 +729,8 @@
   .lab-summary {
     position: sticky;
     top: var(--sp-5);
+    max-height: calc(100dvh - var(--h-topbar) - var(--h-toolbar) - var(--h-statusbar) - 2 * var(--sp-5));
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: var(--sp-3);
@@ -498,6 +764,21 @@
   overflow-wrap: anywhere;
 }
 
+.lab-summary-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+}
+
+.lab-summary-changes .mono {
+  color: var(--fg-1);
+}
+
 .lab-summary-state {
   display: flex;
   align-items: center;
@@ -522,15 +803,21 @@
   .lab button,
   .lab .btn,
   .lab-stepper-btn {
-    min-height: 40px;
+    min-height: var(--h-touch);
   }
 
   .lab .btn-link {
-    min-height: 40px;
+    min-height: var(--h-touch);
   }
 
+  /* Step statuses stay announced (the number ring still shows done / to fix) but take no width. */
   .lab-stepper-status {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .lab-stepper ol {
@@ -543,9 +830,20 @@
     padding: 0 var(--sp-1);
   }
 
-  .lab-next-item {
+  .lab-ds-link,
+  .lab-job-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--h-touch);
+  }
+
+  .lab-link-item {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: var(--sp-2);
+  }
+
+  .lab-assume-row {
     grid-template-columns: minmax(0, 1fr);
-    gap: var(--sp-1);
   }
 
   .lab-change-values {

@@ -17,7 +17,7 @@ import { Empty, ErrorBox, Notice, Panel, Pill, Spinner, useAsync } from '../../c
 import { useAccess } from '../../shell/access';
 import { useHealth } from '../../shell/health';
 import { paths } from '../../shell/paths';
-import { RESEARCH_BANNER, useNow, WORKER_MODE, workerHealth } from '../../shell/StatusBar';
+import { COMMIT_NOT_REPORTED, RESEARCH_BANNER, useNow, WORKER_MODE, workerHealth } from '../../shell/StatusBar';
 import { Workspace } from '../../shell/Workspace';
 import { fmtSeconds } from '../sim/JobViews';
 import './system.css';
@@ -182,8 +182,8 @@ function HealthTab() {
           <dl className="kv" data-testid="system-build">
             <dt>BlackBox</dt>
             <dd className="mono">{s.blackbox_version}</dd>
-            <dt>Git commit</dt>
-            <dd className="mono wrap-anywhere">{s.git_sha}</dd>
+            <dt>Build commit</dt>
+            {s.git_sha ? <dd className="mono wrap-anywhere">{s.git_sha}</dd> : <dd className="dim">{COMMIT_NOT_REPORTED}</dd>}
             <dt>API</dt>
             <dd className="mono">
               {s.api_version} {'\u00b7'} contract v{s.contract_version}

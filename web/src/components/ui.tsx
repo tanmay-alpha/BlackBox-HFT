@@ -7,7 +7,7 @@ import type { ReactNode } from 'react';
 import { describeError, isAbort } from '../api/client';
 import type { Basis, Side } from '../api/types';
 import { DASH, fmtClock, shortHash } from './fmt';
-import { useApiPhase } from '../shell/health';
+import { isWakingError, useApiPhase } from '../shell/health';
 import { relParts, type NsDigits, type NsInput } from './ns';
 
 // ----- Panel ------------------------------------------------------------------------------
@@ -99,7 +99,7 @@ export function Badge({ kind, children, title }: BadgeProps) {
 
 /** What each evidence basis means. The single wording used by badges and the legend. */
 export const BASIS_MEANING: Record<Basis, string> = {
-  observed: 'Present in the historical market data.',
+  observed: 'Present in the replayed market data (recorded or synthetic, as the dataset declares).',
   modeled:
     'Output of the configured simulation model (queue position, latency, fills). An estimate, not a fact.',
   derived: 'Arithmetic over observed and modeled values.',
@@ -324,7 +324,9 @@ function sameDeps(a: unknown[], b: unknown[]): boolean {
 /**
  * Runs `fn` whenever `deps` change and exposes its result. A call that has been superseded
  * (newer deps, a reload, or unmount) is aborted through `signal` and never writes its result,
- * and data loaded for old deps is never returned for new ones.
+ * and data loaded for old deps is never returned for new ones. A call that failed because the
+ * API was asleep (cold start) is retried once when the health poll next reports the API up, so
+ * a page opened during a cold start fills in without a click; nothing else is retried.
  */
 export function useAsync<T>(fn: (signal: AbortSignal) => Promise<T>, deps: unknown[]): AsyncResult<T> {
   const [state, setState] = useState<AsyncState<T>>({
@@ -370,6 +372,15 @@ export function useAsync<T>(fn: (signal: AbortSignal) => Promise<T>, deps: unkno
   }, [...deps, nonce]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  const phase = useApiPhase();
+  const prevPhase = useRef(phase);
+  const failedAsleep = state.error !== null && isWakingError(state.error);
+  useEffect(() => {
+    const was = prevPhase.current;
+    prevPhase.current = phase;
+    if (phase === 'ok' && was !== null && was !== 'ok' && failedAsleep) reload();
+  }, [phase, failedAsleep, reload]);
 
   // Between a deps change and the effect that follows it, the stored state still belongs to the
   // previous deps; report "loading" rather than another key's data.

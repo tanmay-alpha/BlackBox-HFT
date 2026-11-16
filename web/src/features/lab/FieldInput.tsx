@@ -216,6 +216,7 @@ export interface FieldRowProps<T> {
 export function FieldRow<T>({ field, obj, onChange, scope, modeled }: FieldRowProps<T>) {
   const domId = fieldDomId(scope, field.id);
   const helpId = `${domId}-help`;
+  const errorId = `${domId}-error`;
   const problem = fieldProblem(field, obj);
   const unit = field.kind === 'number' || field.kind === 'optional_number' ? field.unit : undefined;
 
@@ -244,7 +245,7 @@ export function FieldRow<T>({ field, obj, onChange, scope, modeled }: FieldRowPr
           obj={obj}
           onChange={onChange}
           domId={domId}
-          describedBy={helpId}
+          describedBy={problem ? `${helpId} ${errorId}` : helpId}
         />
         {unit ? <span className="field-unit">{unit}</span> : null}
       </div>
@@ -253,7 +254,7 @@ export function FieldRow<T>({ field, obj, onChange, scope, modeled }: FieldRowPr
         {field.help}
       </span>
       {problem ? (
-        <span className="field-error" role="alert">
+        <span className="field-error" id={errorId} role="alert">
           {problem}
         </span>
       ) : null}

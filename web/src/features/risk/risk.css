@@ -7,6 +7,7 @@
 }
 
 .risk-identity {
+  flex: 1 1 8ch;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -141,9 +142,20 @@
   gap: var(--sp-3);
 }
 
+/* While the equity samples load, the space of the 2×2 chart grid (measured 814 px at 1440,
+   858 px at 1024) is held so the tables below don't jump when the charts arrive. */
+.risk-charts-pending {
+  min-height: 814px;
+}
+
 @media (max-width: 1023px) {
   .risk-charts {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* One column: the four charts stack (measured 1706 px at 390). */
+  .risk-charts-pending {
+    min-height: 1700px;
   }
 }
 
@@ -159,15 +171,17 @@
   .risk-figures {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
+}
 
+@media (max-width: 599px), (pointer: coarse) {
   .risk-compare-links li {
-    min-height: 40px;
+    min-height: var(--h-touch);
   }
 
   .risk-other {
     display: inline-flex;
     align-items: center;
-    min-height: 40px;
+    min-height: var(--h-touch);
   }
 }
 
@@ -177,14 +191,16 @@
   color: var(--fg-1);
 }
 
-/* A long "unavailable: <reason>" wraps inside its cell instead of widening the table past the
-   panel, which hid the value column of every other row. */
-.dt-table td .analytics-unavailable {
-  display: inline-block;
-  min-width: 16ch;
-  max-width: 32ch;
-  white-space: normal;
-  text-align: left;
+/* Tables under 30 rows grow with their rows so the page is the only scroller; DataTable sets its
+   480 px cap inline, which only an !important rule overrides. */
+.risk-table-full .dt-scroll {
+  max-height: none !important;
+}
+
+.risk-unavailable,
+.risk-table-caption,
+.risk-analytics section > .run-subhead {
+  padding: var(--sp-2) var(--sp-3) 0;
 }
 
 /* "How it is measured" wraps; it never pushes the unit column out of view. */

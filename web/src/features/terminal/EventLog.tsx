@@ -1,9 +1,13 @@
 // Flight-recorder events near the cursor, on both clocks, with source and clock badges.
 
+import type { ReactNode } from 'react';
+
 import type { FlightEvent, InstrumentMeta } from '../../api/types';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
 import { fmtInt } from '../../components/fmt';
+import { usePhone } from '../../components/PaneTabs';
+import { Toolbar } from '../../components/Toolbar';
 import { Badge, ClockText } from '../../components/ui';
 import { eventSummary, eventTitle } from '../forensics/eventFormat';
 
@@ -30,94 +34,107 @@ export interface EventLogProps {
   selectedOrder: number | null;
   onSelectOrder: (orderId: number) => void;
   onJump: (ev: FlightEvent) => void;
+  /** Filter controls; the log adds its row count at the end of their row (no footer row, so the
+   *  docked pane shows more events). */
+  filters: ReactNode;
 }
 
-export function EventLog({ events, cursor, instrument, selectedOrder, onSelectOrder, onJump }: EventLogProps) {
+export function EventLog({ events, cursor, instrument, selectedOrder, onSelectOrder, onJump, filters }: EventLogProps) {
+  const phone = usePhone();
   const at = lastEventAtOrBefore(events, cursor);
   const from = Math.max(0, at - BEFORE + 1);
   const to = Math.min(events.length, Math.max(at + 1, from) + AFTER);
   const slice = events.slice(from, to);
   const current = at >= 0 ? events[at] : null;
 
-  const columns: Column<FlightEvent>[] = [
-    {
-      id: 'time',
-      header: 'Time',
-      width: 150,
-      cell: (ev) => (
-        <button type="button" className="btn-link" onClick={() => onJump(ev)} title="Move the cursor here">
-          <ClockText ns={ev.ts} />
+  const time: Column<FlightEvent> = {
+    id: 'time',
+    header: 'Time',
+    width: 150,
+    cell: (ev) => (
+      <button type="button" className="btn-link" onClick={() => onJump(ev)} title="Move the cursor here">
+        <ClockText ns={ev.ts} />
+      </button>
+    ),
+    raw: (ev) => String(ev.ts),
+  };
+  const clock: Column<FlightEvent> = {
+    id: 'clock',
+    header: 'Clock',
+    term: 'clocks',
+    width: 64,
+    cell: (ev) => (
+      <Badge kind="neutral" title={`${ev.clock} clock`}>
+        {ev.clock === 'exchange' ? 'exch' : 'local'}
+      </Badge>
+    ),
+  };
+  const source: Column<FlightEvent> = {
+    id: 'source',
+    header: 'Source',
+    width: 84,
+    cell: (ev) => <Badge kind={ev.source}>{ev.source}</Badge>,
+  };
+  const order: Column<FlightEvent> = {
+    id: 'order',
+    header: 'Order',
+    width: 80,
+    cell: (ev) =>
+      ev.order_id === null ? (
+        <span className="dim">run</span>
+      ) : (
+        <button type="button" className="btn-link mono" onClick={() => onSelectOrder(ev.order_id as number)}>
+          {ev.order_id}
         </button>
       ),
-      raw: (ev) => String(ev.ts),
-    },
-    {
-      id: 'clock',
-      header: 'Clock',
-      term: 'clocks',
-      width: 64,
-      cell: (ev) => (
-        <Badge kind="neutral" title={`${ev.clock} clock`}>
-          {ev.clock === 'exchange' ? 'exch' : 'local'}
-        </Badge>
-      ),
-    },
-    {
-      id: 'source',
-      header: 'Source',
-      width: 84,
-      cell: (ev) => <Badge kind={ev.source}>{ev.source}</Badge>,
-    },
-    {
-      id: 'order',
-      header: 'Order',
-      width: 80,
-      cell: (ev) =>
-        ev.order_id === null ? (
-          <span className="dim">run</span>
-        ) : (
-          <button type="button" className="btn-link mono" onClick={() => onSelectOrder(ev.order_id as number)}>
-            {ev.order_id}
-          </button>
-        ),
-      raw: (ev) => (ev.order_id === null ? '' : String(ev.order_id)),
-    },
-    {
-      id: 'event',
-      header: 'Event',
-      cell: (ev) => (
-        <span className="term-ev">
-          <span>{eventTitle(ev)}</span> <span className="dim term-ev-summary">{eventSummary(ev, instrument)}</span>
-        </span>
-      ),
-    },
-  ];
+    raw: (ev) => (ev.order_id === null ? '' : String(ev.order_id)),
+  };
+  const event: Column<FlightEvent> = {
+    id: 'event',
+    header: 'Event',
+    cell: (ev) => (
+      <span className="term-ev">
+        <span>{eventTitle(ev)}</span> <span className="dim term-ev-summary">{eventSummary(ev, instrument)}</span>
+      </span>
+    ),
+  };
+  // Phones lead with what the event is and whose it is; time and provenance follow.
+  const columns = phone ? [order, event, time, clock, source] : [time, clock, source, order, event];
 
   return (
-    <DataTable
-      label="Event log"
-      rows={slice}
-      rowKey={(ev) => String(ev.seq)}
-      columns={columns}
-      fill
-      selectedKey={current ? String(current.seq) : null}
-      onActivate={(ev) => onJump(ev)}
-      rowClassName={(ev) =>
-        [ev.ts <= cursor ? '' : 'term-future', ev.order_id !== null && ev.order_id === selectedOrder ? 'term-ev-sel' : '']
-          .filter(Boolean)
-          .join(' ') || undefined
-      }
-      empty="No events in this window match the filters."
-      footer={
-        events.length > 0 ? (
-          <span className="dim small">
-            Showing {fmtInt(to - from)} of {fmtInt(events.length)} matching events around the cursor (rows {fmtInt(from + 1)}
+    <>
+      <Toolbar label="Event filters" className="term-filters">
+        {filters}
+        {events.length > 0 ? (
+          <span
+            className="dim small term-ev-count"
+            title={`Showing ${fmtInt(to - from)} of ${fmtInt(events.length)} matching events around the cursor. Times on both clocks share the dataset origin; local and exchange are different clocks, so their difference is modeled latency.`}
+          >
+            rows {fmtInt(from + 1)}
             {'\u2013'}
-            {fmtInt(to)}). Times on both clocks share the dataset origin; local and exchange are different clocks, so their
-            difference is modeled latency.
+            {fmtInt(to)} of {fmtInt(events.length)}
           </span>
-        ) : null
-      }
-    />
+        ) : null}
+      </Toolbar>
+      <DataTable
+        label="Event log"
+        rows={slice}
+        rowKey={(ev) => String(ev.seq)}
+        columns={columns}
+        fill
+        selectedKey={current ? String(current.seq) : null}
+        // A click or tap on a row selects its order; Enter or a double click also moves the cursor.
+        onSelect={(ev) => {
+          if (ev.order_id !== null) onSelectOrder(ev.order_id);
+        }}
+        onActivate={(ev) => onJump(ev)}
+        rowClassName={(ev) =>
+          [ev.ts <= cursor ? '' : 'term-future', ev.order_id !== null && ev.order_id === selectedOrder ? 'term-ev-sel' : '']
+            .filter(Boolean)
+            .join(' ') || undefined
+        }
+        empty="No events in this window match the filters."
+      />
+    </>
   );
 }

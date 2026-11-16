@@ -14,6 +14,13 @@ import './styles/shell.css';
 
 import App from './App';
 
+// A face is fetched on its first use, so text set in a weight that appears only after data arrives
+// (e.g. Compare's Inter 500 legend) swapped fonts late and re-wrapped (layout shift 0.27,
+// PHASE32_PERFORMANCE). Start every face now, in parallel with the API requests.
+for (const face of ['400 1em Inter', '500 1em Inter', '600 1em Inter', '400 1em "JetBrains Mono"', '600 1em "JetBrains Mono"']) {
+  void document.fonts?.load(face);
+}
+
 const container = document.getElementById('root');
 if (!container) {
   throw new Error('index.html is missing the #root element');

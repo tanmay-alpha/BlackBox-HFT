@@ -18,6 +18,8 @@ const GLOBAL_KEYS: [string, string][] = [
   ['i', 'Show or hide the inspector (single key)'],
   ['y', 'Copy a link to the current view (single key)'],
   ['Esc', 'Close the open dialog, menu or tooltip'],
+  ['Left / Right in a toolbar', 'Move between its buttons; Home / End: first / last; Tab leaves the toolbar'],
+  ['Esc in a toolbar menu', 'Close "View" or "Jump, view, links" and return to its button'],
 ];
 
 const TABLE_KEYS: [string, string][] = [

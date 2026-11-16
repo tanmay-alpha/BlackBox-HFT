@@ -2,9 +2,15 @@
 // Compare Pair and Compare Set so both pages read the same.
 
 import type { Comparison } from '../../api/model';
-import type { PairClass } from '../../api/types';
+import type { EligibilityEffect, PairClass } from '../../api/types';
 import { ConfigValue } from '../../components/configValue';
+import { pathLabel } from '../../components/labels';
 import { Badge, Pill } from '../../components/ui';
+
+const EFFECT_LABEL: Record<EligibilityEffect, string> = {
+  no_alignment: 'No per-order alignment',
+  not_like_for_like: 'Not like-for-like',
+};
 
 /** Display order: identical first, then increasingly significant differences. */
 export const PAIR_CLASSES: readonly PairClass[] = [
@@ -49,16 +55,17 @@ export const CLASS_MEANING: Record<PairClass, string> = {
 };
 
 /**
- * The comparison's v1 `status` (`aligned` | `metrics_only`, exactly as served) and, when the runs
- * differ in an eligibility field, every reason with its `effect` and `explanation` verbatim.
+ * The comparison's v1 `status` (`aligned` | `metrics_only`, in words with the served value as the
+ * title) and, when the runs differ in an eligibility field, every reason with its effect and
+ * explanation verbatim.
  */
 export function EligibilityNotice({ cmp }: { cmp: Comparison }) {
   const { eligibility } = cmp;
   return (
     <div className={eligibility.reasons.length === 0 ? 'cmp-eligible' : 'cmp-warning'} role="note" aria-label="Comparison eligibility">
       <p className="cmp-eligibility-head">
-        <Pill tone={cmp.status === 'aligned' ? 'ok' : 'warn'} title="Comparison status as returned by the server">
-          {cmp.status}
+        <Pill tone={cmp.status === 'aligned' ? 'ok' : 'warn'} title={`Comparison status as returned by the server: ${cmp.status}`}>
+          {cmp.status.replace(/_/g, ' ')}
         </Pill>{' '}
         <Pill tone={eligibility.like_for_like ? 'ok' : 'warn'} title="eligibility.like_for_like">
           {eligibility.like_for_like ? 'like-for-like' : 'not like-for-like'}
@@ -90,12 +97,12 @@ export function EligibilityNotice({ cmp }: { cmp: Comparison }) {
           <tbody>
             {eligibility.reasons.map((r) => (
               <tr key={r.field}>
-                <th scope="row" className="mono">
-                  {r.field}
+                <th scope="row" title={r.field}>
+                  {pathLabel(r.field)}
                 </th>
                 <ConfigValue path={r.field} value={r.a} />
                 <ConfigValue path={r.field} value={r.b} />
-                <td className="mono">{r.effect}</td>
+                <td title={r.effect}>{EFFECT_LABEL[r.effect] ?? r.effect}</td>
                 <td>{r.explanation}</td>
               </tr>
             ))}

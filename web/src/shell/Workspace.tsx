@@ -1,14 +1,16 @@
-// The frame of every workspace (UI_DESIGN_SPEC.md §5.4): a 32 px toolbar row (context pickers and
-// at most one primary action on the left; row density and "Reset layout" on the right) above the
-// workspace body. There is no page heading: the workspace name is in the switcher and in
-// `document.title` as `<Workspace> · <context> — BlackBox HFT`.
+// The frame of every workspace (UI_DESIGN_SPEC.md §5.4): a toolbar row (context pickers and at
+// most one primary action on the left; a "View" disclosure with row density and "Reset layout" on
+// the right) above the workspace body. The disclosure keeps those rarely used settings from
+// taking a toolbar row of their own on narrow screens and labels the density select visibly.
+// The workspace name is in the switcher and in `document.title` as
+// `<Workspace> · <context> — BlackBox HFT`.
 
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 
-import { LayoutResetContext } from '../components/SplitPane';
-import { Toolbar, ToolbarDivider } from '../components/Toolbar';
+import { LayoutResetContext } from '../components/layoutReset';
+import { Toolbar } from '../components/Toolbar';
 import { useSettings, type Density } from './settings';
 import { workspaceFor } from './workspaces';
 
@@ -34,6 +36,9 @@ export interface WorkspaceProps {
   children: ReactNode;
   /** The body scrolls as one document instead of filling the area with docked panes. */
   scroll?: boolean;
+  /** The page renders its own visible `h1`. Otherwise the frame supplies one for screen readers
+   *  ("<Workspace> · <context>"), so every page has exactly one top-level heading. */
+  ownHeading?: boolean;
 }
 
 const DENSITIES: { id: Density; label: string }[] = [
@@ -42,7 +47,7 @@ const DENSITIES: { id: Density; label: string }[] = [
   { id: 'compact', label: 'Compact' },
 ];
 
-export function Workspace({ context, toolbar, layout = false, children, scroll = false }: WorkspaceProps) {
+export function Workspace({ context, toolbar, layout = false, children, scroll = false, ownHeading = false }: WorkspaceProps) {
   const { pathname } = useLocation();
   const def = workspaceFor(pathname);
   const name = def?.name ?? 'BlackBox HFT';
@@ -60,27 +65,35 @@ export function Workspace({ context, toolbar, layout = false, children, scroll =
 
   return (
     <div className="ws">
+      {ownHeading ? null : (
+        <h1 className="visually-hidden">
+          {name}
+          {context ? ` \u00b7 ${context}` : ''}
+        </h1>
+      )}
       <Toolbar label={`${name} toolbar`} className="ws-toolbar">
         {toolbar}
         <span className="spacer" />
-        <label className="ws-density">
-          <span className="visually-hidden">Row density</span>
-          <select value={density} onChange={(e) => setDensity(e.target.value as Density)} title="Row density">
-            {DENSITIES.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        {layout ? (
-          <>
-            <ToolbarDivider className="ws-reset" />
-            <button type="button" className="ws-reset" onClick={resetLayout} title="Restore the default pane sizes of this workspace">
-              Reset layout
-            </button>
-          </>
-        ) : null}
+        <details className="ws-more ws-view ws-density">
+          <summary title="Row density and pane layout">View</summary>
+          <div className="ws-more-body">
+            <label className="ws-view-field">
+              Row density
+              <select value={density} onChange={(e) => setDensity(e.target.value as Density)}>
+                {DENSITIES.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {layout ? (
+              <button type="button" className="ws-reset" onClick={resetLayout} title="Restore the default pane sizes of this workspace">
+                Reset layout
+              </button>
+            ) : null}
+          </div>
+        </details>
       </Toolbar>
       <LayoutResetContext.Provider value={reset}>
         <div className={scroll ? 'ws-body ws-body-scroll' : 'ws-body'}>{children}</div>

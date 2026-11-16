@@ -15,9 +15,10 @@ import type { RunTimeline } from '../../api/model';
 import { DataTable } from '../../components/DataTable';
 import type { Column } from '../../components/DataTable';
 import { assumptionsLabel, OUTCOME_MEANING, strategyLabel, tifLabel } from '../../components/describe';
+import { runLabelText, useDemoTitles } from '../../components/labels';
 import { DASH, fmtDuration, fmtInt, fmtMoney, fmtPnl, fmtPrice, fmtQty, words } from '../../components/fmt';
 import { digitsForUnit } from '../../components/ns';
-import { PaneTabs, usePhone } from '../../components/PaneTabs';
+import { PaneTabs, useMediaQuery, usePhone } from '../../components/PaneTabs';
 import { SplitPane } from '../../components/SplitPane';
 import { Tabs } from '../../components/Tabs';
 import { Toolbar, ToolbarDivider } from '../../components/Toolbar';
@@ -79,7 +80,7 @@ const LADDER_ROWS = 10;
 const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 5, 20];
 
 const LEAD =
-  "The historical book as observed, with this run's simulated orders and fills replayed on top. Simulated orders never entered the historical book and did not move prices.";
+  "The replayed book as observed in the dataset, with this run's simulated orders and fills replayed on top. Simulated orders never entered the replayed book and did not move prices.";
 
 interface Win {
   t0: number;
@@ -92,9 +93,18 @@ interface Loaded {
   rp: ReplayWindow;
 }
 
-type BottomTab = 'events' | 'orders' | 'provenance';
+type BottomTab = 'events' | 'orders' | 'account' | 'provenance';
+
+/** Widths where the full toolbar would wrap (with the 224 px navigation rail): jump fields and
+ *  view links move into the "Jump, view, links" disclosure; playback, speed and the scrubber stay
+ *  in the row. */
+const COMPACT_TOOLBAR_QUERY = '(min-width: 600px) and (max-width: 1679px)';
+/** Docked layouts below 960 px tall: the account moves to a bottom tab so the ladder gets the whole
+ *  side column (PHASE31_UI_REVIEW R1). Below 960 px wide the panes stack and scroll instead. */
+const SHORT_DOCK_QUERY = '(min-width: 960px) and (max-height: 959px)';
 /** Panes of the phone layout (below 600 px), one at a time. */
-type PhoneTab = 'book' | 'events' | 'order';
+const PHONE_TABS = ['book', 'events', 'order'] as const;
+type PhoneTab = (typeof PHONE_TABS)[number];
 
 function intParam(raw: string | null): number | null {
   if (raw === null || raw.trim() === '') return null;
@@ -133,6 +143,65 @@ function RunLinks({ runId }: { runId: string }) {
   );
 }
 
+/** The toolbar while the run and its dataset load: the loaded toolbar's controls, disabled, in the
+ *  same arrangement, so the phone toolbar keeps its two rows (and the body its place) when the
+ *  run arrives and when the terminal replaces this (layout shift 0.18 at 390×844). */
+function PendingToolbar({ runId, datasetId }: { runId: string; datasetId: string | null }) {
+  const phone = usePhone();
+  const compact = useMediaQuery(COMPACT_TOOLBAR_QUERY);
+  const bookMode = datasetId !== null ? <BookModeRun datasetId={datasetId} query={null} /> : null;
+  return (
+    <>
+      <div className="term-group term-transport" role="group" aria-label="Playback">
+        <button type="button" className="btn-primary term-play" disabled title="Loading the run">
+          <span className="term-play-icon" aria-hidden="true">
+            {'\u25b6'}
+          </span>
+          Play
+        </button>
+        <button type="button" disabled aria-label="Previous event">
+          {'\u2190'}
+          <span className="term-step-label"> Prev</span>
+        </button>
+        <button type="button" disabled aria-label="Next event">
+          <span className="term-step-label">Next </span>
+          {'\u2192'}
+        </button>
+      </div>
+      <span className="term-state">Loading</span>
+      <div className="term-group term-scrubber">
+        <label htmlFor="term-scrub" className="visually-hidden">
+          Cursor position in the dataset
+        </label>
+        <input id="term-scrub" className="book-scrub" type="range" disabled />
+        <span className="book-cursor" title="Playback cursor on the exchange clock">
+          <ClockText ns={null} /> <span className="term-clock-tag">exch</span>
+        </span>
+      </div>
+      {phone || compact ? (
+        <details className="ws-more term-more">
+          <summary>{phone ? 'Links' : 'View, links'}</summary>
+          <div className="ws-more-body">
+            {bookMode}
+            <RunLinks runId={runId} />
+          </div>
+        </details>
+      ) : (
+        <>
+          <ToolbarDivider />
+          {bookMode}
+          <details className="ws-more term-more">
+            <summary>Run links</summary>
+            <div className="ws-more-body">
+              <RunLinks runId={runId} />
+            </div>
+          </details>
+        </>
+      )}
+    </>
+  );
+}
+
 export default function ReplayTerminalPage() {
   const { runId = '' } = useParams();
   const run = useAsync((signal) => api.run(runId, { signal }), [runId]);
@@ -155,15 +224,7 @@ export default function ReplayTerminalPage() {
     );
   }
   return (
-    <Workspace
-      context={run.data?.label ?? runId}
-      toolbar={
-        <>
-          {dsId !== null ? <BookModeRun datasetId={dsId} query={null} /> : null}
-          <RunLinks runId={runId} />
-        </>
-      }
-    >
+    <Workspace context={run.data?.label ?? runId} toolbar={<PendingToolbar runId={runId} datasetId={dsId} />}>
       <div className="book-state">
         {run.error ? <ErrorBox error={run.error} onRetry={run.reload} /> : null}
         {dataset.error ? <ErrorBox error={dataset.error} onRetry={dataset.reload} /> : null}
@@ -245,7 +306,26 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
   const [focus, setFocus] = useState<{ t: number; key: number } | null>(null);
   const [tab, setTab] = useState<BottomTab>('events');
   const phone = usePhone();
-  const [phoneTab, setPhoneTab] = useState<PhoneTab>('book');
+  const demoTitles = useDemoTitles();
+  const compact = useMediaQuery(COMPACT_TOOLBAR_QUERY);
+  const shortDock = useMediaQuery(SHORT_DOCK_QUERY);
+  const bottomTab: BottomTab = tab === 'account' && !shortDock ? 'events' : tab;
+  // The phone pane lives in the address (`pane`, replaced in place) so Back from a page this one
+  // links to (Full forensics) reopens the pane the reader left.
+  const phoneTab: PhoneTab = PHONE_TABS.find((p) => p === searchParams.get('pane')) ?? 'book';
+  const setPhoneTab = useCallback(
+    (pane: PhoneTab) =>
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (pane === 'book') next.delete('pane');
+          else next.set('pane', pane);
+          return next;
+        },
+        { replace: true },
+      ),
+    [setSearchParams],
+  );
 
   // ----- window loading ------------------------------------------------------------------
   // No time or order requested: start at the run start, learned from a count-only timeline call
@@ -512,14 +592,14 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
         if (target?.closest('[role="toolbar"], [role="grid"], [role="tablist"], [role="separator"]')) return;
         e.preventDefault();
         keys.current.step(e.key === 'ArrowRight' ? 1 : -1);
-      } else if (e.key === 'j' || e.key === 'J') {
+      } else if (e.key === 'j' || e.key === 'J' || e.key === 'o' || e.key === 'O') {
         e.preventDefault();
-        jumpRef.current?.focus();
-        jumpRef.current?.select();
-      } else if (e.key === 'o' || e.key === 'O') {
-        e.preventDefault();
-        jumpOrderRef.current?.focus();
-        jumpOrderRef.current?.select();
+        const field = e.key === 'j' || e.key === 'J' ? jumpRef.current : jumpOrderRef.current;
+        // On narrower screens the jump fields live in the "Jump, view, links" disclosure.
+        const holder = field?.closest('details');
+        if (holder) holder.open = true;
+        field?.focus();
+        field?.select();
       } else if (e.key === ']' || e.key === '[') {
         e.preventDefault();
         keys.current.stepOrder(e.key === ']' ? 1 : -1);
@@ -662,13 +742,14 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       </form>
     </>
   );
+  const tucked = phone || compact;
   const runLinks = (
     <details className="ws-more term-more">
-      <summary>{phone ? 'Speed, jump, links' : 'Run links'}</summary>
+      <summary>{phone ? 'Speed, jump, links' : compact ? 'Jump, view, links' : 'Run links'}</summary>
       <div className="ws-more-body">
         {phone ? speedControl : null}
-        {phone ? jumpForms : null}
-        {phone ? <BookModeRun datasetId={ds.id} query={marketQuery} /> : null}
+        {tucked ? jumpForms : null}
+        {tucked ? <BookModeRun datasetId={ds.id} query={marketQuery} /> : null}
         <RunLinks runId={runId} />
       </div>
     </details>
@@ -723,8 +804,12 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
           <ClockText ns={cursor === null ? null : Math.round(cursor)} /> <span className="term-clock-tag">exch</span>
         </span>
       </div>
-      {loading ? <Spinner label={loadingLabel} /> : null}
-      {phone ? null : (
+      {/* Announced only: a visible spinner here re-wrapped the phone toolbar on every window load
+          (layout shift); the heatmap shows the loading chip and the body its spinner. */}
+      <span className="visually-hidden" role="status">
+        {loading ? loadingLabel : ''}
+      </span>
+      {tucked ? null : (
         <>
           <ToolbarDivider />
           {jumpForms}
@@ -791,7 +876,16 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
         basis="observed"
         fill
         flush
-        actions={<Badge kind="modeled">own orders modeled</Badge>}
+        actions={
+          <>
+            {ds.kind === 'synthetic' ? (
+              <Badge kind="warn" title="Generated by BlackBox from a seed. This is not market data.">
+                synthetic
+              </Badge>
+            ) : null}
+            <Badge kind="modeled">own orders modeled</Badge>
+          </>
+        }
         caption={rp.bbo_downsampled ? `Best bid/ask lines downsampled 1:${fmtDuration(rp.step_ns)}` : undefined}
       >
         <TerminalHeatmap
@@ -809,7 +903,19 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       </Panel>
     );
     const ladderPanel = (
-      <Panel title="Depth at cursor" basis="observed" fill className="term-depth">
+      <Panel
+        title="Depth at cursor"
+        basis="observed"
+        fill
+        className="term-depth"
+        actions={
+          ds.kind === 'synthetic' ? (
+            <Badge kind="warn" title="Generated by BlackBox from a seed. This is not market data.">
+              synthetic
+            </Badge>
+          ) : undefined
+        }
+      >
         <dl className="term-bbo" aria-label="Best bid and ask at the cursor">
           <div className="term-bbo-side term-bbo-bid">
             <dt>Best bid</dt>
@@ -877,65 +983,66 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       <Tabs<BottomTab>
         label="Run detail"
         className="term-tabs"
-        active={tab}
+        active={bottomTab}
         onChange={setTab}
         tabs={[
           { id: 'events', label: 'Event log', count: fmtInt(filtered.length) },
           { id: 'orders', label: 'Orders alive', count: fmtInt(tl.orders.length) },
+          ...(shortDock ? [{ id: 'account' as const, label: 'Account' }] : []),
           { id: 'provenance', label: 'Run and dataset' },
         ]}
       >
-        {tab === 'events' ? (
-          <>
-            <Toolbar label="Event filters" className="term-filters">
-              <label htmlFor="term-ev-type" className="visually-hidden">
-                Event type
-              </label>
-              <select id="term-ev-type" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-                <option value="">All types</option>
-                {eventTypes.map((t) => (
-                  <option key={t} value={t}>
-                    {words(t)}
-                  </option>
-                ))}
-              </select>
-              <label htmlFor="term-ev-order" className="visually-hidden">
-                Order id
-              </label>
-              <input
-                id="term-ev-order"
-                type="text"
-                inputMode="numeric"
-                placeholder="order id"
-                value={orderFilter}
-                onChange={(e) => setOrderFilter(e.target.value)}
-                size={9}
-              />
-              <label htmlFor="term-ev-search" className="visually-hidden">
-                Search events
-              </label>
-              <input
-                id="term-ev-search"
-                type="search"
-                placeholder="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                size={12}
-              />
-            </Toolbar>
-            <EventLog
-              events={filtered}
-              cursor={cur}
-              instrument={inst}
-              selectedOrder={selectedOrder}
-              onSelectOrder={selectOrder}
-              onJump={(ev) => {
-                moveCursor(ev.ts);
-                if (ev.order_id !== null) selectOrder(ev.order_id);
-              }}
-            />
-          </>
-        ) : tab === 'orders' ? (
+        {bottomTab === 'events' ? (
+          <EventLog
+            events={filtered}
+            cursor={cur}
+            instrument={inst}
+            selectedOrder={selectedOrder}
+            onSelectOrder={selectOrder}
+            onJump={(ev) => {
+              moveCursor(ev.ts);
+              if (ev.order_id !== null) selectOrder(ev.order_id);
+            }}
+            filters={
+              <>
+                <label htmlFor="term-ev-type" className="visually-hidden">
+                  Event type
+                </label>
+                <select id="term-ev-type" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                  <option value="">All types</option>
+                  {eventTypes.map((t) => (
+                    <option key={t} value={t}>
+                      {words(t)}
+                    </option>
+                  ))}
+                </select>
+                <label htmlFor="term-ev-order" className="visually-hidden">
+                  Order id
+                </label>
+                <input
+                  id="term-ev-order"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="order id"
+                  value={orderFilter}
+                  onChange={(e) => setOrderFilter(e.target.value)}
+                  size={9}
+                />
+                <label htmlFor="term-ev-search" className="visually-hidden">
+                  Search events
+                </label>
+                <input
+                  id="term-ev-search"
+                  type="search"
+                  placeholder="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  size={12}
+                />
+              </>
+            }
+          />
+        ) : bottomTab === 'orders' ? (
           <DataTable
             label="Orders alive in this window"
             rows={tl.orders}
@@ -956,6 +1063,8 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
               </span>
             }
           />
+        ) : bottomTab === 'account' ? (
+          <div className="term-tab-scroll">{accountPanel}</div>
         ) : (
           <div className="term-tab-scroll">
             <Provenance run={run} ds={ds} />
@@ -980,19 +1089,23 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
     const selectedOrderPane = <SelectedOrder runId={runId} orderId={selectedOrder} detail={detail} onCursor={moveCursor} />;
     body = (
       <div className="book-body">
-        <h1 className="term-title">
-          Order book replay <span className="dim">{'\u00b7'}</span> <span className="mono">{run.label ?? runId}</span>
-        </h1>
-        {phone ? (
-          <details className="book-window">
-            <summary>{windowSpan}</summary>
-            {windowRest}
-          </details>
-        ) : (
-          <p className="book-window">
-            {windowSpan} · {windowRest}
-          </p>
-        )}
+        {/* Title and loaded-window summary share one row, leaving the panes (event log) more height. */}
+        <div className="term-head">
+          <h1 className="term-title">
+            Order book replay <span className="dim">{'\u00b7'}</span>{' '}
+            {run.label ? <span title={run.label}>{runLabelText(run.label, demoTitles)}</span> : <span className="mono">{runId}</span>}
+          </h1>
+          {tucked ? (
+            <details className="book-window">
+              <summary>{windowSpan}</summary>
+              {windowRest}
+            </details>
+          ) : (
+            <p className="book-window">
+              {windowSpan} · {windowRest}
+            </p>
+          )}
+        </div>
         {notice ? (
           <p className="book-window" role="status">
             {notice}
@@ -1043,7 +1156,8 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
               {
                 id: 'top',
                 label: 'Book',
-                defaultSize: '66%',
+                // 64 / 36: the 1024×768 ladder keeps 8+ rows with a margin; the event log keeps ~5 rows.
+                defaultSize: '64%',
                 minSize: '30%',
                 content: (
                   <SplitPane
@@ -1055,7 +1169,9 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
                         label: 'Depth and account',
                         defaultSize: '30%',
                         minSize: 300,
-                        content: (
+                        content: shortDock ? (
+                          ladderPanel
+                        ) : (
                           <SplitPane
                             id="book.run.side"
                             orientation="vertical"
@@ -1080,7 +1196,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
               {
                 id: 'bottom',
                 label: 'Events and orders',
-                defaultSize: '34%',
+                defaultSize: '36%',
                 minSize: '20%',
                 content: (
                   <SplitPane
@@ -1107,7 +1223,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
   }
 
   return (
-    <Workspace context={run.label ?? runId} layout toolbar={toolbar}>
+    <Workspace context={run.label ? runLabelText(run.label, demoTitles) : runId} layout toolbar={toolbar} ownHeading={Boolean(loaded && tl && rp)}>
       {body}
     </Workspace>
   );

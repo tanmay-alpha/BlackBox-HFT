@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ColorType, LineSeries, LineStyle, LineType, createChart } from 'lightweight-charts';
 import type { Time, UTCTimestamp } from 'lightweight-charts';
 
+import { usePhone } from '../../components/PaneTabs';
 import { cssVar } from '../../components/theme';
 import { ErrorBox } from '../../components/ui';
 
@@ -78,6 +79,8 @@ export function TimeSeriesChart({ series, formatValue, ariaLabel }: TimeSeriesCh
   const [failure, setFailure] = useState<Error | null>(null);
   const formatRef = useRef(formatValue);
   formatRef.current = formatValue;
+  // On a phone the in-plot series titles covered about a third of the plot; the key below names them.
+  const phone = usePhone();
 
   useEffect(() => {
     const host = hostRef.current;
@@ -98,11 +101,15 @@ export function TimeSeriesChart({ series, formatValue, ariaLabel }: TimeSeriesCh
           vertLines: { color: border },
           horzLines: { color: border },
         },
-        rightPriceScale: { borderColor: border },
+        // Room above the highest and below the lowest value, so the edge price labels are not cut.
+        rightPriceScale: { borderColor: border, scaleMargins: { top: 0.12, bottom: 0.12 } },
         timeScale: {
           borderColor: border,
           timeVisible: true,
           secondsVisible: true,
+          // Empty bars after the last point (8 % of the longest series), so the last tick label,
+          // centred on its time, is not cut by the price scale on a narrow chart.
+          rightOffset: Math.max(4, Math.ceil(Math.max(0, ...series.map((s) => s.points.length)) * 0.08)),
           tickMarkFormatter: (time: Time) => relativeLabel(time),
         },
         localization: {
@@ -116,7 +123,7 @@ export function TimeSeriesChart({ series, formatValue, ariaLabel }: TimeSeriesCh
           lineWidth: 2,
           lineType: s.stepped ? LineType.WithSteps : LineType.Simple,
           lineStyle: s.dashed ? LineStyle.Dashed : LineStyle.Solid,
-          title: s.label,
+          title: phone ? '' : s.label,
           priceLineVisible: false,
           lastValueVisible: true,
         });
@@ -129,7 +136,7 @@ export function TimeSeriesChart({ series, formatValue, ariaLabel }: TimeSeriesCh
       setFailure(e instanceof Error ? e : new Error(String(e)));
       return undefined;
     }
-  }, [series]);
+  }, [series, phone]);
 
   return (
     <div className="col">

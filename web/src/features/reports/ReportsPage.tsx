@@ -11,6 +11,8 @@ import { api, PAGE_LIMIT, saveDownload, saveText } from '../../api/client';
 import type { Report, Run, RunDetail } from '../../api/model';
 import { DataTable, type Column } from '../../components/DataTable';
 import { latencyLabel, strategyName } from '../../components/describe';
+import { runLabelText, useDemoTitles } from '../../components/labels';
+import { usePhone } from '../../components/PaneTabs';
 import { RouteTabs } from '../../components/Tabs';
 import { MarkdownBlocks, parseBlocks, renderInline, sectionOf, type Block } from '../../components/Markdown';
 import { DASH, fmtBytes, fmtDuration, fmtInt, fmtNum, fmtPct, fmtPnl } from '../../components/fmt';
@@ -46,10 +48,17 @@ function ReportDocument({ blocks }: { blocks: Block[] }) {
     if (run.length > 0) out.push(<MarkdownBlocks key={`p${out.length}`} blocks={run} />);
     run = [];
   };
+  // The report's first top-level heading is the page's h1; any later top-level heading (e.g. the
+  // appended limitations document) becomes h2, so the page has exactly one h1.
+  let seenTitle = false;
   for (const b of blocks) {
     if (b.type === 'heading') {
       flush();
-      const level = Math.min(Math.max(b.level, 1), 6);
+      let level = Math.min(Math.max(b.level, 1), 6);
+      if (level === 1) {
+        if (seenTitle) level = 2;
+        seenTitle = true;
+      }
       const Tag = `h${level}` as 'h1';
       out.push(
         <Tag key={`h${out.length}`} id={headingId(b.text)} className="report-heading">
@@ -95,6 +104,7 @@ function Contents({ blocks }: { blocks: Block[] }) {
 /** The run's identity and headline figures, as served with the run, above the full report. */
 function AtAGlance({ run }: { run: RunDetail }) {
   const m = run.metrics;
+  const titles = useDemoTitles();
   const gross = m.net_pnl + m.fees;
   const rows: [string, ReactNode][] = [
     ['Strategy', `${strategyName(run.strategy_kind)}, every ${fmtDuration(run.interval_ns)}`],
@@ -108,8 +118,8 @@ function AtAGlance({ run }: { run: RunDetail }) {
   ];
   return (
     <section className="report-glance" aria-labelledby="report-glance-title">
-      <h2 id="report-glance-title" className="report-glance-title">
-        {run.label || 'Unlabelled run'}
+      <h2 id="report-glance-title" className="report-glance-title" title={run.label ?? undefined}>
+        {run.label ? runLabelText(run.label, titles) : 'Unlabelled run'}
       </h2>
       <dl className="kv">
         {rows.map(([k, v]) => (
@@ -138,6 +148,7 @@ function ReportsIndex() {
   const navigate = useNavigate();
   const saved = useAsync((signal) => api.reportsPage({ limit: PAGE_LIMIT }, { signal }), []);
   const runs = useAsync((signal) => api.runs({}, { signal }), []);
+  const titles = useDemoTitles();
 
   const savedColumns = useMemo<Column<Report>[]>(
     () => [
@@ -153,13 +164,19 @@ function ReportsIndex() {
   const runColumns = useMemo<Column<Run>[]>(
     () => [
       { id: 'run', header: 'Run', rowHeader: true, cell: (r) => <Link className="mono" to={paths.report(r.run_id)}>{r.run_id}</Link>, raw: (r) => r.run_id },
-      { id: 'label', header: 'Label', cell: (r) => r.label || <span className="dim">unlabelled</span>, sortValue: (r) => r.label ?? '' },
+      {
+        id: 'label',
+        header: 'Label',
+        cell: (r) => (r.label ? <span title={r.label}>{runLabelText(r.label, titles)}</span> : <span className="dim">unlabelled</span>),
+        raw: (r) => r.label ?? '',
+        sortValue: (r) => r.label ?? '',
+      },
       { id: 'strategy', header: 'Strategy', cell: (r) => <span>{strategyName(r.strategy_kind)} every {fmtDuration(r.interval_ns)}</span> },
       { id: 'dataset', header: 'Dataset', cell: (r) => <span className="mono">{r.dataset.id} v{r.dataset.version}</span> },
       { id: 'created', header: 'Created (UTC)', cell: (r) => <span className="mono">{fmtNsUtc(r.created_at_ns, 0)}</span>, sortValue: (r) => BigInt(r.created_at_ns) },
       { id: 'net', header: 'Net P&L', unit: 'quote', numeric: true, cell: (r) => fmtPnl(r.metrics.net_pnl), sortValue: (r) => r.metrics.net_pnl },
     ],
-    [],
+    [titles],
   );
 
   return (
@@ -259,6 +276,7 @@ function RunReport({ runId }: { runId: string }) {
   const report = useAsync((signal) => api.runReport(runId, { signal }), [runId]);
   const [actionError, setActionError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const phone = usePhone();
   const limitations = useMemo(() => (report.data ? sectionOf(report.data, /limitation/i) : null), [report.data]);
   const blocks = useMemo(() => (report.data ? parseBlocks(report.data) : null), [report.data]);
 
@@ -274,12 +292,8 @@ function RunReport({ runId }: { runId: string }) {
     }
   };
 
-  const toolbar = (
+  const secondary = (
     <>
-      <ReportsTabs />
-      <button type="button" disabled={!report.data} onClick={() => report.data && saveText(report.data, `run-${runId}-report.md`)} data-testid="download-report">
-        Download .md
-      </button>
       <button
         type="button"
         disabled={busy}
@@ -306,46 +320,75 @@ function RunReport({ runId }: { runId: string }) {
       <RunContextLinks runId={runId} omit={['report']} />
     </>
   );
+  // Phones: the bundle, snapshot and run views sit behind one disclosure so the toolbar is one row.
+  const toolbar = (
+    <>
+      <ReportsTabs />
+      <button type="button" disabled={!report.data} onClick={() => report.data && saveText(report.data, `run-${runId}-report.md`)} data-testid="download-report">
+        Download .md
+      </button>
+      {phone ? (
+        <details className="ws-more">
+          <summary>More</summary>
+          <div className="ws-more-body">{secondary}</div>
+        </details>
+      ) : (
+        secondary
+      )}
+    </>
+  );
+
+  // The report renders only once the run has settled: the summary (or the run's error) takes the
+  // top of the page first, so neither it nor an error arriving later pushes the report, the report
+  // spinner or the side column down after they have been painted (layout shift).
+  const shown = run.loading ? null : blocks;
 
   return (
-    <Workspace context={`report ${runId}`} toolbar={toolbar} scroll>
+    <Workspace context={`report ${runId}`} toolbar={toolbar} scroll ownHeading={shown?.some((b) => b.type === 'heading' && b.level === 1) ?? false}>
       <div className="reports-run">
         <div className="col reports-main">
           <ErrorBox error={actionError} />
-          {report.loading ? <Spinner label="Generating report" /> : null}
-          <ErrorBox error={report.error} onRetry={report.reload} />
+          {run.loading ? <Spinner label="Loading run" /> : null}
           {run.data ? <AtAGlance run={run.data} /> : null}
-          {blocks ? (
+          <ErrorBox error={run.error} onRetry={run.reload} />
+          {/* Below the summary: removing it when the report arrives moves nothing above it. */}
+          {!run.loading && report.loading ? <Spinner label="Generating report" /> : null}
+          {run.loading ? null : <ErrorBox error={report.error} onRetry={report.reload} />}
+          {shown ? (
             <article className="report-doc" aria-label={`Research report of run ${runId}`}>
-              <ReportDocument blocks={blocks} />
+              <ReportDocument blocks={shown} />
             </article>
           ) : null}
         </div>
+        {/* The side column fills in with the report, so Contents never pushes the panels below it
+            down after they have been painted (layout shift). */}
         <aside className="col reports-side">
-          {blocks ? <Contents blocks={blocks} /> : null}
-          <Panel title="Limitations" caption="Verbatim from the report.">
-            {limitations && limitations.length > 0 ? (
-              <MarkdownBlocks blocks={limitations} />
-            ) : limitations ? (
-              <p className="note">
-                The report states its limitations as separate sections, starting at{' '}
-                {blocks
-                  ?.filter((b): b is Extract<Block, { type: 'heading' }> => b.type === 'heading' && /limitation/i.test(b.text))
-                  .slice(0, 1)
-                  .map((h) => (
-                    <a key={h.text} href={`#${headingId(h.text)}`}>
-                      {h.text}
-                    </a>
-                  ))}{' '}
-                in Contents.
-              </p>
-            ) : report.data ? (
-              <Empty>The report has no limitations section.</Empty>
-            ) : null}
-          </Panel>
-          {run.loading ? <Spinner label="Loading run" /> : null}
-          <ErrorBox error={run.error} onRetry={run.reload} />
-          {run.data ? <ManifestPanel run={run.data} /> : null}
+          {shown ? (
+            <>
+              <Contents blocks={shown} />
+              <Panel title="Limitations" caption="Verbatim from the report.">
+                {limitations && limitations.length > 0 ? (
+                  <MarkdownBlocks blocks={limitations} />
+                ) : limitations ? (
+                  <p className="note">
+                    The report states its limitations as separate sections, starting at{' '}
+                    {shown
+                      .filter((b): b is Extract<Block, { type: 'heading' }> => b.type === 'heading' && /limitation/i.test(b.text))
+                      .slice(0, 1)
+                      .map((h) => (
+                        <a key={h.text} href={`#${headingId(h.text)}`}>
+                          {h.text}
+                        </a>
+                      ))}{' '}
+                    in Contents.
+                  </p>
+                ) : (
+                  <Empty>The report has no limitations section.</Empty>
+                )}
+              </Panel>
+              {run.data ? <ManifestPanel run={run.data} /> : null}
+            </>
+          ) : null}
         </aside>
       </div>
     </Workspace>
@@ -374,7 +417,7 @@ function SavedReport({ reportId }: { reportId: string }) {
   );
 
   return (
-    <Workspace context={`saved report ${reportId.slice(0, 12)}`} toolbar={toolbar} scroll>
+    <Workspace context={`saved report ${reportId.slice(0, 12)}`} toolbar={toolbar} scroll ownHeading={Boolean(body.data && /^# /m.test(body.data.text))}>
       <div className="reports-run">
         <div className="col reports-main">
           {verified === false ? (
