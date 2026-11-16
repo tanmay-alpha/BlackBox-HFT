@@ -69,6 +69,11 @@ enum Command {
     /// Rebuild the order book of a NASDAQ TotalView-ITCH 5.0 file and print its validation
     /// manifest. Local use only: never commit or upload ITCH files or anything derived from them.
     ItchReconstruct(ItchArgs),
+    /// Generate or inspect a local-only L3 workbench artifact (no database needed).
+    Market {
+        #[command(subcommand)]
+        command: bb_app::v1::market::MarketCommand,
+    },
     /// List datasets.
     Datasets,
     /// Print every data-quality check of a dataset.
@@ -106,6 +111,11 @@ enum Command {
         #[arg(long)]
         threads: Option<usize>,
     },
+    /// Local synthetic research studies (never exposed by the HTTP server).
+    Study {
+        #[command(subcommand)]
+        command: StudyCommand,
+    },
     /// Serve the HTTP API `/api/v1` with the in-process job worker (needs DATABASE_URL).
     Serve(ServeArgs),
     /// Run the job worker only (standalone; polls with backoff while idle).
@@ -129,6 +139,18 @@ enum Command {
     /// Demo workspace commands (`demo seed`).
     #[command(subcommand)]
     Demo(DemoCommand),
+}
+
+#[derive(Subcommand)]
+enum StudyCommand {
+    /// Controlled queue, latency and synthetic-liquidity contrasts.
+    ExecValidation {
+        #[arg(long)]
+        out: PathBuf,
+        /// Tiny smoke grid, not the research study.
+        #[arg(long)]
+        quick: bool,
+    },
 }
 
 #[derive(Args)]
@@ -213,7 +235,8 @@ struct ServeArgs {
 
 #[derive(Subcommand)]
 enum DemoCommand {
-    /// Register the synthetic demo dataset, queue the canonical demo experiments in the public
+    /// Register the synthetic demo dataset (and the synthetic stress-regime datasets the
+    /// `execution_validation` demo uses), queue the canonical demo experiments in the public
     /// demo workspace and, once their runs are completed, store the curated comparisons and
     /// saved reports there (idempotent; needs DATABASE_URL). Prints what it created and what
     /// is still pending.
@@ -287,6 +310,7 @@ fn run(cli: Cli) -> Result<()> {
         } => cmd_synth(&paths, id, seed, duration_s),
         Command::IngestTardis(args) => cmd_ingest_tardis(&paths, args),
         Command::ItchReconstruct(args) => cmd_itch_reconstruct(args),
+        Command::Market { command } => bb_app::v1::market::run_cli(command),
         Command::Datasets => cmd_datasets(&paths),
         Command::Quality { id } => cmd_quality(&paths, &id),
         Command::Presets { dataset } => cmd_presets(&paths, dataset.as_deref()),
@@ -295,6 +319,12 @@ fn run(cli: Cli) -> Result<()> {
         Command::Explain { run_id, order_id } => cmd_explain(&paths, &run_id, order_id),
         Command::Compare { run_a, run_b } => cmd_compare(&paths, &run_a, &run_b),
         Command::Grid { spec, threads } => cmd_grid(&paths, &spec, threads),
+        Command::Study {
+            command: StudyCommand::ExecValidation { out, quick },
+        } => {
+            bb_app::study::exec_validation(&out, quick)?;
+            Ok(())
+        }
         Command::Serve(args) => cmd_serve(&paths, data_dir, args),
         Command::Worker => cmd_worker(data_dir),
         Command::Migrate => cmd_migrate(data_dir),

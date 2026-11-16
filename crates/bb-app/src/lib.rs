@@ -31,6 +31,7 @@ pub mod seed;
 /// `/api/v1` (TARGET_ARCHITECTURE §11); never deployed to the hosted profile.
 pub mod server;
 pub mod store;
+pub mod study;
 pub mod v1;
 pub mod wire;
 pub mod worker;

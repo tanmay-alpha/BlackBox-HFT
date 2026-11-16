@@ -1,17 +1,19 @@
 //! `blackbox demo seed`: makes the public demo workspace show real results (idempotent).
 //!
-//! 1. Generates the deterministic synthetic dataset and registers it as a dataset version
+//! 1. Generates the deterministic synthetic dataset and the synthetic stress datasets of
+//!    `execution_validation` (`demos::stress_datasets`) and registers each as a dataset version
 //!    (`storage = 'regenerate'`, events sha256 recorded, quality report stored).
-//! 2. Computes and stores its market analytics.
-//! 3. Submits every canonical demo experiment (`demos::demos`) into the `demo` workspace
-//!    through the normal admission path and job queue, pinned and labelled
-//!    `<demo id>: <run label>`. A worker of the result platform computes them; re-running the
-//!    command creates nothing new. With `wait`, this process computes them itself first.
-//! 4. Once a demo's runs are completed: stores its curated comparisons (the first run against
-//!    each other run) and one saved report (of its first comparison) in the `demo` workspace,
-//!    through the same code as `POST /comparisons` and `POST /reports`. Anonymous visitors only
-//!    read them; nothing about anonymous write protection changes. Missing pieces are reported
-//!    as pending; run the command again after the worker finished.
+//! 2. Computes and stores their market analytics.
+//! 3. Submits every canonical demo experiment (`demos::demos`) and `demos::execution_validation`
+//!    into the `demo` workspace through the normal admission path and job queue, pinned and
+//!    labelled `<demo id>: <run label>`. A worker of the result platform computes them;
+//!    re-running the command creates nothing new. With `wait`, this process computes them itself
+//!    first.
+//! 4. Once a demo's runs are completed: stores its curated comparisons (`demos::curated_pairs`)
+//!    and one saved report (of its first comparison) in the `demo` workspace, through the same
+//!    code as `POST /comparisons` and `POST /reports`. Anonymous visitors only read them; nothing
+//!    about anonymous write protection changes. Missing pieces are reported as pending; run the
+//!    command again after the worker finished.
 
 use std::time::Duration;
 
@@ -50,13 +52,16 @@ pub struct Curated {
     pub detail: String,
 }
 
-pub async fn seed(runtime: &Runtime, platform: &str, wait: bool) -> Result<SeedReport> {
+/// Registers the synthetic dataset `config` and stores its market analytics (best effort).
+async fn register(
+    runtime: &Runtime,
+    config: &SyntheticConfig,
+) -> Result<(bb_db::DatasetVersion, bb_core::dataset::DatasetManifest)> {
     let db = &runtime.db;
     let hosted = runtime.cfg.profile == Profile::Hosted;
-    let (version, ctx) =
-        registry::register_synthetic(db, &runtime.registry, &SyntheticConfig::default(), hosted)
-            .await
-            .map_err(|e| anyhow!("registering the synthetic dataset: {e}"))?;
+    let (version, ctx) = registry::register_synthetic(db, &runtime.registry, config, hosted)
+        .await
+        .map_err(|e| anyhow!("registering the synthetic dataset {}: {e}", config.id))?;
     let manifest = ctx.manifest().clone();
 
     let version_no = version.version_no;
@@ -78,12 +83,27 @@ pub async fn seed(runtime: &Runtime, platform: &str, wait: bool) -> Result<SeedR
         Ok(Err(e)) => tracing::warn!(error = %e, "market analytics unavailable"),
         Err(e) => tracing::warn!(error = %e, "market analytics task failed"),
     }
+    Ok((version, manifest))
+}
+
+pub async fn seed(runtime: &Runtime, platform: &str, wait: bool) -> Result<SeedReport> {
+    let db = &runtime.db;
+    let (version, manifest) = register(runtime, &SyntheticConfig::default()).await?;
+    let mut stress = Vec::new();
+    for config in crate::demos::stress_datasets() {
+        stress.push(register(runtime, &config).await?.1);
+    }
 
     let demo = db
         .workspace("demo")
         .await
         .map_err(|e| anyhow!("demo workspace: {e}"))?;
-    let demos = crate::demos::demos(&manifest);
+    let mut demos = crate::demos::demos(&manifest);
+    demos.extend(crate::demos::execution_validation(|id| {
+        std::iter::once(&manifest)
+            .chain(&stress)
+            .find(|m| m.id == id)
+    }));
     let mut experiments = Vec::new();
     let mut open_jobs = Vec::new();
     for d in &demos {
@@ -236,16 +256,19 @@ async fn curate(
                 Err(e) => return Err(anyhow!("{label}: {e}")),
             });
         }
-        for (i, run) in d.runs.iter().enumerate().skip(1) {
-            let title = bounded_text(format!("{}: {} vs {}", d.id, d.runs[0].label, run.label));
-            let (Some(a), Some(b)) = (&views[0], &views[i]) else {
+        for (k, (i, j)) in crate::demos::curated_pairs(d).into_iter().enumerate() {
+            let title = bounded_text(format!(
+                "{}: {} vs {}",
+                d.id, d.runs[i].label, d.runs[j].label
+            ));
+            let (Some(a), Some(b)) = (&views[i], &views[j]) else {
                 out.push(Curated {
                     kind: "comparison",
                     title,
                     status: "pending",
                     detail: "waiting for both runs to complete".into(),
                 });
-                if i == 1 {
+                if k == 0 {
                     out.push(Curated {
                         kind: "report",
                         title: bounded_text(format!("{}: curated comparison report", d.title)),
@@ -269,7 +292,7 @@ async fn curate(
                 status: if existed { "existing" } else { "created" },
                 detail: format!("{} ({})", row.id, row.eligibility),
             });
-            if i != 1 {
+            if k != 0 {
                 continue;
             }
             let report_title = bounded_text(format!("{}: curated comparison report", d.title));

@@ -361,6 +361,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/market/datasets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["market_catalogue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/market/datasets/{dataset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["market_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/market/datasets/{dataset_id}/book": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["market_book"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/market/datasets/{dataset_id}/comparison": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["market_comparison"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/market/datasets/{dataset_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["market_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/market/datasets/{dataset_id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["market_metrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/openapi.json": {
         parameters: {
             query?: never;
@@ -1110,6 +1206,9 @@ export interface components {
             late_cancels: number;
             round_trip_ns: components["schemas"]["Distribution"];
             to_exchange_ns: components["schemas"]["Distribution"];
+        };
+        Catalogue: {
+            items: components["schemas"]["Summary"][];
         };
         /** @description A plain-language warning that belongs next to the numbers. */
         Caveat: {
@@ -2287,6 +2386,49 @@ export interface components {
             scopes: string[];
             workspace_id: string;
         };
+        L3Comparison: {
+            basis: string;
+            /** Format: int64 */
+            cancel_messages: number;
+            /** Format: int64 */
+            cancels_ahead_of_reference: number;
+            /** Format: int64 */
+            cancels_at_reference: number;
+            /** Format: int64 */
+            cancels_behind_reference: number;
+            definitions: {
+                [key: string]: string;
+            };
+            /** Format: int64 */
+            events: number;
+            /** Format: int64 */
+            execution_messages: number;
+            /** Format: int64 */
+            executions_with_order_identity: number;
+            l2_unobservable: string[];
+            /** Format: int64 */
+            order_identity_observations: number;
+            /** Format: int64 */
+            same_timestamp_add_cancel_level_groups: number;
+            /** Format: int64 */
+            touch_queue_observations: number;
+        };
+        L3Metrics: {
+            basis: string;
+            counts: {
+                [key: string]: number;
+            };
+            definitions: {
+                [key: string]: string;
+            };
+            l2: components["schemas"]["MarketReport"];
+            order_lifetime_ns: components["schemas"]["LifetimeDistribution"];
+            queue_position_at_execution: components["schemas"]["QueuePositionDistribution"];
+            rates_per_second: {
+                [key: string]: number | null;
+            };
+            series: components["schemas"]["MetricPoint"][];
+        };
         LabelPatch: {
             label: string;
         };
@@ -2316,6 +2458,14 @@ export interface components {
             resting_time_ns?: string | null;
             /** @description Exchange clock: arrival to first fill. */
             time_to_first_fill_ns?: string | null;
+        };
+        LifetimeDistribution: {
+            max?: string | null;
+            min?: string | null;
+            /** Format: int64 */
+            n: number;
+            p50?: string | null;
+            p90?: string | null;
         };
         LimitsSummary: {
             /** Format: int32 */
@@ -2435,9 +2585,63 @@ export interface components {
              */
             sigma: number;
         };
+        MarketBook: {
+            asks: components["schemas"]["MarketLevel"][];
+            bids: components["schemas"]["MarketLevel"][];
+            /** Format: int64 */
+            event_index: number;
+            levels: number;
+            ts_ns?: string | null;
+        };
+        MarketEvent: {
+            applied: string;
+            /** Format: int32 */
+            best_ask_price4?: number | null;
+            /** Format: int32 */
+            best_bid_price4?: number | null;
+            /** Format: int64 */
+            event_index: number;
+            message_type: string;
+            new_order_ref?: string | null;
+            order_ref?: string | null;
+            /** Format: int32 */
+            price4?: number | null;
+            /** Format: int64 */
+            shares?: number | null;
+            side?: string | null;
+            ts_ns?: string | null;
+        };
+        MarketLevel: {
+            /** Format: int32 */
+            order_count: number;
+            orders: components["schemas"]["MarketOrder"][];
+            orders_truncated: boolean;
+            /** Format: int32 */
+            price4: number;
+            /** Format: int64 */
+            shares: number;
+        };
+        MarketOrder: {
+            /** Format: int64 */
+            entered_event_index: number;
+            entered_ns?: string | null;
+            order_ref: string;
+            /** Format: int32 */
+            queue_position: number;
+            /** Format: int64 */
+            shares: number;
+            /** Format: int64 */
+            shares_ahead: number;
+        };
         MarketPoint: {
             ts_ns: string;
             values: components["schemas"]["Value"][];
+        };
+        MarketQuality: {
+            checks: unknown[];
+            passed: boolean;
+            /** Format: int64 */
+            quarantined_total: number;
         };
         MarketReport: {
             analytics_version: string;
@@ -2503,6 +2707,33 @@ export interface components {
              * @description Quantity-weighted mean markout in ticks. Negative means adverse selection.
              */
             mean_ticks?: number | null;
+        };
+        MetricPoint: {
+            /** Format: int64 */
+            ask_shares: number;
+            /** Format: int32 */
+            best_ask_price4?: number | null;
+            /** Format: int32 */
+            best_bid_price4?: number | null;
+            /** Format: int64 */
+            bid_shares: number;
+            /** Format: int64 */
+            event_index: number;
+            /** Format: int64 */
+            live_orders: number;
+            /** Format: double */
+            order_count_imbalance?: number | null;
+            /** Format: int64 */
+            signed_added_shares: number;
+            /** Format: int64 */
+            signed_cancelled_shares: number;
+            /** Format: int64 */
+            signed_executed_shares: number;
+            /** Format: int64 */
+            touch_depleted_shares: number;
+            /** Format: int64 */
+            touch_replenished_shares: number;
+            ts_ns?: string | null;
         };
         /** @description One measured outcome side by side. */
         MetricRow: {
@@ -3049,6 +3280,30 @@ export interface components {
             truncated_by?: components["schemas"]["TruncatedBy"] | null;
         };
         /** @description A cursor page (API_CONTRACT §7). */
+        Page_MarketEvent: {
+            items: {
+                applied: string;
+                /** Format: int32 */
+                best_ask_price4?: number | null;
+                /** Format: int32 */
+                best_bid_price4?: number | null;
+                /** Format: int64 */
+                event_index: number;
+                message_type: string;
+                new_order_ref?: string | null;
+                order_ref?: string | null;
+                /** Format: int32 */
+                price4?: number | null;
+                /** Format: int64 */
+                shares?: number | null;
+                side?: string | null;
+                ts_ns?: string | null;
+            }[];
+            /** @description Opaque; pass back as `cursor` with the same filters. */
+            next_cursor?: string | null;
+            truncated_by?: components["schemas"]["TruncatedBy"] | null;
+        };
+        /** @description A cursor page (API_CONTRACT §7). */
         Page_OrderPair: {
             items: {
                 a?: components["schemas"]["DecisionOutcome"] | null;
@@ -3350,6 +3605,18 @@ export interface components {
             seq: number;
             /** @description Exchange clock. */
             ts: string;
+        };
+        QueuePositionDistribution: {
+            /** Format: int32 */
+            max?: number | null;
+            /** Format: int32 */
+            min?: number | null;
+            /** Format: int64 */
+            n: number;
+            /** Format: int32 */
+            p50?: number | null;
+            /** Format: int32 */
+            p90?: number | null;
         };
         QueueSummary: {
             /** @description When the worker last polled the queue; `null` before its first poll. */
@@ -3890,6 +4157,25 @@ export interface components {
             experiment: components["schemas"]["Experiment"];
             job?: components["schemas"]["Job"] | null;
             run?: components["schemas"]["RunSummary"] | null;
+        };
+        Summary: {
+            data_class: string;
+            dataset_id: string;
+            dataset_version: string;
+            /** Format: int64 */
+            events: number;
+            first_ns?: string | null;
+            generator: unknown;
+            last_ns?: string | null;
+            license_note: string;
+            messages_by_type: {
+                [key: string]: number;
+            };
+            quality: components["schemas"]["MarketQuality"];
+            session: string;
+            symbol: string;
+            timestamp_basis: string;
+            venue: string;
         };
         SurvivalPoint: {
             /** Format: int64 */
@@ -5205,6 +5491,220 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    market_catalogue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Catalogue"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    market_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Summary"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    market_book: {
+        parameters: {
+            query: {
+                event_index: number;
+                levels?: number;
+                orders_per_level?: number;
+            };
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketBook"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    market_comparison: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["L3Comparison"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    market_events: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                /** @description Default 100; 1..500. */
+                limit?: number;
+                /** @description One ITCH message-type letter. */
+                message_type?: string;
+                /** @description Inclusive nanoseconds since session midnight. */
+                t0_ns?: string;
+                t1_ns?: string;
+                /** @description Inclusive source frame index; 0..99999. */
+                from_event_index?: number;
+            };
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_MarketEvent"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    market_metrics: {
+        parameters: {
+            query?: {
+                /** @description Default100; 2..500. */
+                max_points?: number;
+            };
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["L3Metrics"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
