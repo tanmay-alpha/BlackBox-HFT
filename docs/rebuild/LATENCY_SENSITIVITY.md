@@ -199,9 +199,11 @@ the queue-model ranking at ≥ 25 ms, and markouts at 100 ms (5 s markout ranges
    the strict net ranking of models in 3 of 32 (dataset, latency) cells, and the gross ranking has
    no stable order.
    Which model is right is unobservable from L2 data.
-5. Limits: synthetic generator only; no market impact; constant latency (no jitter or tails); one
-   strategy configuration; 120 s per dataset; independent seeds instead of time windows; one fee
-   schedule.
+5. Limits of **this historical study**: synthetic generator only; no market impact; constant
+   latency (the study did not exercise jitter or tails); one strategy configuration; 120 s per
+   dataset; independent generator seeds instead of time windows; one fee schedule. The current
+   simulator additionally supports `jitter`, `log_normal`, `heavy_tail`, separate cancel legs
+   (in the latter two), and `think_time_ns`; these do not retroactively change these results.
 
 ## Appendix: run ids and result hashes
 

@@ -10,6 +10,9 @@ curl http://127.0.0.1:8787/api/v1/openapi.json
 
 TypeScript types for the web client: `cd web && npm run gen:api` (writes `src/api/v1.gen.ts`).
 
+The public Market Data Workbench routes (`/api/v1/market/datasets/...`, synthetic `l3-demo` only) are in
+[API_CONTRACT.md §8.2a](engineering/API_CONTRACT.md#82a-market-data-workbench-l3-synthetic-only).
+
 Local server (Postgres from docs/engineering/PROJECT_STATE.md):
 
 ```sh
