@@ -4,18 +4,20 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Phases 3.1, 3.2, 4 and 5 in progress on branch `phase31/ui` (2026-11-17), not yet released.** Tracker:
-[../rebuild/NEXT_PHASES_TRACKER.md](../rebuild/NEXT_PHASES_TRACKER.md). Evidence: Phase 3.1
-[../rebuild/PHASE31_UI_REVIEW.md](../rebuild/PHASE31_UI_REVIEW.md), Phase 3.2
-[../rebuild/PHASE32_PERFORMANCE.md](../rebuild/PHASE32_PERFORMANCE.md), Phase 4
-[../research/MARKET_DATA_WORKBENCH.md](../research/MARKET_DATA_WORKBENCH.md) and
-[../research/L3_L2_VALIDATION.md](../research/L3_L2_VALIDATION.md), Phase 5
-[../research/EXECUTION_MODEL_VALIDATION.md](../research/EXECUTION_MODEL_VALIDATION.md). No migration; the release
-adds the `execution_validation` demo, so production needs `demo seed` after the image is live. Agent availability
-during this phase: GPT-6.1 Sol hit `usage_limit_reached` and Opus 5.5 hit HTTP 429 mid-phase; the affected tasks were
-re-run by other agents from the transcripts.
+**Phases 3.1, 3.2, 4 and 5 released (2026-11-16 21:44 UTC).** `main` = `55084c0` (merge of PR #2). Image
+`ghcr.io/tanmay-alpha/blackbox-hft@sha256:3cc6b03bc84368d74aed953418a2741f06769476771f97dc166aff0bc45bf6f8`, Render
+deploy `dep-dbtnhvsipgvc739jbs40` live; `/status` `git_sha=55084c0…`, worker idle, platform
+`linux-x86_64+libm-53154a4e`. Smoke 8/8 PASS; anonymous production acceptance 7/7 (keyed spec skipped: no key in the
+environment). Vercel production built from `main`. Production `demo seed` (operator machine, TCP forwarder to Neon)
+registered the two stress datasets, the hosted worker computed the 6 new `execution_validation` runs, and the second
+pass stored 6 comparisons and 1 report; all 8 earlier demo runs kept their run ids. Record:
+[../rebuild/PHASE31_RELEASE.md](../rebuild/PHASE31_RELEASE.md). Tracker:
+[../rebuild/NEXT_PHASES_TRACKER.md](../rebuild/NEXT_PHASES_TRACKER.md). Rollback: redeploy
+`sha256:c41fd646e2ba36d5ed2450b3bd31e23d53b1f1a36c1898781928c5c83d864c6b` (release `b8105d4`) and promote the previous
+Vercel deployment; no migration. Agent availability during this phase: GPT-6.1 Sol hit `usage_limit_reached` and Opus
+5.5 hit HTTP 429 mid-phase; the affected tasks were re-run by other agents from the transcripts.
 
-The production state below is the last release, unchanged until this branch is released.
+Previous release, for reference:
 
 **Phase 3 released and verified (2026-11-15 13:23 UTC).** `main` = `b8105d4` (frontend-only product-experience
 release). The API reports `git_sha=b8105d4` from image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:c41fd646…864c6b`

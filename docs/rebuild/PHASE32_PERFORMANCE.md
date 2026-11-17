@@ -107,7 +107,9 @@ Layout-shift attribution (PerformanceObserver `sources`, same throttling) identi
 | Risk (0.07–0.09) | chart grid replaced a 20 px spinner | chart area reserved while equity loads (`features/risk/*`) |
 | Replay phone (0.34) | a spinner inside the phone toolbar re-wrapped it on every window load | announced status only; the heatmap and body show loading (`features/terminal/ReplayTerminalPage.tsx`) |
 | Run overview (0.47 desktop) | toolbar wrapping and KPI strip | fixed with the Phase 3.1 audit items (toolbar disclosure, wrapping KPI grid) |
-| Market workbench | header line appeared and wrapped late | line always present; see ClsFix |
+| Market workbench (0.04 desktop, 0.08 phone) | meta line appeared late and wrapped | one fixed line with ellipsis and title (`features/market/`) |
+| Compare pair (0.27 desktop) | the evidence legend's Inter 500 face arrived after the data and re-wrapped it | Inter 500 requested at start (`main.tsx`) |
+| Compare set (0.70 desktop, 0.65 phone on the data path) | each panel grew as its request finished | panels render together once the requests that shape them finished (`features/latency/LatencyLabPage.tsx`) |
 
 Also: the layout-reset context moved out of `SplitPane` (entry chunk −1.75 kB); no other bundle change was made
 because no measured bottleneck pointed at JS execution on desktop (0 long tasks during every interaction).
@@ -118,10 +120,64 @@ already compresses).
 
 ## After
 
-See "Results after the changes" below (filled from the A/B run on the same harness, server and data).
+**Measurement pitfall.** A first 5-repetition "after" run taken hours after the baseline showed mobile TBT 4–8× higher
+and mobile interactions 40–230 % slower on every page, including unchanged ones. Same-session CDP
+`Performance.getMetrics` showed the same main-thread work for both builds (e.g. Risk 1,030 vs 1,023 ms TaskDuration,
+Explore 779 vs 718 ms; open-menu 93–116 vs 88–141 ms), so the difference was machine state, not code. All
+comparisons below therefore alternate builds in one session (base, final, base, final; 3 repetitions each; mobile
+profile; same server binary, database and data; egress reset before every run). Raw: `data/perf/ab-mobile.md`,
+`data/perf/ab2-mobile.md` (local).
+
+**A/B 1 (release `55084c0` UI vs `7c49dae`), medians of 6 repetitions per build:**
+
+| Scenario | CLS base → final | TBT ms base → final | LCP ms base → final |
+|---|---|---|---|
+| Replay | 0.344 → 0.001 | 137 → 107 | 10,768 → 11,214 |
+| Run overview | 0.095 → 0.006 | 110 → 82 | 5,198 → 5,720 |
+| Strategy Lab | 0.288 → 0.001 | 0 → 18 | 4,676 → 5,026 |
+| Risk | 0.200 → 0.003 | 207 → 184 | 5,198 → 5,712 |
+| Report | 0.131 → 0.001 | 0 → 0 | 4,090 → 4,592 |
+| Explore | 0.001 → 0.001 | 90 → 75 | 5,240 → 5,664 |
+| Compare pair | 0.001 → 0.001 | 91 → 76 | 4,234 → 4,682 |
+
+Desktop (5 repetitions, separate session): CLS on every page ≤ 0.016 (baseline 0.21–0.47 on five pages); no long
+task during any interaction; interactions ≤ 24 ms. Run-to-run TBT drift within a build was ≤ 17 ms.
+
+**Regression found and fixed.** LCP was 350–520 ms (+4–12 %) later on every mobile page. Causes: (1) the shared
+label module imported the Strategy Lab's form definitions to name configuration paths, so most pages loaded a 37 kB
+chunk; it now reads a 52-entry static table (`components/labFieldLabels.ts`, checked against the Lab definitions by
+`labFieldLabels.test.ts`), and the chunk is 6 kB; (2) all five font faces were requested at start to stop one late
+face from re-wrapping text; now only Inter 500 is.
+
+**A/B 2 (fixed UI vs `7c49dae`), same protocol.** The run `ab2-base-2` had higher background load (per-repetition CPU
+median 31 % vs 17–19 % for the others), which inflates its TBT; TBT below is therefore base-1 vs final-1 only. LCP and
+CLS use all six repetitions.
+
+| Scenario | CLS base → final | LCP ms base → final | TBT ms base-1 → final-1 | Longest task ms (6 reps) |
+|---|---|---|---|---|
+| Replay | 0.344 → 0.001 | 10,852 → 10,942 (+0.8 %) | 151 → 130 | 192 → 164 |
+| Run overview | 0.095 → 0.006 | 5,198 → 5,348 (+2.9 %) | 103 → 85 | 172 → 172 |
+| Strategy Lab | 0.288 → 0.001 | 4,686 → 4,912 (+4.8 %) | 0 → 19 | 181 → 158 |
+| Risk | 0.200 → 0.003 | 5,220 → 5,360 (+2.7 %) | 241 → 216 | 257 → 200 |
+| Report | 0.131 → 0.001 | 4,120 → 4,248 (+3.1 %) | 0 → 0 | 184 → 156 |
+| Explore | 0.001 → 0.001 | 5,284 → 5,390 (+2.0 %) | 101 → 87 | 190 → 172 |
+| Compare pair | 0.001 → 0.001 | 4,250 → 4,406 (+3.7 %) | 92 → 81 | 186 → 156 |
+
+Mobile interactions (6 repetitions each): scenario switch 60 → 56 ms, replay step 60 → 52, scrub 60 → 48, order select
+64 → 52, blotter next page 72 → 40, preset 48 → 48, open menu 76 → 72; blotter touch scroll to visible result 864 →
+259 ms. FCP unchanged (±30 ms).
+
+**Outcome.** CLS meets the 0.1 target on every measured page and profile (worst 0.016 desktop Risk; was 0.47).
+Mobile TBT and the longest task are lower on almost every page. LCP is still 90–226 ms (+1–5 %) later than the
+baseline locally: each page now downloads 9–20 KiB more uncompressed JavaScript (the Workbench, evidence ledger, Lab
+and label code), which costs roughly 50–100 ms at the profile's 200 kB/s and is compressed about 3:1 in production.
+LCP is above the 2.5 s target on the local mobile profile for every page (4.2–10.9 s) both before and after; the
+production mobile smoke measured 2.2–4.5 s with compression. INP is not claimed: these are lab interactions.
 
 ## Remaining limitations
 
 - No field data; INP not claimed. Lab interaction latency only.
 - Local numbers are uncompressed; production numbers are one repetition each (budget and bot-protection limits).
 - Cold start measured only when it occurred naturally.
+- Mobile LCP on the Slow 4G profile is dominated by transfer (entry chunk 397 KiB uncompressed, replay window 1.1 MB
+  of API data); reducing it needs smaller API windows or a smaller entry chunk, both larger changes left for later.

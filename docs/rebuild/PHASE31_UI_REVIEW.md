@@ -110,12 +110,17 @@ shows two time ticks at 360 px (the chart library chooses tick density); two ser
 - `web/e2e/a11y-keyboard.spec.ts`: APG toolbar (one tab stop, arrows/Home/End with wrap, Tab out, Shift+Tab back, View
   opens with Enter, Escape closes and restores focus, hint only on keyboard focus); replay keys (Space only off
   controls, arrows step); skip link first; exactly one h1 on 13 routes; no console or HTTP errors.
-- Result before the last fixes: 44 / 45 (the 360 px compare run-id link, since fixed). Final run: see the release
-  record.
+- Final run before release (fresh build, database and port): **52 / 52 passed** (responsive, keyboard, anonymous,
+  Explore and keyed research specs); CI `e2e` green on PR #2 and `main`.
 
-## Remaining
+## After the independent review
 
-See the independent product review (UxReview) appended below once it reports.
+All eight must-fix items U1–U8 below were fixed before release (WordingFix: synthetic-aware "replayed market data"
+wording, SYNTHETIC badge on Replay, "risk-averse" display, plain names; ConfigFix: readable object config values,
+"compared elsewhere" link for the depleted risk-averse run, no console errors on invalid Lab drafts, field errors in
+`aria-describedby`). Still open: the server-generated report prose ("touch_maker, evaluated every 100000000 ns",
+"Historical replay only") in `crates/bb-app/src/report.rs`; "historical" wording on Explore, Forensics, Reports,
+Sweep, Mission Control and the book index; Replay's 15 px heading (deliberate, space goes to the ladder).
 
 ## Independent product review (UxReview3)
 

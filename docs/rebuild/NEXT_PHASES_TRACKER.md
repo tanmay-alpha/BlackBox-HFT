@@ -1,23 +1,22 @@
 # Next phases tracker (3.1, 3.2, 4, 5)
 
-Status of each deliverable on branch `phase31/ui` (working tree over `main` 7c49dae), judged only by whether the
-named files exist in the tree on 2026-11-17. "Done" means the file is present, not that it has been released.
-Production deployment of every phase below: **pending release**.
+Status of each deliverable on `main` `55084c0` (2026-11-17). Production: **released** 2026-11-16 21:44 UTC
+(record: [PHASE31_RELEASE.md](PHASE31_RELEASE.md)); the `execution_validation` demo is seeded in production.
 
 ## Phase 3.1: UI polish, responsiveness, accessibility
 
 | Deliverable | Evidence | Status |
 |---|---|---|
-| Review record with defect matrix, regression tests | `docs/rebuild/PHASE31_UI_REVIEW.md` | Partial: its "Remaining" section still awaits the independent product review |
+| Review record with defect matrix, regression tests, independent review (7.90) | `docs/rebuild/PHASE31_UI_REVIEW.md` | Done |
 | Before/after screenshots 360–1440 px | `docs/rebuild/img/p3-*.webp` | Done |
 | Shell, component and page changes | `web/src/shell/`, `web/src/components/`, `web/src/features/*/` (modified) | Done |
-| E2E coverage | `web/e2e/research.spec.ts`, `web/e2e/fixtures.ts` (modified) | Done |
+| E2E coverage | `web/e2e/responsive.spec.ts`, `web/e2e/a11y-keyboard.spec.ts`, `web/e2e/measure.ts`, `web/e2e/research.spec.ts` (52/52 locally, CI e2e green) | Done |
 
 ## Phase 3.2: performance
 
 | Deliverable | Evidence | Status |
 |---|---|---|
-| Phase 3.2 performance document | none yet (prior results: `docs/rebuild/PERFORMANCE_RESULTS.md`, `docs/PERFORMANCE.md`) | In progress |
+| Phase 3.2 performance document, harness, baselines, fixes | `docs/rebuild/PHASE32_PERFORMANCE.md`, `web/perf/` | Done (lab measurements only; no field data) |
 
 ## Phase 4: Market Data Workbench (L3)
 
