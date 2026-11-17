@@ -14,12 +14,11 @@ import './styles/shell.css';
 
 import App from './App';
 
-// A face is fetched on its first use, so text set in a weight that appears only after data arrives
-// (e.g. Compare's Inter 500 legend) swapped fonts late and re-wrapped (layout shift 0.27,
-// PHASE32_PERFORMANCE). Start every face now, in parallel with the API requests.
-for (const face of ['400 1em Inter', '500 1em Inter', '600 1em Inter', '400 1em "JetBrains Mono"', '600 1em "JetBrains Mono"']) {
-  void document.fonts?.load(face);
-}
+// A face is fetched on its first use. Inter 500 is used only by text that appears after data
+// arrives (e.g. Compare's evidence legend), so its late swap re-wrapped that text (layout shift 0.27,
+// PHASE32_PERFORMANCE). Start that one face now; the faces first paint uses load as usual (fetching
+// all five up front delayed mobile LCP in the A/B run).
+void document.fonts?.load('500 1em Inter');
 
 const container = document.getElementById('root');
 if (!container) {

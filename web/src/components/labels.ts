@@ -7,8 +7,7 @@
 import { useEffect, useState } from 'react';
 
 import { api } from '../api/client';
-import type { RunConfig } from '../api/types';
-import { LATENCY_MODELS, buildSections, startingConfig, strategyKindDefaults, type Field, type Section } from '../features/lab/fields';
+import { LAB_FIELD_LABELS, LATENCY_MODEL_LABELS } from './labFieldLabels';
 import { EXCHANGE_MODEL_INFO, QUEUE_MODEL_INFO, SIGMA_SOURCE_INFO, STRATEGY_INFO, fractionToBps } from './describe';
 import { fmtDurationExact } from './fmt';
 
@@ -41,44 +40,6 @@ const PATH_OVERRIDES: Record<string, string> = {
   engine: 'Matching engine version',
 };
 
-const STRATEGY_TYPES = Object.keys(STRATEGY_INFO) as (keyof typeof STRATEGY_INFO)[];
-
-function selectField(sections: Section[], id: string): Extract<Field<RunConfig>, { kind: 'select' }> | null {
-  for (const s of sections) {
-    for (const f of s.fields) if (f.id === id && f.kind === 'select') return f;
-  }
-  return null;
-}
-
-/**
- * Labels of every field the Strategy Lab can show, collected by building its form for each
- * strategy kind, each order-latency model (cancel leg on) and a queue model with an exponent.
- */
-function labFieldLabels(): Map<string, string> {
-  const map = new Map<string, string>();
-  const ctx = { instrument: null, presets: [] };
-  const base = startingConfig('', null);
-  for (const type of STRATEGY_TYPES) {
-    let c: RunConfig = { ...base, strategy: { ...base.strategy, kind: strategyKindDefaults(type, null, []) } };
-    c = selectField(buildSections(c, ctx), 'execution.queue_model.type')?.set(c, 'power_prob') ?? c;
-    for (const model of LATENCY_MODELS) {
-      let cfg = selectField(buildSections(c, ctx), 'execution.order_latency.type')?.set(c, model.value) ?? c;
-      cfg = selectField(buildSections(cfg, ctx), 'execution.order_latency.cancel')?.set(cfg, 'own') ?? cfg;
-      for (const s of buildSections(cfg, ctx)) {
-        for (const f of s.fields) if (!map.has(f.id)) map.set(f.id, f.label);
-      }
-    }
-  }
-  return map;
-}
-
-let pathLabels: Map<string, string> | null = null;
-
-function knownPathLabel(path: string): string | undefined {
-  pathLabels ??= labFieldLabels();
-  return PATH_OVERRIDES[path] ?? pathLabels.get(path);
-}
-
 function sentence(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
@@ -91,7 +52,7 @@ function segmentWords(path: string): string {
 
 /** Readable name of a dotted `RunConfig` (or comparison eligibility) path. Show `path` as its title. */
 export function pathLabel(path: string): string {
-  return knownPathLabel(path) ?? segmentWords(path);
+  return PATH_OVERRIDES[path] ?? LAB_FIELD_LABELS[path] ?? segmentWords(path);
 }
 
 // ----- values -------------------------------------------------------------------------------------
@@ -101,7 +62,7 @@ const VALUE_LABEL: Record<string, string> = Object.fromEntries([
   ...Object.entries(EXCHANGE_MODEL_INFO).map(([k, v]) => [k, v.label]),
   ...Object.entries(QUEUE_MODEL_INFO).map(([k, v]) => [k, v.label]),
   ...Object.entries(SIGMA_SOURCE_INFO).map(([k, v]) => [k, v.label]),
-  ...LATENCY_MODELS.map((m) => [m.value, m.label]),
+  ...Object.entries(LATENCY_MODEL_LABELS),
 ]);
 
 /** A configuration enum value (`no_partial_fill`, `power_prob3`) in words. */
@@ -140,13 +101,13 @@ function objectText(obj: Record<string, unknown>): string {
   let root = '';
   let best = 0;
   for (const r of ROOTS) {
-    const hits = list.filter(([k]) => knownPathLabel(`${r}.${k}`) !== undefined).length;
+    const hits = list.filter(([k]) => (PATH_OVERRIDES[`${r}.${k}`] ?? LAB_FIELD_LABELS[`${r}.${k}`]) !== undefined).length;
     if (hits > best) {
       best = hits;
       root = `${r}.`;
     }
   }
-  return list.map(([k, v]) => `${pathLabels?.get(`${root}${k}`) ?? pathLabel(`${root}${k}`)} = ${configValueText(`${root}${k}`, v)}`).join('; ');
+  return list.map(([k, v]) => `${LAB_FIELD_LABELS[`${root}${k}`] ?? pathLabel(`${root}${k}`)} = ${configValueText(`${root}${k}`, v)}`).join('; ');
 }
 
 export interface ControlledItem {
