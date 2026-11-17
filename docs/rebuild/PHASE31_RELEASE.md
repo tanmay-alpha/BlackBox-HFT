@@ -5,7 +5,7 @@ regimes, study CLI, `execution_validation` demo), `177fa2c` web, `efceb96` docs,
 `799c156` CI curated counts.
 
 PR #1 (`phase31/ui`) was closed unmerged: one of its commits added a docs line that the per-commit secret scan
-(SEC-19) flags (`BLACKBOX_TEST_DATABASE_URL=…`, no real value), and a later commit cannot remove it from the scanned
+(SEC-19) flags (the test database variable assigned a literal placeholder, no real value), and a later commit cannot remove it from the scanned
 range without a force-push. The same content was rebuilt on a new branch from `7c49dae` with that line corrected.
 
 ## CI
