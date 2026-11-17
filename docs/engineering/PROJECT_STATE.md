@@ -4,9 +4,11 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Phases 3.1, 3.2, 4 and 5 released (2026-11-16 21:44 UTC).** `main` = `55084c0` (merge of PR #2). Image
-`ghcr.io/tanmay-alpha/blackbox-hft@sha256:3cc6b03bc84368d74aed953418a2741f06769476771f97dc166aff0bc45bf6f8`, Render
-deploy `dep-dbtnhvsipgvc739jbs40` live; `/status` `git_sha=55084c0…`, worker idle, platform
+**Phases 3.1, 3.2, 4 and 5 released (2026-11-16 21:44 UTC), follow-up `cdde05e` (2026-11-17 04:15 UTC).** `main` =
+`cdde05e` (mobile LCP fix `a05f66a`, CI web job on Node 24). Image
+`ghcr.io/tanmay-alpha/blackbox-hft@sha256:2c14ea32555019eeeea234e090a1b7318fd9d33c12d44142e61f13ca7d1b4ec4`, Render
+deploy `dep-dbtt9crm8hqs73dgc96g` live; `/status` `git_sha=cdde05e…`. First release `55084c0` (image
+`sha256:3cc6b03b…f6f8`, deploy `dep-dbtnhvsipgvc739jbs40`), worker idle, platform
 `linux-x86_64+libm-53154a4e`. Smoke 8/8 PASS; anonymous production acceptance 7/7 (keyed spec skipped: no key in the
 environment). Vercel production built from `main`. Production `demo seed` (operator machine, TCP forwarder to Neon)
 registered the two stress datasets, the hosted worker computed the 6 new `execution_validation` runs, and the second

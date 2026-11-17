@@ -36,6 +36,24 @@ Notes:
 - The idle in-process worker sleeps until its next scheduled wake when jobs are inserted by another process; the 6
   seeded jobs were claimed a few minutes after insertion, as documented in `worker.rs`.
 
+## Follow-up release `cdde05e` (2026-11-17 04:15 UTC)
+
+Same-session A/B showed mobile LCP +350–520 ms against `7c49dae` (PHASE32_PERFORMANCE "After"). Fix `a05f66a`
+(static Lab field labels; one early font face), docs `2a184ee`, `4ac480a`, CI `cdde05e`.
+
+| Step | Result |
+|---|---|
+| CI 44012278920 (`2a184ee`) | `policy` failed: this file quoted the flagged line from PR #1; reworded in `4ac480a` |
+| CI 44013293493 (`4ac480a`) | `web` failed 4 attempts at `npm audit signatures` (`EMISSINGSIGNATUREKEY`, postcss then magic-string) on npm 10; the same lockfile verifies locally on npm 11 (128 signatures, 64 attestations) |
+| `cdde05e` | `web` job on Node 24 (npm 11); the check is kept. CI 8/8 green |
+| publish 44015620841 | image `sha256:2c14ea32555019eeeea234e090a1b7318fd9d33c12d44142e61f13ca7d1b4ec4` |
+| Render | deploy `dep-dbtt9crm8hqs73dgc96g` succeeded; `/api/v1/status` `git_sha=cdde05eca84b857acc947ce72f90368e51227f9a` |
+| Smoke | 8/8 PASS |
+| Vercel | `main` deployment success; served `labels` chunk 6,163 B (was 37 kB) |
+| Anonymous acceptance | 7 passed, 1 skipped (no `PROD_RESEARCH_KEY`) |
+
+Rollback to the first release of this phase: image `sha256:3cc6b03b…f6f8` (`55084c0`); frontend-only difference.
+
 ## Incident during the release (no production data changed)
 
 After the seed, a local development server was restarted from the same shell, which still held the production
