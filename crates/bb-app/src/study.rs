@@ -491,7 +491,7 @@ pub fn exec_validation(out: &Path, quick: bool) -> Result<Value> {
                         instrument: Some(&ctx.manifest().instrument),
                     },
                 );
-                let execution = bb_analytics::execution::compute_execution_streaming(
+                let execution = bb_analytics::execution::compute_execution_summary(
                     run,
                     &ctx.bbo,
                     &ctx.manifest().instrument,
@@ -499,7 +499,6 @@ pub fn exec_validation(out: &Path, quick: bool) -> Result<Value> {
                         bootstrap_replicates: 0,
                         ..Default::default()
                     },
-                    |_| {},
                 )?;
                 let global_delta: BTreeMap<&str, f64> = metrics
                     .iter()

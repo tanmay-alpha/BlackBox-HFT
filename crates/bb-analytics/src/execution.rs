@@ -7,9 +7,9 @@
 //!
 //! Bootstrap bands are deterministic, percentile, Poissonized block-bootstrap bands: all
 //! fills in one fixed exchange-time block receive the same Poisson(1) multiplicity in a
-//! replicate. Blocks, not individual fills, are resampled. Memory is O(orders * horizons +
-//! replicates * horizons), independent of the number of book updates or fills. Exact KM
-//! and quantiles retain one observation per order, not a copy of the tape or dataset.
+//! replicate. Only one order's accumulators are live at a time; compact tape links preserve
+//! each order's event order without copying events. Global fills are accumulated in tape order
+//! for byte-identical sums. Exact KM and quantiles retain one observation per order.
 use std::collections::BTreeMap;
 
 use crate::{Sum, Value};
@@ -795,6 +795,15 @@ impl<'a> OrderState<'a> {
         }
     }
 }
+
+/// The tape remains borrowed. Links into it cost one machine word per event; the map holds
+/// only routing metadata, never per-order spread/horizon/cancel accumulators.
+struct OrderEvents<'a> {
+    order: &'a OrderRecord,
+    decision: Option<f64>,
+    first: usize,
+    last: usize,
+}
 #[derive(Default)]
 struct PnlAcc {
     edge: Sum,
@@ -993,6 +1002,17 @@ pub fn compute_execution(
     compute_parts(&run.orders, &run.tape, book, instrument, config)
 }
 
+/// The same summary as a streaming computation with a discard sink, without constructing
+/// per-order spread curves or detail reports. Exact distributions still include every order.
+pub fn compute_execution_summary(
+    run: &RunResult,
+    book: &BboSeries,
+    instrument: &InstrumentMeta,
+    config: &ExecutionConfig,
+) -> Result<ExecutionReport, ExecutionError> {
+    compute_streaming_parts(&run.orders, &run.tape, book, instrument, config, None)
+}
+
 /// Bounded-output variant: every per-order result is delivered once to `on_order` and is not
 /// retained in the returned report. The sink may persist or select details without retaining all
 /// orders. Run summaries always include every order, regardless of what the sink keeps.
@@ -1009,7 +1029,7 @@ pub fn compute_execution_streaming(
         book,
         instrument,
         config,
-        &mut on_order,
+        Some(&mut on_order),
     )
 }
 fn compute_parts(
@@ -1020,9 +1040,14 @@ fn compute_parts(
     cfg: &ExecutionConfig,
 ) -> Result<ExecutionReport, ExecutionError> {
     let mut details = Vec::with_capacity(orders.len());
-    let mut report = compute_streaming_parts(orders, tape, book, inst, cfg, &mut |order| {
-        details.push(order)
-    })?;
+    let mut report = compute_streaming_parts(
+        orders,
+        tape,
+        book,
+        inst,
+        cfg,
+        Some(&mut |order| details.push(order)),
+    )?;
     report.orders = details;
     report.order_details_streamed = false;
     Ok(report)
@@ -1034,7 +1059,7 @@ fn compute_streaming_parts(
     book: &BboSeries,
     inst: &InstrumentMeta,
     cfg: &ExecutionConfig,
-    on_order: &mut dyn FnMut(OrderExecution),
+    mut on_order: Option<&mut dyn FnMut(OrderExecution)>,
 ) -> Result<ExecutionReport, ExecutionError> {
     if [inst.tick_size, inst.lot_size, inst.contract_size]
         .iter()
@@ -1079,10 +1104,19 @@ fn compute_streaming_parts(
     let mut end = cfg.observation_end_ns.or_else(|| book.ts.last().copied());
     let end_mid = end.and_then(|t| mid_at(book, t, false, inst.tick_size));
     let h = cfg.horizons_ns.len();
-    let mut states = BTreeMap::new();
+    let mut indexed_orders = BTreeMap::new();
     for order in orders {
-        states.insert(order.order_id, OrderState::new(order, h));
+        indexed_orders.insert(
+            order.order_id,
+            OrderEvents {
+                order,
+                decision: None,
+                first: usize::MAX,
+                last: usize::MAX,
+            },
+        );
     }
+    let mut next_event = vec![usize::MAX; tape.len()];
     let mut spreads = split_spreads(h);
     let mut boot = LiquiditySplit {
         all: Bootstrap::new(cfg),
@@ -1098,58 +1132,42 @@ fn compute_streaming_parts(
     let mut weights = vec![0.0; cfg.bootstrap_replicates];
     let mut weight_block = None;
     let mut unassociated = 0;
-    for event in tape {
+    // First pass: route events and accumulate global metrics in the original tape order.
+    // Reordering fills by order would change compensated sums and bootstrap bands.
+    for (event_index, event) in tape.iter().enumerate() {
         if cfg.observation_end_ns.is_some_and(|end| event.ts > end) {
             continue;
         }
         if cfg.observation_end_ns.is_none() && event.clock == bb_core::Clock::Exchange {
             end = Some(end.map_or(event.ts, |t| t.max(event.ts)));
         }
-        let Some(state) = event.order_id.and_then(|id| states.get_mut(&id)) else {
+        let Some(events) = event.order_id.and_then(|id| indexed_orders.get_mut(&id)) else {
             if matches!(event.body, FlightBody::ExchFill { .. }) {
                 unassociated += 1;
                 pnl.all.excluded += 1;
             }
             continue;
         };
+        if events.last == usize::MAX {
+            events.first = event_index;
+        } else {
+            next_event[events.last] = event_index;
+        }
+        events.last = event_index;
         match &event.body {
             FlightBody::OrderIntent { market, .. } => {
-                state.decision = market
+                events.decision = market
                     .best_bid_tick
                     .zip(market.best_ask_tick)
                     .filter(|(b, a)| a > b)
                     .map(|(b, a)| (a as f64 + b as f64) * 0.5 * inst.tick_size)
                     .filter(|p| p.is_finite() && *p > 0.0);
             }
-            FlightBody::RequestSent {
-                req: ReqKind::Cancel,
-                exch_arrival_ts,
-                ..
-            } => state.cancels.push(CancelState {
-                sent: event.ts,
-                scheduled: *exch_arrival_ts,
-                processed: None,
-                ack: None,
-                exposure: Sum::default(),
-                late: false,
-            }),
-            FlightBody::ExchQueued {
-                queue_ahead,
-                level_qty,
-                ..
-            } => {
-                if state.resting.is_none() {
-                    state.resting = Some(event.ts);
-                    state.ahead = *queue_ahead;
-                    state.level = Some(*level_qty);
-                }
-            }
             FlightBody::ExchFill {
                 price_tick,
                 qty,
                 maker,
                 fee,
-                leaves_qty,
                 ..
             } => {
                 // Horizon marks may extend beyond the run, but never beyond the dataset.
@@ -1159,14 +1177,15 @@ fn compute_streaming_parts(
                     ));
                 }
                 let price = inst.price(*price_tick);
-                let sign = state.order.side.sign();
+                let sign = events.order.side.sign();
                 let mid = mid_at(book, event.ts, true, inst.tick_size);
-                let arrival = state
-                    .arrival
+                let arrival = events
+                    .order
+                    .exch_arrival_ts
                     .and_then(|t| mid_at(book, t, false, inst.tick_size));
                 let decision = directional
-                    .get(&state.order.order_id)
-                    .and_then(|override_price| override_price.or(state.decision));
+                    .get(&events.order.order_id)
+                    .and_then(|override_price| override_price.or(events.decision));
                 for (slot, horizon) in future.iter_mut().zip(&cfg.horizons_ns) {
                     *slot = event
                         .ts
@@ -1186,22 +1205,12 @@ fn compute_streaming_parts(
                     price,
                 };
                 spreads.all.fill(fill, mid, &future, arrival, decision);
-                state
-                    .spreads
-                    .all
-                    .fill(fill, mid, &future, arrival, decision);
                 let global = if *maker {
                     &mut spreads.maker
                 } else {
                     &mut spreads.taker
                 };
-                let per_order = if *maker {
-                    &mut state.spreads.maker
-                } else {
-                    &mut state.spreads.taker
-                };
                 global.fill(fill, mid, &future, arrival, decision);
-                per_order.fill(fill, mid, &future, arrival, decision);
                 boot.all.fill(block, &weights, *qty, sign, mid, &future);
                 (if *maker {
                     &mut boot.maker
@@ -1216,48 +1225,6 @@ fn compute_streaming_parts(
                     &mut pnl.taker
                 })
                 .fill(fill, mid, end_mid, *fee, inst.contract_size);
-                state.qty.add(*qty);
-                state.notional.add(*qty * price);
-                state.fees.add(*fee);
-                state.first.get_or_insert(event.ts);
-                if state.resting.is_some_and(|t| event.ts >= t) {
-                    state.first_rest.get_or_insert(event.ts);
-                }
-                if *leaves_qty <= 0.0 {
-                    state.complete.get_or_insert(event.ts);
-                }
-                for c in &mut state.cancels {
-                    if event.ts >= c.sent && c.processed.is_none_or(|t| event.ts <= t) {
-                        c.exposure.add(*qty);
-                    }
-                }
-            }
-            FlightBody::ExchResponse {
-                status,
-                request_rejected,
-                ..
-            } => {
-                if let Some(c) = state.cancels.iter_mut().find(|c| {
-                    c.processed.is_none()
-                        && event.ts >= c.sent
-                        && c.scheduled.is_some_and(|t| event.ts >= t)
-                        && (*request_rejected || *status == OrderStatus::Canceled)
-                }) {
-                    c.processed = Some(event.ts);
-                    c.late = *request_rejected;
-                }
-            }
-            FlightBody::LocalResponse {
-                exch_ts,
-                request_rejected,
-                ..
-            } => {
-                if let Some(c) = state.cancels.iter_mut().find(|c| {
-                    c.ack.is_none() && c.processed == Some(*exch_ts) && event.ts >= c.sent
-                }) {
-                    c.ack = Some(event.ts);
-                    c.late |= *request_rejected;
-                }
             }
             _ => {}
         }
@@ -1278,8 +1245,133 @@ fn compute_streaming_parts(
     let mut opportunity_values = vec![Vec::new(); h + 1];
     let mut opportunity_horizons = vec![0];
     opportunity_horizons.extend_from_slice(&cfg.horizons_ns);
-    for (_, state) in states {
-        let order = state.order;
+    // Second pass: replay one order at a time, emit its detail, then free its accumulators.
+    // BTreeMap order preserves detail ordering and the input order of exact distributions.
+    for (_, events) in indexed_orders {
+        let order = events.order;
+        let mut state = OrderState::new(order, if on_order.is_some() { h } else { 0 });
+        let mut event_index = events.first;
+        while event_index != usize::MAX {
+            let event = &tape[event_index];
+            event_index = next_event[event_index];
+            match &event.body {
+                FlightBody::OrderIntent { market, .. } => {
+                    state.decision = market
+                        .best_bid_tick
+                        .zip(market.best_ask_tick)
+                        .filter(|(b, a)| a > b)
+                        .map(|(b, a)| (a as f64 + b as f64) * 0.5 * inst.tick_size)
+                        .filter(|p| p.is_finite() && *p > 0.0);
+                }
+                FlightBody::RequestSent {
+                    req: ReqKind::Cancel,
+                    exch_arrival_ts,
+                    ..
+                } => state.cancels.push(CancelState {
+                    sent: event.ts,
+                    scheduled: *exch_arrival_ts,
+                    processed: None,
+                    ack: None,
+                    exposure: Sum::default(),
+                    late: false,
+                }),
+                FlightBody::ExchQueued {
+                    queue_ahead,
+                    level_qty,
+                    ..
+                } => {
+                    if state.resting.is_none() {
+                        state.resting = Some(event.ts);
+                        state.ahead = *queue_ahead;
+                        state.level = Some(*level_qty);
+                    }
+                }
+                FlightBody::ExchFill {
+                    price_tick,
+                    qty,
+                    maker,
+                    fee,
+                    leaves_qty,
+                    ..
+                } => {
+                    let price = inst.price(*price_tick);
+                    let sign = order.side.sign();
+                    if on_order.is_some() {
+                        let mid = mid_at(book, event.ts, true, inst.tick_size);
+                        let arrival = state
+                            .arrival
+                            .and_then(|t| mid_at(book, t, false, inst.tick_size));
+                        let decision = directional
+                            .get(&order.order_id)
+                            .and_then(|override_price| override_price.or(state.decision));
+                        for (slot, horizon) in future.iter_mut().zip(&cfg.horizons_ns) {
+                            *slot = event
+                                .ts
+                                .checked_add(*horizon)
+                                .and_then(|t| horizon_mid(book, t, inst.tick_size));
+                        }
+                        let fill = FillTerms {
+                            qty: *qty,
+                            sign,
+                            price,
+                        };
+                        state
+                            .spreads
+                            .all
+                            .fill(fill, mid, &future, arrival, decision);
+                        (if *maker {
+                            &mut state.spreads.maker
+                        } else {
+                            &mut state.spreads.taker
+                        })
+                        .fill(fill, mid, &future, arrival, decision);
+                    }
+                    state.qty.add(*qty);
+                    state.notional.add(*qty * price);
+                    state.fees.add(*fee);
+                    state.first.get_or_insert(event.ts);
+                    if state.resting.is_some_and(|t| event.ts >= t) {
+                        state.first_rest.get_or_insert(event.ts);
+                    }
+                    if *leaves_qty <= 0.0 {
+                        state.complete.get_or_insert(event.ts);
+                    }
+                    for c in &mut state.cancels {
+                        if event.ts >= c.sent && c.processed.is_none_or(|t| event.ts <= t) {
+                            c.exposure.add(*qty);
+                        }
+                    }
+                }
+                FlightBody::ExchResponse {
+                    status,
+                    request_rejected,
+                    ..
+                } => {
+                    if let Some(c) = state.cancels.iter_mut().find(|c| {
+                        c.processed.is_none()
+                            && event.ts >= c.sent
+                            && c.scheduled.is_some_and(|t| event.ts >= t)
+                            && (*request_rejected || *status == OrderStatus::Canceled)
+                    }) {
+                        c.processed = Some(event.ts);
+                        c.late = *request_rejected;
+                    }
+                }
+                FlightBody::LocalResponse {
+                    exch_ts,
+                    request_rejected,
+                    ..
+                } => {
+                    if let Some(c) = state.cancels.iter_mut().find(|c| {
+                        c.ack.is_none() && c.processed == Some(*exch_ts) && event.ts >= c.sent
+                    }) {
+                        c.ack = Some(event.ts);
+                        c.late |= *request_rejected;
+                    }
+                }
+                _ => {}
+            }
+        }
         let eligibility = directional.get(&order.order_id);
         let pd = eligibility.and_then(|price| price.or(state.decision));
         let sf = shortfall(&state, pd, eligibility.is_some(), book, end, inst);
@@ -1405,25 +1497,27 @@ fn compute_streaming_parts(
                 }
             }
         }
-        on_order(OrderExecution {
-            order_id: order.order_id,
-            spreads: state.spreads.report(cfg, inst.tick_size, None),
-            shortfall: sf,
-            opportunities,
-            time_to_first_fill: duration(
-                state.arrival,
-                state.first,
-                "first fill right-censored or no exchange arrival",
-            ),
-            time_to_complete_fill: duration(
-                state.arrival,
-                state.complete,
-                "complete fill right-censored or no exchange arrival",
-            ),
-            first_fill_censored: ff.is_some_and(|o| !o.event),
-            complete_fill_censored: cf.is_some_and(|o| !o.event),
-            cancels,
-        });
+        if let Some(on_order) = &mut on_order {
+            on_order(OrderExecution {
+                order_id: order.order_id,
+                spreads: state.spreads.report(cfg, inst.tick_size, None),
+                shortfall: sf,
+                opportunities,
+                time_to_first_fill: duration(
+                    state.arrival,
+                    state.first,
+                    "first fill right-censored or no exchange arrival",
+                ),
+                time_to_complete_fill: duration(
+                    state.arrival,
+                    state.complete,
+                    "complete fill right-censored or no exchange arrival",
+                ),
+                first_fill_censored: ff.is_some_and(|o| !o.event),
+                complete_fill_censored: cf.is_some_and(|o| !o.event),
+                cancels,
+            });
+        }
     }
     let n = orders.len() as u64;
     let times = |mut obs: Vec<SurvivalObservation>, values: Vec<f64>| {

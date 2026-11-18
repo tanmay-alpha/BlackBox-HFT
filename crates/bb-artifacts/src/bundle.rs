@@ -224,9 +224,36 @@ impl VerifiedBundle {
     }
 }
 
+/// An analytics report as the trailer stores it: the compact serialization of the report as a
+/// `serde_json::Value` (object keys sorted), exactly the text [`BundleTrailer::analytics`] reads
+/// back. Built once, so a bundle write holds the report as text instead of a `Value` tree
+/// (several times larger than its text) and never copies it.
+pub struct TrailerAnalytics(Box<serde_json::value::RawValue>);
+impl TrailerAnalytics {
+    pub fn from_json(json: &str) -> Result<Self, ArtifactError> {
+        let value: serde_json::Value = serde_json::from_str(json)?;
+        Ok(Self(serde_json::value::to_raw_value(&value)?))
+    }
+}
+
+/// [`BundleTrailer`] as written: the same fields in the same order, borrowed, with the analytics
+/// report as its stored text.
+#[derive(Serialize)]
+struct TrailerOut<'a> {
+    manifest: &'a RunManifest,
+    metrics: &'a Metrics,
+    engine_check: &'a EngineStateCheck,
+    counts: &'a BundleCounts,
+    result_sha256: &'a str,
+    summary_sha256: &'a str,
+    page_index: IndexEncoding<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    analytics: Option<&'a serde_json::value::RawValue>,
+}
+
 pub struct BundleWriter {
     limits: BundleLimits,
-    analytics: Option<serde_json::Value>,
+    analytics: Option<TrailerAnalytics>,
 }
 impl BundleWriter {
     pub fn new(limits: BundleLimits) -> Result<Self, ArtifactError> {
@@ -238,7 +265,7 @@ impl BundleWriter {
     }
 
     /// Embeds an analytics report in the trailer of every bundle this writer produces.
-    pub fn with_analytics(mut self, analytics: serde_json::Value) -> Self {
+    pub fn with_analytics(mut self, analytics: TrailerAnalytics) -> Self {
         self.analytics = Some(analytics);
         self
     }
@@ -342,15 +369,15 @@ impl BundleWriter {
             ));
         }
         let summary_sha256 = summary_sha256(metrics, engine_check, &counts)?;
-        let trailer_value = BundleTrailer {
-            manifest: manifest.clone(),
-            metrics: metrics.clone(),
-            engine_check: engine_check.clone(),
-            counts: counts.clone(),
-            result_sha256: result_sha256.clone(),
-            summary_sha256: summary_sha256.clone(),
-            page_index: pages.clone(),
-            analytics: self.analytics.clone(),
+        let trailer_value = TrailerOut {
+            manifest,
+            metrics,
+            engine_check,
+            counts: &counts,
+            result_sha256: &result_sha256,
+            summary_sha256: &summary_sha256,
+            page_index: IndexEncoding { pages: &pages },
+            analytics: self.analytics.as_ref().map(|a| &*a.0),
         };
         // science_hash seeks through the file; append, never overwrite a page.
         file.as_file_mut().seek(SeekFrom::End(0))?;

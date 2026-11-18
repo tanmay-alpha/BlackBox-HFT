@@ -274,6 +274,79 @@ const RESULTS: &[Golden] = &[
     },
 ];
 
+/// SHA-256 of each entry's run analytics as stored in the bundle (`bb_app::analytics::encode` of
+/// `run_analytics`), keyed by entry name. The analytics pass calls no platform math function: the
+/// glibc and WinLibs builds compute identical bytes, also for the entries whose result hashes
+/// differ. Pinned from the code before the bounded-memory execution pass (one order's
+/// accumulators live at a time), which must reproduce the report byte for byte. A deliberate
+/// change to the report (`bb_analytics::ANALYTICS_VERSION`) updates these pins.
+const ANALYTICS_SHA256: &[(&str, &str)] = &[
+    (
+        "maker_baseline",
+        "8f8cb1e232194d54323d4cd120895d77ae92ea6403639a2318463a2027bfae39",
+    ),
+    (
+        "maker_baseline partial_fill",
+        "a8f6b73e713fdee0620f084ef9d60ee4a0d0472a7761895f89aac300c976c6c8",
+    ),
+    (
+        "maker_slow",
+        "76e5ffbdd4b44a411e1ec4eb010adbbe6118c51620880f3042b465a2ace1bb28",
+    ),
+    (
+        "maker_conservative_queue",
+        "d705ab425ce2041faa7be806b2b4de3db3b74b0dcd3ff79f1f37ca1365ff9612",
+    ),
+    (
+        "maker_rebate",
+        "c55e1a4a70a23edd6ef605ac04bc2cbafe8d10341e7208a0619d334352a00ead",
+    ),
+    (
+        "imbalance_taker",
+        "2bd04dca66ffb2aed804d4ad4307607d28094bea89372564a56d90607a85b995",
+    ),
+    (
+        "forensics_probe",
+        "796318894d51f9b91384a8e3fa48cd7cbcf5d9567e8bf296e008333e9aec8729",
+    ),
+    (
+        "avellaneda_stoikov",
+        "ccd2c0972451ec0506ed4fcbc2738658a73bcf82cf8fc6755418b1a6dae3751c",
+    ),
+    (
+        "jittered_latency",
+        "8e624a5358c068de12075654150f7d6e6e72ed65c08fde96299c7c64a6f2f8d1",
+    ),
+    (
+        "feed_offset",
+        "22ad0c6d704a900728620d4fce4703bf02076effa7c9e059f9605766453f7c22",
+    ),
+    (
+        "drawdown_halt",
+        "8d7ee9f503512d653695d278dd4ffc2c0ea4e5ee152954c8123dcea7bc1482d7",
+    ),
+    (
+        "log_normal_asymmetric",
+        "894cc593f41a3af6af0b0164d5afad7c6e4fbdbc2af505d0df47099a356358ec",
+    ),
+    (
+        "heavy_tail_think_time",
+        "08d3fe37edd144f45b631e79157869af2b29f2228c4eb9759f269129e6043b00",
+    ),
+    (
+        "latency_lognormal",
+        "f8c056bc84ec26a06763d399e1a6358594d479fec3d0c783dd00828974136b62",
+    ),
+    (
+        "latency_heavy_tail",
+        "cadb94a1709ae6f6b2284dc2dec20a0ee4bc5cfb906c8e368252e2c05a1ecc9b",
+    ),
+    (
+        "glft_baseline",
+        "a66e038297c96526c7881d978fd5dafdb4f2b72d7eb936f75255297410ce7e3b",
+    ),
+];
+
 /// GitHub's `windows-latest` runner (rustup's bundled MinGW). Its fingerprint differs from glibc's
 /// on some probe inputs, but CI run 43567594954 computed every golden entry identical to the
 /// canonical pins, so the canonical pins apply to it.
@@ -358,6 +431,20 @@ fn results_match_the_pinned_hashes() {
     let mut computed = Vec::new();
     for g in RESULTS {
         let result = run(&ctx, &manifest, g);
+        let analytics = bb_app::analytics::encode(
+            &bb_app::analytics::run_analytics(&result, &ctx)
+                .unwrap_or_else(|e| panic!("{}: run analytics: {e}", g.name)),
+        )
+        .unwrap_or_else(|e| panic!("{}: encode analytics: {e}", g.name));
+        let analytics = hex::encode(analytics.sha256);
+        match ANALYTICS_SHA256.iter().find(|(name, _)| *name == g.name) {
+            Some((_, pinned)) if analytics == *pinned => {}
+            Some((_, pinned)) => mismatches.push(format!(
+                "{} analytics: got \"{analytics}\", pinned \"{pinned}\"",
+                g.name
+            )),
+            None => mismatches.push(format!("{} analytics: no pin yet", g.name)),
+        }
         if let Some(kind) = g.must_record {
             assert!(
                 result.tape.iter().any(|e| e.body.type_name() == kind),
@@ -379,7 +466,7 @@ fn results_match_the_pinned_hashes() {
             )),
         }
         computed.push(format!(
-            "  {:<28} portable={:<5} \"{got}\"",
+            "  {:<28} portable={:<5} \"{got}\" analytics \"{analytics}\"",
             g.name, g.portable
         ));
     }
@@ -387,7 +474,8 @@ fn results_match_the_pinned_hashes() {
     assert!(
         mismatches.is_empty(),
         "results differ from the pinned golden hashes. If the change is intended, bump \
-         bb_core::SIMULATION_REVISION and PINNED_REVISION and update:\n{}\n\n\
+         bb_core::SIMULATION_REVISION and PINNED_REVISION and update (analytics pins change only \
+         with the analytics report, ANALYTICS_SHA256):\n{}\n\n\
          ===== computed golden results: platform class {class}, libm fingerprint {fingerprint} \
          =====\n{}\n===== end of computed golden results =====",
         mismatches.join("\n"),

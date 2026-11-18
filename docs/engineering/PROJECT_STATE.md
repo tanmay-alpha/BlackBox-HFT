@@ -4,6 +4,21 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
+**Phases 6 and 7 released (2026-11-19).** `main` = `a1d128c` (PR #3). Image
+`ghcr.io/tanmay-alpha/blackbox-hft@sha256:ef148a3b5f4b6a17e54220d041cd323be92d62a701a9eb3b0e3b8f2f8e9cefa0`, Render
+deploy `dep-dbuoh75ckfvc73cqrra0`, migrations through 0011, `/status` `git_sha=a1d128c…`, worker idle. Smoke 8/8;
+anonymous production suite 15 passed, 1 skipped (keyed). Phase 6: compare-set cold `503 busy` and false "missing
+comparison" fixed; demo snapshot freshness ≤ 15 min; SEC-11 §6.3, SEC-17, SEC-18, SEC-25 closed; credential guard;
+read-side memory 697 → 246 MiB. Phase 7: `/research`, `/studies` explorer, `/queue-lab`, Market Data Workbench L3/L2
+view, evidence-structured reports, ITCH three-way validation (local NASDAQ prefixes, 100% agreement), queue shadow
+experiment. Independent reviews by GPT-6.1 Sol (backend and science, both REJECT before fixes; all must-fix items
+fixed and merged). Open: AT-5/SEC-6 hosted job memory, SEC-10 run-detail DB wake. Record:
+[../rebuild/PHASE67_RELEASE.md](../rebuild/PHASE67_RELEASE.md). Tracker:
+[PHASE6_TRACKER.md](PHASE6_TRACKER.md). Rollback: redeploy `sha256:2c14ea32…4ec4` (`cdde05e`); the migrations are
+compatible with it.
+
+Previous release:
+
 **Phases 3.1, 3.2, 4 and 5 released (2026-11-16 21:44 UTC), follow-up `cdde05e` (2026-11-17 04:15 UTC).** `main` =
 `cdde05e` (mobile LCP fix `a05f66a`, CI web job on Node 24). Image
 `ghcr.io/tanmay-alpha/blackbox-hft@sha256:2c14ea32555019eeeea234e090a1b7318fd9d33c12d44142e61f13ca7d1b4ec4`, Render

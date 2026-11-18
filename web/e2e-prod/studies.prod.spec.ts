@@ -66,7 +66,10 @@ test('exec-validation: verified hash, matrix values from the artefact, a stored 
   for (const [qi, q] of queues.entries()) {
     for (const [li, l] of latencies.entries()) {
       const expected = point(surface.rows.find((r) => r.queue_model === q && r.latency === l)?.metrics.net_pnl);
-      await expect(matrix.locator('tbody tr').nth(qi).locator('td').nth(li), `${q} x ${l}`).toContainText(expected);
+      // The cell explorer renders the mean and its interval as separate elements, so the cell's
+      // text has no space between them: match the same numbers with optional whitespace.
+      const pattern = new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s*'));
+      await expect(matrix.locator('tbody tr').nth(qi).locator('td').nth(li), `${q} x ${l}`).toContainText(pattern);
     }
   }
 

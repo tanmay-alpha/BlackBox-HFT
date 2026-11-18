@@ -4,15 +4,19 @@ Single current-state tracker for Phase 6 (reliability, security, research integr
 validation, unified research studio). Statuses: Open, Investigating, Confirmed, Fixed locally, Tested, Deployed,
 Verified, Accepted risk, Blocked. "Verified" means checked on the deployed production version.
 
-Baseline (2026-11-17/18): `main` = `af3a284` (docs only after `cdde05e`). Production API `git_sha=cdde05e…`, image
-`sha256:2c14ea32…4ec4`, Render deploy `dep-dbtt9crm8hqs73dgc96g`. No Phase 6 commit is on `main` or deployed yet.
+Baseline (2026-11-17/18): `main` = `af3a284`, production `cdde05e`.
 
-Branches: `p6/sec`, `p6/audit`, `p6/mkt` (finished) are merged into the integration branch `p6/int`
-(`D:/bbwt/p6-int`). `p6/rel` (reliability) and the uncommitted `phase6` worktree (study viewer, startup/perf) are
-still in progress. Phase 7 branches `p7/queue`, `p7/data`, `p7/mem`, `p7/report` start from `p6/int`.
+**Released 2026-11-19:** `main` = `a1d128c` (PR #3), image `sha256:ef148a3b…cefa0`, Render deploy
+`dep-dbuoh75ckfvc73cqrra0`, migrations 0010–0011 applied ([../rebuild/PHASE67_RELEASE.md](../rebuild/PHASE67_RELEASE.md)).
+Every row marked Tested below that is in that release is **Deployed**; rows checked by the production browser suite
+(compare set A1/A2, workbench D1–D4, studies E1–E4, G1–G3) and by direct production page checks (`/research`,
+`/queue-lab`) are **Verified**. Not in the release: `p7/amem` (analytics memory) and `p7/cancel` (post-simulation
+cancellation, `af7543e`).
 
-Model availability: GPT-6.1 Sol returned `usage_limit_reached` on every spawn (2026-11-17 and 2026-11-18); all work
-ran on the default agent model (Claude Opus 5.5). No review is attributed to Sol.
+Model availability: GPT-6.1 Sol returned `usage_limit_reached` on 2026-11-17 and early 2026-11-18 and was used from
+2026-11-18 15:20 IST for the two independent reviews (backend, science), the enum-CHECK audit, the backend review
+fixes and the queue experiment fixes; it hit its limit again before the analytics-memory and cancellation tasks,
+which ran on Claude Opus 5.5. Everything else ran on Claude Opus 5.5.
 
 ## Phase 6 entry gate (Phase 7 §2)
 
@@ -25,7 +29,7 @@ ran on the default agent model (Claude Opus 5.5). No review is attributed to Sol
 | B2 | P0 | SEC-17 worker fault matrix | Tested | `630ab6f`; `worker_faults` | deploy |
 | B3 | P0 | SEC-25 audit coverage | Tested | `9004462`; `audit_matrix` | deploy |
 | B4 | P0 | SEC-11 §6.3 metered store, anonymous half share | Tested | `9004462` + migration 0010; `artifact_metering` | deploy (migration runs on start) |
-| B5 | P0 | AT-5/SEC-6 Linux full-process peak < 300 MB | Confirmed (partly fixed) | Linux fixture on the real hosted image, 512 MB, fake Blob, TLS Postgres (`scripts/research/hosted-memory.sh`). 32 anonymous heavy readers: 697 → 248 MiB after skipping the trailer analytics parse and `MALLOC_ARENA_MAX=2` (`p7/mem`). Back-to-back jobs still grow RSS 248 → 482 MiB; OOM-killed at job 55/57 (`HOSTED_MEMORY.md`). Production carries the read-side exposure until deploy | JobMem: release memory between jobs, re-measure |
+| B5 | P0 | AT-5/SEC-6 Linux full-process peak < 300 MB | Open (partly fixed) | Linux fixture, 512 MB: concurrent anonymous reads 697 → 245 MiB; no ratchet between jobs (`malloc_trim`); one order's analytics state at a time, single report serialisation, streamed result hash (`p7/amem`); every phase completes without OOM; largest job 339.9 MiB, job + reads 435.0 MiB, cancellation 375.6 MiB, idle 217.3 MiB; outputs byte-identical (`HOSTED_MEMORY.md`) | worker out of process or streamed `RunResult`; paged keyed reads; `/analytics` from stored text |
 | B8 | P0 | GLFT preset submission returns 500 (new) | Tested | Migration `0011_glft_strategy_kind.sql` widens `experiment_configs_strategy_kind_check` with `glft` (`c0a2cf4`); `strategy_kinds` test submits every `StrategyKind` preset through the API to completion. Sol audit of every enum CHECK in 0001–0011 against the writers: GLFT the only mismatch. 539 Rust pass | deploy (migration runs on start) |
 | B6 | P0 | Production credential isolation | Tested | `630ab6f`, `99a0351`; local profile refuses cloud credentials; `scripts/ops/prod-run.sh`; `docs/OPERATOR_PRODUCTION.md`; DEPLOYMENT §5/§8 updated on `p6/int` | deploy |
 | B7 | P1 | SEC-10 anonymous detail reads wake Postgres | Accepted risk (partial fix) | Demo comparison details now served from the snapshot without DB (`f1a203e`); run details and unknown ids still read Postgres | artefact snapshot in `artifacts.rs` |
