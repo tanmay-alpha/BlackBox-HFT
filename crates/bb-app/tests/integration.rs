@@ -25,7 +25,7 @@ use bb_app::{
     pipeline, presets,
     server::{self, AppState},
     store::{self, FsRunStore, RunStore},
-    v1::runs::{TimelineQuery as V1TimelineQuery, timeline_page},
+    v1::runs::{TimelineQuery as V1TimelineQuery, timeline_context_check, timeline_page},
 };
 use bb_core::{
     CONTRACT_VERSION, ENGINE_NAME, ENGINE_VERSION, Side,
@@ -1554,6 +1554,91 @@ fn v1_timeline_cursor_is_bound_to_the_window() {
         assert_eq!(err.code, "invalid_request");
         assert_eq!(err.details["field"], "cursor");
     }
+}
+
+/// The handler answers a cold first page from the run's fills and equity alone when
+/// `timeline_context_check` refuses it: that must be exactly the error `timeline_page` returns
+/// over the whole run, and a query it lets through must not fail in the page for any reason the
+/// fills and equity decide.
+#[test]
+fn v1_timeline_context_check_refuses_exactly_what_the_page_refuses() {
+    let (run, t0, t1) = paging_fixture();
+    let (t0, t1) = (*t0, *t1);
+    let fills_and_equity = RunResult {
+        orders: Vec::new(),
+        tape: Vec::new(),
+        ..run.clone()
+    };
+    let first = v1_page(run, &v1_query(t0, t1, Some(100)), NO_CAP).unwrap();
+    let cursor = first["next_cursor"].as_str().unwrap().to_string();
+    let queries = [
+        v1_query(t0, t1, None),
+        v1_query(t0, t1, Some(0)),
+        V1TimelineQuery::default(),
+        v1_query(t1, t0, None),
+        V1TimelineQuery {
+            t0_ns: Some("soon".into()),
+            ..V1TimelineQuery::default()
+        },
+        V1TimelineQuery {
+            cursor: Some(cursor.clone()),
+            ..v1_query(t0, t1, Some(0))
+        },
+        V1TimelineQuery {
+            cursor: Some(cursor),
+            ..v1_query(t0, t1, None)
+        },
+    ];
+    // The bytes `timeline_page` counts for each context list: every item plus a separator, i.e.
+    // the serialized array without one bracket.
+    let whole = v1_page(run, &v1_query(t0, t1, Some(0)), NO_CAP).unwrap();
+    let counted = |key: &str| match whole[key].as_array().unwrap().len() {
+        0 => 0,
+        _ => serde_json::to_vec(&whole[key]).unwrap().len() - 1,
+    };
+    let fills_equity = counted("fills") + counted("equity");
+    let orders = counted("orders");
+    assert!(fills_equity > 0 && orders > 0);
+    let reserve = bb_app::v1::respond::ENVELOPE_RESERVE;
+    let caps = [
+        0,
+        reserve,
+        reserve + fills_equity - 1,
+        reserve + fills_equity,
+        reserve + fills_equity + orders - 1,
+        reserve + fills_equity + orders,
+        NO_CAP,
+    ];
+    let (mut refused_early, mut refused_by_orders, mut answered) = (0, 0, 0);
+    for (n, q) in queries.iter().enumerate() {
+        for cap in caps {
+            let page = timeline_page(run, "run", q, cap);
+            match timeline_context_check(&fills_and_equity, "run", q, cap) {
+                Err(check) => {
+                    let page = page.err().expect("the page is refused too");
+                    assert_eq!(
+                        (check.status, check.code, &check.message, &check.details),
+                        (page.status, page.code, &page.message, &page.details)
+                    );
+                    refused_early += 1;
+                }
+                Ok(()) => match page {
+                    Ok(_) => answered += 1,
+                    // Cursor pages carry no context and are never checked in advance (an
+                    // event alone may still exceed a tiny cap there).
+                    Err(_) if q.cursor.is_some() => {}
+                    Err(page) => {
+                        assert_eq!(
+                            page.details["reason"], "window_too_large",
+                            "query {n}, cap {cap}"
+                        );
+                        refused_by_orders += 1;
+                    }
+                },
+            }
+        }
+    }
+    assert!(refused_early > 0 && refused_by_orders > 0 && answered > 0);
 }
 
 /// The serialized size of the first page's fills, equity and orders.

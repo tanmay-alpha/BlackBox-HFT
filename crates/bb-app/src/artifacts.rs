@@ -856,14 +856,98 @@ impl OpenRun {
         .await
     }
 
-    /// The complete run (for comparisons, timelines, reports and analytics). Bounded by the
-    /// profile's output limit, and only used behind the heavy-read concurrency limit.
+    /// The complete run (for reports and analytics). Bounded by the profile's output limit, and
+    /// only used behind the heavy-read concurrency limit.
     pub async fn full(&self) -> Result<RunResult, ApiError> {
-        Ok(self.full_sized().await?.0)
+        Ok(self.decode(&ALL_SECTIONS).await?.0)
     }
 
-    /// [`Self::full`] and its decoded section bytes (the in-memory size estimate).
-    async fn full_sized(&self) -> Result<(RunResult, u64), ApiError> {
+    /// The parsed run, when the in-memory cache holds it.
+    pub fn cached(&self) -> Option<Arc<RunResult>> {
+        self.cache
+            .parsed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&self.trust.sha256)
+    }
+
+    /// What [`bb_forensics::compare_runs`] reads of this run: manifest, metrics, orders and tape.
+    /// The cached parsed run when there is one; otherwise only the order and tape pages are
+    /// decoded, and fills and equity stay empty (the comparison never reads them, so its result
+    /// is the same as for [`Self::full`]). Such a partial run is not cached.
+    pub async fn comparison_run(&self) -> Result<Arc<RunResult>, ApiError> {
+        if let Some(run) = self.cached() {
+            return Ok(run);
+        }
+        Ok(Arc::new(
+            self.decode(&[Section::Orders, Section::Tape]).await?.0,
+        ))
+    }
+
+    /// The run with only its fills and equity samples decoded (orders and tape empty), for a
+    /// check that reads nothing else; [`Self::full_shared_from`] completes it.
+    pub async fn fills_and_equity(&self) -> Result<FillsAndEquity, ApiError> {
+        let (run, decoded) = self.decode(&[Section::Fills, Section::Equity]).await?;
+        Ok(FillsAndEquity { run, decoded })
+    }
+
+    /// [`Self::full`], shared through a small in-memory cache keyed by the bundle digest, so
+    /// paging over one run (timeline cursor pages) decodes it once rather than per page.
+    pub async fn full_shared(&self) -> Result<Arc<RunResult>, ApiError> {
+        self.shared(None).await
+    }
+
+    /// [`Self::full_shared`] for a run whose fills and equity are already decoded: a miss
+    /// decodes only the order and tape pages. The cached run and its decoded size are the same.
+    pub async fn full_shared_from(&self, part: FillsAndEquity) -> Result<Arc<RunResult>, ApiError> {
+        self.shared(Some(part)).await
+    }
+
+    async fn shared(&self, part: Option<FillsAndEquity>) -> Result<Arc<RunResult>, ApiError> {
+        if let Some(run) = self.cached() {
+            return Ok(run);
+        }
+        let sha = &self.trust.sha256;
+        let cache = &self.cache;
+        let load = cache
+            .loading
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(sha.clone())
+            .or_default()
+            .clone();
+        let result = load
+            .get_or_try_init(|| async {
+                let (run, bytes) = match part {
+                    Some(FillsAndEquity { mut run, decoded }) => {
+                        let (rest, rest_decoded) =
+                            self.decode(&[Section::Orders, Section::Tape]).await?;
+                        run.orders = rest.orders;
+                        run.tape = rest.tape;
+                        (run, decoded + rest_decoded)
+                    }
+                    None => self.decode(&ALL_SECTIONS).await?,
+                };
+                let run = Arc::new(run);
+                cache
+                    .parsed
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(sha, run.clone(), bytes);
+                Ok::<_, ApiError>((run, bytes))
+            })
+            .await
+            .map(|(run, _)| run.clone());
+        let mut loading = cache.loading.lock().unwrap_or_else(PoisonError::into_inner);
+        if loading.get(sha).is_some_and(|l| Arc::ptr_eq(l, &load)) {
+            loading.remove(sha);
+        }
+        result
+    }
+
+    /// Decodes the pages of the `wanted` sections, in page-index order; the other sections stay
+    /// empty. Returns the run and its decoded section bytes (the in-memory size estimate).
+    async fn decode(&self, wanted: &'static [Section]) -> Result<(RunResult, u64), ApiError> {
         let sections: Vec<Section> = self.trust.page_index.iter().map(|p| p.section).collect();
         self.read(move |reader, path| {
             let mut orders: Vec<OrderRecord> = Vec::new();
@@ -871,8 +955,10 @@ impl OpenRun {
             let mut equity: Vec<EquitySample> = Vec::new();
             let mut tape: Vec<FlightEvent> = Vec::new();
             let mut decoded: u64 = 0;
-            let all: Vec<usize> = (0..sections.len()).collect();
-            let trailer = reader.trailer_and_pages(path, &all, |page_no, bytes| {
+            let pages: Vec<usize> = (0..sections.len())
+                .filter(|&i| wanted.contains(&sections[i]))
+                .collect();
+            let trailer = reader.trailer_and_pages(path, &pages, |page_no, bytes| {
                 decoded += bytes.len() as u64;
                 match sections[page_no] {
                     Section::Orders => orders.extend(parse_rows::<OrderRecord>(&bytes)?),
@@ -899,49 +985,29 @@ impl OpenRun {
         .await
     }
 
-    /// [`Self::full`], shared through a small in-memory cache keyed by the bundle digest, so
-    /// paging over one run (timeline cursor pages) decodes it once rather than per page.
-    pub async fn full_shared(&self) -> Result<Arc<RunResult>, ApiError> {
-        let sha = &self.trust.sha256;
-        let cache = &self.cache;
-        if let Some(run) = cache
-            .parsed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(sha)
-        {
-            return Ok(run);
-        }
-        let load = cache
-            .loading
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(sha.clone())
-            .or_default()
-            .clone();
-        let result = load
-            .get_or_try_init(|| async {
-                let (run, bytes) = self.full_sized().await?;
-                let run = Arc::new(run);
-                cache
-                    .parsed
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(sha, run.clone(), bytes);
-                Ok::<_, ApiError>((run, bytes))
-            })
-            .await
-            .map(|(run, _)| run.clone());
-        let mut loading = cache.loading.lock().unwrap_or_else(PoisonError::into_inner);
-        if loading.get(sha).is_some_and(|l| Arc::ptr_eq(l, &load)) {
-            loading.remove(sha);
-        }
-        result
-    }
-
     /// Path of the verified cached bundle (export).
     pub fn cached_path(&self) -> &Path {
         &self.path
+    }
+}
+
+const ALL_SECTIONS: [Section; 4] = [
+    Section::Orders,
+    Section::Fills,
+    Section::Equity,
+    Section::Tape,
+];
+
+/// A run with only its fills and equity samples decoded ([`OpenRun::fills_and_equity`]).
+pub struct FillsAndEquity {
+    run: RunResult,
+    decoded: u64,
+}
+
+impl FillsAndEquity {
+    /// Manifest, metrics, fills and equity samples; orders and tape are empty.
+    pub fn run(&self) -> &RunResult {
+        &self.run
     }
 }
 

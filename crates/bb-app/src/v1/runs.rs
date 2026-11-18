@@ -965,8 +965,19 @@ pub async fn timeline(
 ) -> Result<Response, ApiError> {
     let _permit = heavy(&state).await?;
     let run = run_data(&state, &caller, &run_id, q.platform.as_deref()).await?;
-    let full = run.full_shared().await?;
-    let page = timeline_page(&full, &run.view.short_id, &q, byte_cap(&state, &caller))?;
+    let cap = byte_cap(&state, &caller);
+    let full = match run.cached() {
+        Some(full) => full,
+        // A first page that its fills and equity alone already refuse is answered without
+        // decoding (and caching) the orders and tape; otherwise those two are decoded once.
+        None if q.cursor.is_none() => {
+            let part = run.fills_and_equity().await?;
+            timeline_context_check(part.run(), &run.view.short_id, &q, cap)?;
+            run.full_shared_from(part).await?
+        }
+        None => run.full_shared().await?,
+    };
+    let page = timeline_page(&full, &run.view.short_id, &q, cap)?;
     Ok(conditional(
         &headers,
         json_bytes(StatusCode::OK, serde_json::to_vec(&page)?, Cache::Immutable),
@@ -984,13 +995,16 @@ struct TimelineCursor {
     total: u64,
 }
 
-/// One page of [`timeline`] over a loaded run, bounded to `cap` response bytes.
-pub fn timeline_page(
-    run: &RunResult,
-    run_id: &str,
-    q: &TimelineQuery,
-    cap: usize,
-) -> Result<RunTimeline, ApiError> {
+/// What a timeline query asks for: its window bounds, cursor and page size.
+struct TimelineRequest {
+    t0: Option<i64>,
+    t1: Option<i64>,
+    filters: String,
+    cursor: Option<TimelineCursor>,
+    limit: usize,
+}
+
+fn timeline_request(run_id: &str, q: &TimelineQuery) -> Result<TimelineRequest, ApiError> {
     let t0 = ns_param("t0_ns", q.t0_ns.as_deref())?;
     let t1 = ns_param("t1_ns", q.t1_ns.as_deref())?;
     let filters = format!("timeline|{run_id}|{t0:?}|{t1:?}|{:?}", q.platform);
@@ -1010,6 +1024,56 @@ pub fn timeline_page(
         (Some(n), _) => n.clamp(MIN_TIMELINE_PAGE, 50_000) as usize,
         (None, _) => 5_000,
     };
+    Ok(TimelineRequest {
+        t0,
+        t1,
+        filters,
+        cursor,
+        limit,
+    })
+}
+
+/// The error [`timeline_page`] returns for this query when it is one that the run's fills and
+/// equity samples decide alone: an invalid query, or a first page whose fills and equity
+/// already exceed `cap` (the window, too, depends on the equity samples only). `run` needs only
+/// its fills and equity; `Ok` means the whole run is needed to answer.
+pub fn timeline_context_check(
+    run: &RunResult,
+    run_id: &str,
+    q: &TimelineQuery,
+    cap: usize,
+) -> Result<(), ApiError> {
+    let request = timeline_request(run_id, q)?;
+    if request.cursor.is_some() {
+        return Ok(());
+    }
+    let w = crate::server::timeline_window(run, request.t0, request.t1)?;
+    let mut context_bytes = 0;
+    let context_limit = cap.saturating_sub(ENVELOPE_RESERVE);
+    let mut fit = |size| context_fit(size, &mut context_bytes, context_limit, cap);
+    for fill in crate::server::timeline_fills(run, w) {
+        fit(wire_item(fill)?.1)?;
+    }
+    for sample in crate::server::timeline_equity(run, w) {
+        fit(wire_item(sample)?.1)?;
+    }
+    Ok(())
+}
+
+/// One page of [`timeline`] over a loaded run, bounded to `cap` response bytes.
+pub fn timeline_page(
+    run: &RunResult,
+    run_id: &str,
+    q: &TimelineQuery,
+    cap: usize,
+) -> Result<RunTimeline, ApiError> {
+    let TimelineRequest {
+        t0,
+        t1,
+        filters,
+        cursor,
+        limit,
+    } = timeline_request(run_id, q)?;
     let from_seq = cursor.as_ref().map(|c| c.row);
     let w = crate::server::timeline_window(run, t0, t1)?;
     let events_total = match &cursor {
@@ -1103,19 +1167,26 @@ fn wire_items<'a, T: Serialize + 'a>(
     let mut values = Vec::new();
     for item in items {
         let (v, size) = wire_item(item)?;
-        if size > limit.saturating_sub(*bytes) {
-            return Err(ApiError::invalid_request(format!(
-                "the fills, equity and orders of this window exceed the {cap}-byte response \
-                 limit; request a shorter window (t0_ns..t1_ns)"
-            ))
-            .with_details(
-                json!({ "field": "t1_ns", "reason": "window_too_large", "limit_bytes": cap }),
-            ));
-        }
-        *bytes += size;
+        context_fit(size, bytes, limit, cap)?;
         values.push(v);
     }
     Ok(values)
+}
+
+/// Adds one encoded context item of `size` bytes to `bytes`, or refuses the window when it
+/// would pass `limit`.
+fn context_fit(size: usize, bytes: &mut usize, limit: usize, cap: usize) -> Result<(), ApiError> {
+    if size > limit.saturating_sub(*bytes) {
+        return Err(ApiError::invalid_request(format!(
+            "the fills, equity and orders of this window exceed the {cap}-byte response \
+             limit; request a shorter window (t0_ns..t1_ns)"
+        ))
+        .with_details(
+            json!({ "field": "t1_ns", "reason": "window_too_large", "limit_bytes": cap }),
+        ));
+    }
+    *bytes += size;
+    Ok(())
 }
 
 /// The deterministic Markdown research report of a run.

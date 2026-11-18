@@ -356,8 +356,9 @@ class Memory:
             with self.lock:
                 self.samples.append((round(t, 3), s["VmRSS"], s["RssAnon"], cg))
                 if self.phase:
-                    m = self.phase_max.setdefault(self.phase, [0, 0])
-                    m[0] = max(m[0], s["VmRSS"])
+                    m = self.phase_max.setdefault(self.phase, [0, 0, 0.0])
+                    if s["VmRSS"] > m[0]:
+                        m[0], m[2] = s["VmRSS"], t
                     m[1] = max(m[1], cg or 0)
             time.sleep(SAMPLE_S)
 
@@ -367,8 +368,18 @@ def mib(kib):
 
 
 class Phase:
-    def __init__(self, memory, results, name):
-        self.memory, self.results, self.name = memory, results, name
+    """One measured phase. `trace=True` also records every RSS sample of the phase; `mark(name)`
+    records when a driver step ended, so the peak can be placed against the steps."""
+
+    def __init__(self, memory, results, name, trace=False):
+        self.memory, self.results, self.name, self.trace = memory, results, name, trace
+        self.marks = {}
+
+    def now(self):
+        return round(time.monotonic() - self.memory.t0 - self.t_mem, 3)
+
+    def mark(self, name):
+        self.marks[name] = self.now()
 
     def __enter__(self):
         m = self.memory
@@ -376,6 +387,7 @@ class Phase:
         self.start = m.status()
         self.start_cpu = m.cpu_seconds()
         self.t = time.monotonic()
+        self.t_mem = self.t - m.t0
         with m.lock:
             m.phase = self.name
         log(f"phase {self.name}: start RSS {mib(self.start['VmRSS'])} MiB")
@@ -388,7 +400,9 @@ class Phase:
         cpu = m.cpu_seconds()
         with m.lock:
             m.phase = None
-            sampled, cg = m.phase_max.get(self.name, [0, 0])
+            sampled, cg, peak_t = m.phase_max.get(self.name, [0, 0, 0.0])
+            trace = [(round(t - self.t_mem, 3), mib(rss)) for t, rss, _, _ in m.samples
+                     if t >= self.t_mem] if self.trace else None
         record = {
             "seconds": round(time.monotonic() - self.t, 1),
             "start_rss_mib": mib(self.start["VmRSS"]),
@@ -403,6 +417,12 @@ class Phase:
             "cpu_system_seconds": round(cpu[1] - self.start_cpu[1], 3),
             "cpu_total_seconds": round(sum(cpu) - sum(self.start_cpu), 3),
         }
+        if sampled:
+            record["sampled_peak_at_s"] = round(peak_t - self.t_mem, 3)
+        if self.marks:
+            record["marks_s"] = self.marks
+        if trace is not None:
+            record["rss_trace_mib"] = trace
         record.update(m.cgroup_stat())
         record["smaps_rollup_mib"] = m.smaps_rollup()
         record["process_age_s"] = m.process_age_s()
@@ -841,10 +861,11 @@ def job_phases(memory, phases, results, candidates, preset_configs, urls):
     #    completed run whole (timeline, analytics, report, pages); once the job ends, the keyed
     #    client compares the two largest runs (both decoded at once) while the load continues.
     run_a = combined[3]["run_id"] if pinned else (completed[0][3]["run_id"] if completed else None)
-    with Phase(memory, phases, "4_job_plus_concurrent_reads") as p:
+    with Phase(memory, phases, "4_job_plus_concurrent_reads", trace=True) as p:
         load = Load(urls, 3600, 2).start()
         time.sleep(1)
         submitted = submit(job_config(combined_config, combined_candidate, 2), "hosted-memory: largest again")
+        p.mark("job_submitted")
         keyed = {}
 
         def keyed_reads():
@@ -852,11 +873,13 @@ def job_phases(memory, phases, results, candidates, preset_configs, urls):
                          "/tape?limit=5000"):
                 status, _ = request("GET", f"/api/v1/runs/{run_a}{path}", key=KEY)
                 keyed[path or "/"] = status
+                p.mark(f"keyed {path or '/'}")
 
         reader = threading.Thread(target=keyed_reads)
         if run_a:
             reader.start()
         job_b = wait_job(submitted["job"]["id"], {"completed", "failed", "cancelled", "expired"})
+        p.mark("job_finished_seen")
         if run_a:
             reader.join()
         run_b = job_b.get("run_id") if job_b["state"] == "completed" else None
@@ -866,10 +889,12 @@ def job_phases(memory, phases, results, candidates, preset_configs, urls):
             status, body = request("POST", "/api/v1/comparisons", key=KEY,
                                    body={"run_a": run_a, "run_b": run_b, "label": "hosted-memory largest pair"})
             compare["create"] = status
+            p.mark("compare create")
             if status in (200, 201):
                 cid = json.loads(body)["id"]
                 for path in ("", "/pairs?limit=1000", "/report"):
                     compare[path or "/"] = request("GET", f"/api/v1/comparisons/{cid}{path}", key=KEY)[0]
+                    p.mark(f"compare {path or '/'}")
         load.stop.set()
         p.extra = {"load": load.join(), "job_state": job_b["state"], "job_error": job_b.get("error"),
                    "candidate": "/".join(map(str, combined_candidate)),

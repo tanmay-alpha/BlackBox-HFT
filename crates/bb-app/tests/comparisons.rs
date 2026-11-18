@@ -230,12 +230,97 @@ async fn ineligible_pairs_read_no_page_and_every_result_equals_the_full_comparis
         stored(&server, ws, &va, &vc).await,
         full_comparison(&state, &va, &vc).await
     );
+    // A cold aligned comparison decodes only the order and tape pages; fills and equity are
+    // never read, and the stored result still equals the comparison of the full runs.
+    let cold_a = open(&state, &va).await.comparison_run().await.unwrap();
+    let full_a = open(&state, &va).await.full().await.unwrap();
+    assert!(cold_a.fills.is_empty() && cold_a.equity.is_empty());
+    assert!(!full_a.fills.is_empty() && !full_a.equity.is_empty());
+    assert_eq!(
+        (
+            &cold_a.manifest,
+            &cold_a.metrics,
+            &cold_a.orders,
+            &cold_a.tape
+        ),
+        (
+            &full_a.manifest,
+            &full_a.metrics,
+            &full_a.orders,
+            &full_a.tape
+        )
+    );
     let (_, body) = compare(&server, &key, &a, &b).await;
     assert_eq!(body["status"], "aligned", "{body}");
+    let expected = full_comparison(&state, &va, &vb).await;
+    let row = |server: &Server| {
+        let db = server.db.clone();
+        let (a, b) = (va.run.id, vb.run.id);
+        async move {
+            db.find_comparison(ws, a, b, COMPARATOR_VERSION)
+                .await
+                .unwrap()
+                .expect("stored comparison")
+        }
+    };
+    let cold = row(&server).await;
+    assert_eq!(cold.summary, expected);
     assert_eq!(
-        stored(&server, ws, &va, &vb).await,
-        full_comparison(&state, &va, &vb).await
+        serde_json::to_vec(&cold.summary).unwrap(),
+        serde_json::to_vec(&expected).unwrap()
     );
+    assert_eq!(
+        cold.summary_sha256,
+        bb_app::canonical::sha256(&expected).to_vec()
+    );
+    let (status, _, cold_body) = server
+        .get(
+            &format!("/api/v1/comparisons/{}", body["id"].as_str().unwrap()),
+            Some(&key),
+        )
+        .await;
+    assert_eq!(status, 200);
+
+    // Warm: a run the parsed-run cache holds (a timeline read) is shared, not decoded again.
+    let warm_a = open(&state, &va).await.full_shared().await.unwrap();
+    assert!(Arc::ptr_eq(
+        &warm_a,
+        &open(&state, &va).await.comparison_run().await.unwrap()
+    ));
+    let r = server
+        .http
+        .delete(server.url(&format!(
+            "/api/v1/comparisons/{}",
+            body["id"].as_str().unwrap()
+        )))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 204);
+    let (_, body) = compare(&server, &key, &a, &b).await;
+    assert_eq!(body["status"], "aligned", "{body}");
+    let warm = row(&server).await;
+    assert_eq!(warm.summary, expected);
+    assert_eq!(warm.summary_sha256, cold.summary_sha256);
+    let (status, _, warm_body) = server
+        .get(
+            &format!("/api/v1/comparisons/{}", body["id"].as_str().unwrap()),
+            Some(&key),
+        )
+        .await;
+    assert_eq!(status, 200);
+    // Identical response bodies apart from the new row's identity and creation time.
+    let without_identity = |mut v: Value| {
+        for field in ["id", "created_at_ns"] {
+            v.as_object_mut()
+                .unwrap()
+                .remove(field)
+                .expect("resource field");
+        }
+        v
+    };
+    assert_eq!(without_identity(warm_body), without_identity(cold_body));
     server.stop().await;
     tdb.drop_db().await;
 }
