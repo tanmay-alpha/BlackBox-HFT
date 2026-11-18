@@ -13765,17 +13765,17 @@
         "type": "object",
         "description": "One page of everything that happened in a window, for the timeline view.",
         "required": [
-          "run_id",
           "dataset_id",
-          "t0_ns",
-          "t1_ns",
+          "equity",
           "events",
           "events_total",
           "fills",
-          "equity",
           "orders",
+          "run_end_ns",
+          "run_id",
           "run_start_ns",
-          "run_end_ns"
+          "t0_ns",
+          "t1_ns"
         ],
         "properties": {
           "dataset_id": {

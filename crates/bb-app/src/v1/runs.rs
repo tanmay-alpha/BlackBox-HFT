@@ -3,7 +3,7 @@
 //! bundle against the trust root stored in Postgres, every page against its digest. A failure
 //! answers 500 `integrity_failed` and quarantines the run.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
@@ -19,7 +19,7 @@ use bb_core::{
         EngineStateCheck, EquitySample, FillRecord, Metrics, OrderOutcome, OrderRecord, RunResult,
     },
 };
-use bb_db::{RunSort, RunView, Scope};
+use bb_db::{ReadClass, RunArtifact, RunSort, RunView, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::SemaphorePermit;
@@ -28,7 +28,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use super::{
     Shared,
-    auth::Caller,
+    auth::{Caller, read_class},
     error::{ApiError, ErrorEnvelope},
     experiments::{Params, experiment_query},
     model::{BundleRef, RunSummary},
@@ -39,7 +39,7 @@ use super::{
 };
 use crate::{
     analytics::{self, RunAnalytics},
-    artifacts::{OpenRun, open_run, quarantine, verified_trailer},
+    artifacts::{OpenRun, open_run_with_artifact, quarantine, verified_trailer_with_artifact},
     registry::manifest_of,
     wire,
 };
@@ -76,17 +76,42 @@ pub async fn resolve_run(
     identity: &str,
     platform: Option<&str>,
 ) -> Result<RunView, ApiError> {
+    resolve_run_for_read(state, caller, identity, platform)
+        .await
+        .map(|(view, _)| view)
+}
+
+/// Resolve the metadata and its trust row from the same versioned snapshot. Absence falls
+/// through to the database, preserving public visibility and quarantined-run error semantics.
+async fn resolve_run_for_read(
+    state: &Shared,
+    caller: &Caller,
+    identity: &str,
+    platform: Option<&str>,
+) -> Result<(RunView, Option<Arc<RunArtifact>>), ApiError> {
     let identity = identity.to_ascii_lowercase();
     if !valid_identity(&identity) {
         return Err(ApiError::not_found("run"));
     }
     let platform = platform.unwrap_or(&state.cfg.result_platform);
+    if let Some(snapshot) = state.snapshot.for_read(state, caller).await {
+        let mut fingerprint = [0; 32];
+        let full_identity =
+            identity.len() == 64 && hex::decode_to_slice(&identity, &mut fingerprint).is_ok();
+        if let Some(view) = snapshot.runs_by_id.values().find(|view| {
+            view.run.platform == platform
+                && (view.short_id == identity
+                    || (full_identity && view.fingerprint.as_slice() == fingerprint))
+        }) {
+            return Ok((view.clone(), snapshot.artifacts.get(&view.run.id).cloned()));
+        }
+    }
     match state
         .db
         .run_view(caller.workspace.id, &identity, platform)
         .await
     {
-        Ok(view) => Ok(view),
+        Ok(view) => Ok((view, None)),
         Err(bb_db::Error::NotFound) => {
             match state
                 .db
@@ -126,6 +151,16 @@ pub async fn verified_summary(
     view: &RunView,
     include_config: bool,
 ) -> Result<RunSummary, ApiError> {
+    let artifact = snapshot_artifact(state, view).await;
+    verified_summary_with_artifact(state, view, include_config, artifact).await
+}
+
+async fn verified_summary_with_artifact(
+    state: &Shared,
+    view: &RunView,
+    include_config: bool,
+    artifact: Option<Arc<RunArtifact>>,
+) -> Result<RunSummary, ApiError> {
     if !view.summary_intact {
         let expected = hex::encode(&view.run.summary_row_sha256);
         return Err(quarantine(&state.db, &state.metrics, view, "summary", &expected).await);
@@ -148,13 +183,14 @@ pub async fn verified_summary(
     let expected = hex::encode(&view.run.summary_sha256);
     let computed = summary_sha256(&metrics, &engine_check, &counts(view))?;
     if computed != expected {
-        let trailer = verified_trailer(
+        let trailer = verified_trailer_with_artifact(
             &state.db,
             &state.storage,
             &state.cache,
             &state.metrics,
             state.bundle_limits(),
             view,
+            artifact,
         )
         .await?;
         if trailer.metrics != metrics || trailer.engine_check != engine_check {
@@ -179,14 +215,39 @@ pub async fn listed_summary(
     RunSummary::from_view(view, false).map(Some)
 }
 
+/// Only request-scoped anonymous reads may reuse demo trust rows. Background/system work
+/// and keyed callers always re-read Postgres, including calls without an explicit `Caller`.
+async fn snapshot_artifact(state: &Shared, view: &RunView) -> Option<Arc<RunArtifact>> {
+    if read_class() != ReadClass::Anonymous {
+        return None;
+    }
+    state
+        .snapshot
+        .get(state)
+        .await?
+        .artifacts
+        .get(&view.run.id)
+        .cloned()
+}
+
 async fn open(state: &Shared, view: RunView) -> Result<OpenRun, ApiError> {
-    open_run(
+    let artifact = snapshot_artifact(state, &view).await;
+    open_with_artifact(state, view, artifact).await
+}
+
+async fn open_with_artifact(
+    state: &Shared,
+    view: RunView,
+    artifact: Option<Arc<RunArtifact>>,
+) -> Result<OpenRun, ApiError> {
+    open_run_with_artifact(
         &state.db,
         &state.storage,
         &state.cache,
         &state.metrics,
         state.bundle_limits(),
         view,
+        artifact,
     )
     .await
 }
@@ -213,9 +274,9 @@ async fn run_data(
     run_id: &str,
     platform: Option<&str>,
 ) -> Result<OpenRun, ApiError> {
-    let view = resolve_run(state, caller, run_id, platform).await?;
-    verified_summary(state, &view, false).await?;
-    open(state, view).await
+    let (view, artifact) = resolve_run_for_read(state, caller, run_id, platform).await?;
+    verified_summary_with_artifact(state, &view, false, artifact.clone()).await?;
+    open_with_artifact(state, view, artifact).await
 }
 
 fn immutable<T: Serialize>(headers: &HeaderMap, value: &T) -> Result<Response, ApiError> {
@@ -348,10 +409,12 @@ pub async fn get_run(
     Query(q): Query<PlatformQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let view = resolve_run(&state, &caller, &run_id, q.platform.as_deref()).await?;
-    let mut summary = verified_summary(&state, &view, true).await?;
-    verify_bundle(&state, &view).await?;
-    let artifact = state.db.artifact(view.run.id).await?;
+    let (view, artifact) =
+        resolve_run_for_read(&state, &caller, &run_id, q.platform.as_deref()).await?;
+    let mut summary = verified_summary_with_artifact(&state, &view, true, artifact.clone()).await?;
+    let _permit = heavy(&state).await?;
+    let opened = open_with_artifact(&state, view, artifact).await?;
+    let artifact = &opened.artifact;
     summary.bundle = Some(BundleRef {
         format_version: artifact.format_version,
         sha256: hex::encode(&artifact.sha256),
@@ -850,32 +913,34 @@ pub struct TimelineQuery {
 /// One page of everything that happened in a window, for the timeline view.
 #[derive(Serialize, ToSchema)]
 pub struct RunTimeline {
-    pub run_id: String,
+    // Alphabetical wire order matches the former Value serialization, without copying the
+    // already wire-encoded rows into a second Value tree.
     pub dataset_id: String,
-    pub t0_ns: String,
-    pub t1_ns: String,
+    /// Samples in the window plus the last one before `t0_ns`. First page only.
+    #[schema(value_type = Vec<EquitySample>)]
+    pub equity: Vec<Value>,
     /// This page's tape events with `ts` in `[t0_ns, t1_ns]` (either clock), in `seq` order,
     /// continuing after the previous page.
     #[schema(value_type = Vec<FlightEvent>)]
     pub events: Vec<Value>,
     /// Events of the whole window, over all pages.
     pub events_total: u64,
-    /// Pass back as `cursor` for the window's next events; `null` when this page ends the window.
-    pub next_cursor: Option<String>,
-    /// Why this page stopped before the window's last event: `limit` (`max_events`) or `bytes`
-    /// (the response cap). `null` exactly when `next_cursor` is `null`.
-    pub truncated_by: Option<TruncatedBy>,
     /// Fills with exchange ts in the window. First page only (empty on `cursor` pages).
     #[schema(value_type = Vec<FillRecord>)]
     pub fills: Vec<Value>,
-    /// Samples in the window plus the last one before `t0_ns`. First page only.
-    #[schema(value_type = Vec<EquitySample>)]
-    pub equity: Vec<Value>,
+    /// Pass back as `cursor` for the window's next events; `null` when this page ends the window.
+    pub next_cursor: Option<String>,
     /// Orders alive at some point in the window, ascending `order_id`. First page only.
     #[schema(value_type = Vec<OrderRecord>)]
     pub orders: Vec<Value>,
-    pub run_start_ns: String,
     pub run_end_ns: String,
+    pub run_id: String,
+    pub run_start_ns: String,
+    pub t0_ns: String,
+    pub t1_ns: String,
+    /// Why this page stopped before the window's last event: `limit` (`max_events`) or `bytes`
+    /// (the response cap). `null` exactly when `next_cursor` is `null`.
+    pub truncated_by: Option<TruncatedBy>,
 }
 
 /// Everything that happened in a window, for the timeline view, cursor-paged over its events.
@@ -902,7 +967,10 @@ pub async fn timeline(
     let run = run_data(&state, &caller, &run_id, q.platform.as_deref()).await?;
     let full = run.full_shared().await?;
     let page = timeline_page(&full, &run.view.short_id, &q, byte_cap(&state, &caller))?;
-    immutable_value(&headers, &serde_json::to_value(&page)?)
+    Ok(conditional(
+        &headers,
+        json_bytes(StatusCode::OK, serde_json::to_vec(&page)?, Cache::Immutable),
+    ))
 }
 
 /// Smallest number of events on a timeline page (except count-only first pages).
@@ -1070,13 +1138,19 @@ pub async fn report(
 }
 
 pub async fn run_markdown(state: &Shared, run: &OpenRun) -> Result<String, ApiError> {
-    let full = run.full().await?;
+    let trailer = run.trailer_core().await?;
     let version = state
         .db
         .dataset_version(&run.view.dataset_id, run.view.dataset_version_no)
         .await?;
     let dataset = manifest_of(&version)?;
-    Ok(crate::report::markdown(&full, &dataset)?)
+    Ok(crate::report::markdown_metadata(
+        &trailer.manifest,
+        &trailer.metrics,
+        &trailer.engine_check,
+        &trailer.counts,
+        &dataset,
+    )?)
 }
 
 pub fn markdown_response(markdown: String, filename: &str) -> Result<Response, ApiError> {
@@ -1162,8 +1236,8 @@ pub async fn run_analytics(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let view = resolve_run(&state, &caller, &run_id, q.platform.as_deref()).await?;
-    let report: Value = serde_json::from_str(&run_analytics_json(&state, &view).await?)?;
-    let body = analytics_body(&report, &state, &caller)?;
+    let report = run_analytics_json(&state, &view).await?;
+    let body = analytics_text_body(&report, byte_cap(&state, &caller), caller.is_anonymous())?;
     Ok(conditional(
         &headers,
         json_bytes(StatusCode::OK, body, Cache::Immutable),
@@ -1189,6 +1263,23 @@ pub fn analytics_body(
         }
         if points <= 2 {
             return Err(super::edge::response_too_large(cap, caller.is_anonymous()));
+        }
+        points = (points / 2).max(2);
+    }
+}
+
+/// Bounded projection of authenticated report text; discarded points are never decoded.
+pub fn analytics_text_body(report: &str, cap: usize, anonymous: bool) -> Result<Vec<u8>, ApiError> {
+    let mut points = analytics::MAX_SERIES_POINTS;
+    loop {
+        let mut value = analytics::downsampled_json(report, points)?;
+        wire::to_wire(&mut value).map_err(ApiError::internal)?;
+        let body = serde_json::to_vec(&value)?;
+        if body.len() <= cap {
+            return Ok(body);
+        }
+        if points <= 2 {
+            return Err(super::edge::response_too_large(cap, anonymous));
         }
         points = (points / 2).max(2);
     }
@@ -1334,6 +1425,29 @@ mod timeline_budget_tests {
     use std::cell::Cell;
 
     use serde::{Serialize, Serializer};
+
+    #[test]
+    fn timeline_serializes_once_with_identical_bytes() {
+        let page = super::RunTimeline {
+            dataset_id: "demo".into(),
+            equity: vec![serde_json::json!({"ts": "123", "equity": 1.5})],
+            events: vec![serde_json::json!({"ts": "123", "seq": 1})],
+            events_total: 123,
+            fills: vec![],
+            next_cursor: Some("cursor".into()),
+            orders: vec![],
+            run_end_ns: "456".into(),
+            run_id: "0123456789abcdef".into(),
+            run_start_ns: "0".into(),
+            t0_ns: "123".into(),
+            t1_ns: "456".into(),
+            truncated_by: Some(super::TruncatedBy::Bytes),
+        };
+        assert_eq!(
+            serde_json::to_vec(&page).unwrap(),
+            serde_json::to_vec(&serde_json::to_value(&page).unwrap()).unwrap(),
+        );
+    }
 
     #[test]
     fn context_encoding_stops_when_the_byte_budget_is_spent() {

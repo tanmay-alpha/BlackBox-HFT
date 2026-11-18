@@ -10,7 +10,7 @@ import { Fragment, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
-import { api, describeError, isAbort } from '../../api/client';
+import { api, DEMO_WORKSPACE, describeError, isAbort, retryBusy } from '../../api/client';
 import { usePhone } from '../../components/PaneTabs';
 import { Tabs } from '../../components/Tabs';
 import { Badge, Empty, HashText, Notice, Spinner, useAsync } from '../../components/ui';
@@ -73,10 +73,28 @@ async function loadLiveLinks(study: StudyResult, signal: AbortSignal): Promise<L
     return { listed: null, stored: new Map(), problem: `The public demo runs could not be read (${describeError(e).message}).` };
   }
   const ids = candidateRunIds([...study.cells, ...study.demo_anchors.runs], listed);
-  const settled = await Promise.allSettled(ids.map((id) => api.run(id, { signal })));
+  // The verified run list carries every fact a match checks, so no run is read by id when it is
+  // listed: one parallel `GET /runs/{id}` per candidate competed for the heavy-read permit on a
+  // cold server and was refused `503 busy` (the compare-set fix, PHASE6_RELIABILITY A1).
   const stored = new Map<string, StoredRunFacts>();
-  for (const s of settled) if (s.status === 'fulfilled') stored.set(s.value.run_id, s.value);
-  const failed = settled.length - stored.size;
+  let failed = 0;
+  try {
+    const list = await retryBusy(() => api.runs({ workspace: DEMO_WORKSPACE }, { signal }), signal);
+    const wanted = new Set(ids);
+    for (const r of list.items) if (wanted.has(r.run_id)) stored.set(r.run_id, r);
+  } catch (e) {
+    if (isAbort(e)) throw e;
+  }
+  // Anything not in the list is read by id one at a time, retrying a busy refusal.
+  for (const id of ids) {
+    if (stored.has(id)) continue;
+    try {
+      stored.set(id, await retryBusy(() => api.run(id, { signal }), signal));
+    } catch (e) {
+      if (isAbort(e)) throw e;
+      failed += 1;
+    }
+  }
   return { listed, stored, problem: failed > 0 ? `${failed} of ${ids.length} stored runs could not be read; they are not linked.` : null };
 }
 

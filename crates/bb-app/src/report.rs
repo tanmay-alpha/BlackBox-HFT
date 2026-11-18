@@ -11,7 +11,7 @@ use bb_core::{
     compare::{Comparison, DeltaStats, EligibilityEffect, PairClass, duration_label},
     config::{ExchangeModel, OrderLatencyConfig, QueueModelConfig, RunConfig, StrategyKind},
     dataset::{DatasetKind, DatasetManifest, LocalTsProvenance, Quantiles, Severity},
-    result::RunResult,
+    result::{EngineStateCheck, Metrics, RunManifest, RunResult},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -229,16 +229,37 @@ fn quantiles_line(q: &Quantiles) -> String {
 
 /// The run's Markdown research report. The dataset manifest must be the one the run replayed.
 pub(crate) fn markdown(run: &RunResult, dataset: &DatasetManifest) -> Result<String, AppError> {
-    let m = &run.manifest;
+    markdown_metadata(
+        &run.manifest,
+        &run.metrics,
+        &run.engine_check,
+        &bb_artifacts::BundleCounts {
+            ticks: run.ticks,
+            orders: run.orders.len() as u64,
+            fills: run.fills.len() as u64,
+            equity: run.equity.len() as u64,
+            tape: run.tape.len() as u64,
+        },
+        dataset,
+    )
+}
+
+/// Renders the same report from verified trailer metadata; no section rows are needed.
+pub(crate) fn markdown_metadata(
+    m: &RunManifest,
+    met: &Metrics,
+    check: &EngineStateCheck,
+    counts: &bb_artifacts::BundleCounts,
+    dataset: &DatasetManifest,
+) -> Result<String, AppError> {
     // Never attach provenance from replacement data that happens to reuse the same id.
     if dataset.events_sha256 != m.dataset.sha256 {
         return Err(AppError::InvalidRequest(
             "dataset bytes no longer match the stored run's dataset hash".into(),
         ));
     }
-    let c = &run.manifest.config;
+    let c = &m.config;
     let x = &c.execution;
-    let met = &run.metrics;
     let id = &m.run_id;
     let strategy = format!(
         "{} (`{}`)",
@@ -535,12 +556,12 @@ pub(crate) fn markdown(run: &RunResult, dataset: &DatasetManifest) -> Result<Str
         version = m.engine.version,
         features = m.engine.features.join(", "),
         rows = m.dataset.rows,
-        ticks = run.ticks,
+        ticks = counts.ticks,
         interval = duration_label(c.strategy.interval_ns),
-        orders = run.orders.len(),
-        tape = run.tape.len(),
-        fills = run.fills.len(),
-        equity = run.equity.len(),
+        orders = counts.orders,
+        tape = counts.tape,
+        fills = counts.fills,
+        equity = counts.equity,
     );
 
     // ----- Results -----
@@ -639,7 +660,6 @@ pub(crate) fn markdown(run: &RunResult, dataset: &DatasetManifest) -> Result<Str
             let _ = writeln!(w, "- {label} (`{field}`): {}.", quantiles_line(q));
         }
     }
-    let check = &run.engine_check;
     let _ = write!(
         w,
         "\n### All simulated metrics\n\n```json\n{metrics}\n```\n\n\
@@ -1632,6 +1652,47 @@ mod tests {
         let (ctx, manifest) = context();
         let config = base_config(&manifest);
         (pipeline::execute(&ctx, &config).unwrap(), manifest)
+    }
+
+    #[test]
+    fn trailer_metadata_renders_identical_synthetic_and_recorded_reports() {
+        let (ctx, dataset) = context();
+        for preset in presets::presets(&dataset) {
+            let run = pipeline::execute(&ctx, &preset.config).unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let written = bb_artifacts::BundleWriter::new(bb_artifacts::BundleLimits::default())
+                .unwrap()
+                .write_run(root.path(), &run)
+                .unwrap();
+            let trailer = bb_artifacts::BundleReader::new(
+                &written.trust,
+                bb_artifacts::BundleLimits::default(),
+            )
+            .unwrap()
+            .trailer_core(written.path())
+            .unwrap();
+            for kind in [DatasetKind::Synthetic, DatasetKind::Recorded] {
+                let mut dataset = dataset.clone();
+                dataset.kind = kind;
+                if kind == DatasetKind::Recorded {
+                    dataset.timestamps.local_ts = LocalTsProvenance::Measured;
+                    dataset.generator = None;
+                }
+                assert_eq!(
+                    markdown(&run, &dataset).unwrap(),
+                    markdown_metadata(
+                        &trailer.manifest,
+                        &trailer.metrics,
+                        &trailer.engine_check,
+                        &trailer.counts,
+                        &dataset,
+                    )
+                    .unwrap(),
+                    "preset {} / {kind:?}",
+                    preset.id,
+                );
+            }
+        }
     }
 
     /// Every evidence section, in order.

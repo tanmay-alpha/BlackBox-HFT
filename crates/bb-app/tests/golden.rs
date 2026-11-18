@@ -436,6 +436,20 @@ fn results_match_the_pinned_hashes() {
                 .unwrap_or_else(|e| panic!("{}: run analytics: {e}", g.name)),
         )
         .unwrap_or_else(|e| panic!("{}: encode analytics: {e}", g.name));
+        let stored: serde_json::Value = serde_json::from_str(&analytics.json).unwrap();
+        for points in [100, 50, 25, 12, 6, 3, 2] {
+            let mut old = bb_app::analytics::downsampled(&stored, points);
+            bb_app::wire::to_wire(&mut old).unwrap();
+            let mut projected =
+                bb_app::analytics::downsampled_json(&analytics.json, points).unwrap();
+            bb_app::wire::to_wire(&mut projected).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&projected).unwrap(),
+                serde_json::to_vec(&old).unwrap(),
+                "{} analytics response at {points} points",
+                g.name,
+            );
+        }
         let analytics = hex::encode(analytics.sha256);
         match ANALYTICS_SHA256.iter().find(|(name, _)| *name == g.name) {
             Some((_, pinned)) if analytics == *pinned => {}

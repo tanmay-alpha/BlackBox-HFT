@@ -121,6 +121,12 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
         .map(|r| r["run_id"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(runs.len(), 12);
+    let demo = server.state.db.workspace("demo").await.unwrap();
+    let caller = bb_app::v1::auth::Caller {
+        key: None,
+        workspace: demo.clone(),
+        demo,
+    };
     let mut largest = (0usize, String::new(), Value::Null);
     for run in &runs {
         let before = server.state.egress.today(true);
@@ -133,6 +139,25 @@ async fn demo_seed_curates_and_demo_responses_stay_bounded() {
             body.len()
         );
         assert_eq!(after - before, body.len() as i64, "egress of run {run}");
+        let view = server
+            .state
+            .db
+            .run_view(caller.workspace.id, run, &server.state.cfg.result_platform)
+            .await
+            .unwrap();
+        let stored = server
+            .state
+            .db
+            .run_analytics(view.run.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let old: Value = serde_json::from_str(&stored.report_json).unwrap();
+        assert_eq!(
+            body,
+            bb_app::v1::runs::analytics_body(&old, &server.state, &caller).unwrap(),
+            "demo {run}: old and borrowed analytics bodies",
+        );
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert!(
             value["risk"]["net_pnl"].is_object(),

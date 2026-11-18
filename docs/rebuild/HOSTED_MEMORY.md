@@ -1,15 +1,15 @@
 # Hosted full-process memory (audit AT-5 / SEC-6)
 
 Date: 2026-11-18. Branches `p7/mem` (causes 1–2, rebased on `p6/int` `1c6acab`), `p7/jobmem`
-(cause 3, on `p6/int` `42d9237`) and `p7/amem` (causes 4–6, on the integration with `p7/jobmem`).
+(cause 3, on `p6/int` `42d9237`), `p7/amem` (causes 4–6) and `p8/readmem` (read-path follow-up).
 Requirement: the hosted `blackbox serve` process (API + in-process worker + analytics +
 parsed-run cache + concurrent HTTP heavy reads) peaks below **300 MB** on Linux. Result: **not
-met**. The read path was fixed (peak under 32 concurrent anonymous heavy readers 697 → 245 MiB),
+met**. The read path was fixed (peak under 32 concurrent anonymous heavy readers 697 → 207 MiB),
 resident memory no longer ratchets from job to job, and a largest job's own working set shrank
-(run analytics state, the analytics report as `Value` trees, the result-hash buffer): the whole
-fixture now completes at 512 MB, single jobs peak at up to 340 MiB (was 452–460), the largest
-job plus concurrent reads at 435 MiB (was OOM-killed), cancellation at 376 MiB, idle 217 MiB.
-Phases 3–5 still exceed 286.1 MiB. Disposition at the end.
+(run analytics state, the analytics report as `Value` trees, the result-hash buffer). The latest
+512 MB fixture completes every phase: largest jobs up to 362 MiB, the largest job plus concurrent
+reads 394 MiB (was OOM-killed), cancellation 375 MiB, idle 210 MiB. Phases 3–5 still exceed
+286.1 MiB. Historical measurements and the latest read-path comparison follow.
 
 All figures below come from the runs named with them; MiB = 2^20 bytes (300 MB = 286.1 MiB).
 
@@ -355,3 +355,60 @@ simulation finished was refused at completion and dropped as a lost lease; the w
 > `/analytics` as a `Value` 47 MB, response bodies 50 MB). Next steps: worker out of process or a
 > streamed `RunResult`, paged keyed reads, `/analytics` served from the stored text. Admission
 > and runtime budgets stopped 30 over-budget jobs with nothing stored.
+
+## Read-path follow-up (`p8/readmem`)
+
+The run analytics endpoint projects the authenticated stored JSON through borrowed `RawValue`
+fields and a streaming array visitor. It counts a series without retaining its points, then
+decodes only the evenly spaced points the response keeps. Sorted object traversal, the same
+downsampling indices and the existing wire conversion preserve body bytes, including the
+`downsampled` list and cap-driven halving. The complete stored report is never a `Value` tree;
+only the projected response is. Golden runs compare old/new bodies at every halving level and
+the seeded demo test compares the actual HTTP body against the previous projection.
+
+Whole-run caller inventory: orders, fills, tape and equity already use the section page index;
+export verifies and serves the bundle without decoding a `RunResult`. Markdown only needs the
+manifest, metrics, cross-check and section counts, so it now renders from `trailer_core` rather
+than `full()`. Its wrapper still accepts a `RunResult` for existing callers; trailer/full report
+byte comparisons cover every preset and synthetic/recorded provenance. Timeline genuinely
+uses all four sections (including order overlap resolved through `last_seq` tape events), so
+it retains the bounded parsed-run cache. Analytics recomputation for legacy bundles without a
+stored report also still needs the complete run.
+
+Timeline rows are already wire-encoded; its response now serializes them directly, without
+copying the entire page into another `Value` tree. Alphabetical DTO field order preserves the
+previous JSON bytes and ETags.
+
+### Hosted remeasurement (512 MB, no swap)
+
+Image `blackbox-hft:hosted-readmem`, output
+`D:/bbwt/p8-readmem/target/hosted-memory/readmem-512m/`, compared with the previous complete
+`D:/bbwt/p7-amem/target/hosted-memory/amem3-512m/`. Same fixture, 32 clients, 600 handler-answered
+phase-2 requests and all 57 candidate jobs; no admission or runtime budget changes.
+
+| figure (MiB) | before (`amem3-512m`) | after (`readmem-512m`) |
+|---|---:|---:|
+| boot | 57.6 | 57.4 |
+| phase 1: cache fill peak | 141.0 | 105.3 |
+| phase 2: 32 concurrent anonymous heavy readers peak | **245.0** | **207.2** |
+| phase 3: highest single-job peak | 339.9 | 361.6 |
+| phase 4: largest job + concurrent reads + keyed reads + comparison peak | **435.0** | **394.4** |
+| phase 4: increment above its starting RSS | 170.9 | 142.5 |
+| phase 5: cancellation peak / end | 375.6 / 214.2 | 374.5 / 192.9 |
+| phase 6: after 40 s idle | 217.3 | 210.3 |
+| cgroup memory peak (anon + page cache) | 512.2 | 473.1 |
+
+The phase-2 peak fell 37.8 MiB (15.4%) and phase 4 fell 40.6 MiB (9.3%).
+These are full-process observations, not isolated allocation estimates: scheduling and allocator
+state vary (the unchanged job path peaked higher in this run). Phase 4 answered 415 anonymous
+handler requests versus 382 before; successful bytes 0.4 versus 0.3 MiB, most handler answers
+being `503 busy`. Phase-2 statuses: 492×200, 31×400, 8×409, 69×503, 8,611×429.
+
+Every phase completed, the server stayed running and `oom_killed=false`. All 57 jobs were
+measured: 27 completed, 30 stopped on the tape-event budget; 36 peaked above 286.1 MiB.
+Phase 4's job completed, every keyed read returned 200 except the unchanged oversized
+`/timeline` window (400), and comparison creation/detail/pairs/report returned 201/200/200/200.
+Cancellation returned 202 and reached `cancelled`, with no run stored. The fixture exits 1
+because the measured overall RSS peak is still above 300,000,000 bytes, not because a phase or
+container failed. **AT-5 / SEC-6 remains open for phases 3–5**; the read changes do not establish
+the full-process 300 MB bound.

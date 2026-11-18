@@ -134,6 +134,120 @@ pub fn downsampled(report: &serde_json::Value, max_points: usize) -> serde_json:
     copy
 }
 
+/// Projects stored JSON without materializing discarded series points. Only the response and
+/// the current object's borrowed raw fields are retained, rather than the complete report.
+pub fn downsampled_json(
+    report: &str,
+    max_points: usize,
+) -> Result<serde_json::Value, serde_json::Error> {
+    use std::collections::BTreeMap;
+
+    use serde_json::{Value, value::RawValue};
+
+    fn array<'a>(
+        raw: &'a RawValue,
+        mut each: impl FnMut(usize, &'a RawValue) -> Result<(), serde_json::Error>,
+    ) -> Result<usize, serde_json::Error> {
+        struct Rows<F>(F);
+        impl<'de, F> serde::de::Visitor<'de> for Rows<F>
+        where
+            F: FnMut(usize, &'de RawValue) -> Result<(), serde_json::Error>,
+        {
+            type Value = usize;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an array")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                mut self,
+                mut seq: A,
+            ) -> Result<usize, A::Error> {
+                let mut total = 0;
+                while let Some(row) = seq.next_element::<&RawValue>()? {
+                    (self.0)(total, row).map_err(serde::de::Error::custom)?;
+                    total += 1;
+                }
+                Ok(total)
+            }
+        }
+        serde::Deserializer::deserialize_seq(
+            &mut serde_json::Deserializer::from_str(raw.get()),
+            Rows(&mut each),
+        )
+    }
+
+    fn walk(
+        raw: &RawValue,
+        path: &mut String,
+        max: usize,
+        out: &mut Vec<DownsampledSeries>,
+    ) -> Result<Value, serde_json::Error> {
+        match raw.get().as_bytes().first() {
+            Some(b'{') => {
+                let fields: BTreeMap<String, &RawValue> = serde_json::from_str(raw.get())?;
+                let mut map = serde_json::Map::new();
+                for (key, child) in fields {
+                    let len = path.len();
+                    path.push('/');
+                    path.push_str(&key.replace('~', "~0").replace('/', "~1"));
+                    let total =
+                        if SERIES_FIELDS.contains(&key.as_str()) && child.get().starts_with('[') {
+                            array(child, |_, _| Ok(()))?
+                        } else {
+                            0
+                        };
+                    let value = if total > max {
+                        out.push(DownsampledSeries {
+                            path: path.clone(),
+                            total,
+                            returned: max,
+                        });
+                        let mut selected = evenly_spaced(total, max).peekable();
+                        let mut items = Vec::with_capacity(max);
+                        array(child, |index, row| {
+                            if selected.peek() == Some(&index) {
+                                selected.next();
+                                items.push(serde_json::from_str(row.get())?);
+                            }
+                            Ok(())
+                        })?;
+                        Value::Array(items)
+                    } else {
+                        walk(child, path, max, out)?
+                    };
+                    path.truncate(len);
+                    map.insert(key, value);
+                }
+                Ok(Value::Object(map))
+            }
+            Some(b'[') => {
+                let mut items = Vec::new();
+                array(raw, |index, row| {
+                    let len = path.len();
+                    path.push('/');
+                    path.push_str(&index.to_string());
+                    items.push(walk(row, path, max, out)?);
+                    path.truncate(len);
+                    Ok(())
+                })?;
+                Ok(Value::Array(items))
+            }
+            _ => serde_json::from_str(raw.get()),
+        }
+    }
+
+    let raw: &RawValue = serde_json::from_str(report)?;
+    let mut out = Vec::new();
+    let mut value = walk(raw, &mut String::new(), max_points.max(2), &mut out)?;
+    if !out.is_empty()
+        && let Some(map) = value.as_object_mut()
+    {
+        map.insert("downsampled".into(), serde_json::to_value(out)?);
+    }
+    Ok(value)
+}
+
 /// `max` distinct indices of `0..total` (`total > max >= 2`), evenly spaced, first and last
 /// included, ascending.
 fn evenly_spaced(total: usize, max: usize) -> impl Iterator<Item = usize> {
@@ -242,4 +356,33 @@ pub fn dataset_analytics(ctx: &DatasetCtx, version_no: i32) -> Result<DatasetAna
         market,
         downsampled: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod projection_tests {
+    #[test]
+    fn borrowed_projection_preserves_nested_series_and_wire_bytes() {
+        let report = serde_json::json!({
+            "z": {"points": (0..101).map(|i| serde_json::json!({
+                "ts": 9_000_000_000_000_000_000i64 + i,
+                "value": i as f64 / 3.0,
+            })).collect::<Vec<_>>()},
+            "a/~": [{"curve": [1, 2, 3, 4, 5], "points": []}],
+            "count": 12,
+            "nonzero": 1,
+            "min": -9_000_000_000_000_000_000i64,
+            "opportunities": [[9_000_000_000_000_000_000i64, 1.5]],
+        });
+        let text = serde_json::to_string_pretty(&report).unwrap();
+        for max in [100, 50, 25, 12, 6, 3, 2, 0] {
+            let mut old = super::downsampled(&report, max);
+            let mut new = super::downsampled_json(&text, max).unwrap();
+            crate::wire::to_wire(&mut old).unwrap();
+            crate::wire::to_wire(&mut new).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&old).unwrap(),
+                serde_json::to_vec(&new).unwrap(),
+            );
+        }
+    }
 }

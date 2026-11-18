@@ -36,6 +36,10 @@ SELECT concat_ws(' ',
  (SELECT md5(coalesce(jsonb_agg(jsonb_build_array(t.id,t.xmin::text) ORDER BY t.id)::text,'[]'))
   FROM bb.runs t WHERE experiment_config_id IN (SELECT id FROM c) OR id IN (SELECT run_id FROM j)),
  (SELECT md5(coalesce(jsonb_agg(jsonb_build_array(t.id,t.xmin::text) ORDER BY t.id)::text,'[]'))
+  FROM bb.run_artifacts t WHERE run_id IN
+   (SELECT id FROM bb.runs WHERE experiment_config_id IN (SELECT id FROM c)
+                          OR id IN (SELECT run_id FROM j))),
+ (SELECT md5(coalesce(jsonb_agg(jsonb_build_array(t.id,t.xmin::text) ORDER BY t.id)::text,'[]'))
   FROM bb.api_keys t WHERE id IN (SELECT created_by_key_id FROM e)),
  (SELECT md5(coalesce(jsonb_agg(jsonb_build_array(t.id,t.xmin::text) ORDER BY t.id)::text,'[]'))
   FROM bb.workspaces t),
