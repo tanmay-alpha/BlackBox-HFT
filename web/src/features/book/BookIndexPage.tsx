@@ -1,4 +1,4 @@
-// Order Book Lab landing (UI_DESIGN_SPEC.md §11.3): the datasets whose historical book can be
+// Order Book Lab landing (UI_DESIGN_SPEC.md §11.3): the datasets whose reconstructed book can be
 // replayed (market only) and the stored runs whose simulated orders can be replayed on top.
 
 import type { ReactNode } from 'react';
@@ -14,6 +14,7 @@ import { SplitPane } from '../../components/SplitPane';
 import { Badge, ErrorBox, HashText, Notice, Panel, Spinner, useAsync } from '../../components/ui';
 import type { AsyncResult } from '../../components/ui';
 import { paths } from '../../shell/paths';
+import { runLabelText, useDemoTitles } from '../../components/labels';
 import { Workspace } from '../../shell/Workspace';
 
 function Listing<T>({
@@ -43,6 +44,7 @@ function Listing<T>({
 
 export default function BookIndexPage() {
   const navigate = useNavigate();
+  const demoTitles = useDemoTitles();
   const datasets = useAsync((signal) => api.datasets({ signal }), []);
   const runs = useAsync((signal) => api.runs({}, { signal }), []);
 
@@ -123,7 +125,7 @@ export default function BookIndexPage() {
     {
       id: 'label',
       header: 'Label',
-      cell: (r) => r.label ?? <span className="dim">unlabelled</span>,
+      cell: (r) => (r.label ? <span title={r.label}>{runLabelText(r.label, demoTitles)}</span> : <span className="dim">unlabelled</span>),
       sortValue: (r) => r.label,
       raw: (r) => r.label ?? '',
     },
@@ -178,7 +180,7 @@ export default function BookIndexPage() {
             defaultSize: '45%',
             minSize: '25%',
             content: (
-              <Panel title="Datasets" basis="observed" fill flush caption="Market only: the historical book as the data shows it.">
+              <Panel title="Datasets" basis="observed" fill flush caption="Market only: the book reconstructed from each dataset's events (recorded or synthetic, per the Kind column).">
                 <Listing result={datasets} loadingLabel="Loading datasets" noun="datasets">
                   {(rows) => (
                     <DataTable
@@ -206,7 +208,7 @@ export default function BookIndexPage() {
                 basis="modeled"
                 fill
                 flush
-                caption="With run: the historical book with the run's simulated orders and fills replayed on top."
+                caption="With run: the book reconstructed from the run's dataset, with the run's simulated orders and fills replayed on top."
               >
                 <Listing result={runs} loadingLabel="Loading stored runs" noun="runs">
                   {(rows) => (

@@ -94,6 +94,106 @@ export interface MarketBook {
   asks: BookLevel[];
 }
 
+/** One resting order in a compact FIFO depth view; its queue position is its array index + 1. */
+export interface QueueSlot {
+  order_ref: string;
+  shares: number;
+}
+
+export interface DepthLevel {
+  price4: number;
+  /** Total of ALL resting orders at the price (the L2 aggregate). */
+  shares: number;
+  order_count: number;
+  orders: QueueSlot[];
+  orders_truncated: boolean;
+}
+
+export interface Depth {
+  /** Best first. */
+  bids: DepthLevel[];
+  asks: DepthLevel[];
+}
+
+export type LevelRole = 'order' | 'replaced' | 'replaced_from' | 'replaced_to';
+
+/** A price level the event changed, complete before and after it (the selected orders are always listed). */
+export interface AffectedLevel {
+  side: 'buy' | 'sell';
+  price4: number;
+  role: LevelRole | string;
+  before: BookLevel;
+  after: BookLevel;
+}
+
+export interface OrderPosition {
+  order_ref: string;
+  side: 'buy' | 'sell';
+  price4: number;
+  shares: number;
+  /** 1-based FIFO position at its price. */
+  queue_position: number;
+  level_orders: number;
+  /** Shares of the orders ahead of it at its price, excluding itself. */
+  shares_ahead: number;
+  level_shares: number;
+  entered_ns: SessionNs | null;
+  entered_event_index: number;
+  /** Event timestamp minus the accepted add/replace timestamp, decimal ns. */
+  age_ns: string | null;
+}
+
+export interface LevelChange {
+  side: 'buy' | 'sell';
+  price4: number;
+  before_shares: number;
+  after_shares: number;
+  before_orders: number;
+  after_orders: number;
+}
+
+export interface SameTimestampEvent {
+  event_index: number;
+  message_type: string;
+  applied: ApplyOutcome | string;
+  level_changes: LevelChange[];
+}
+
+export interface SameTimestamp {
+  ts_ns: SessionNs | null;
+  /** 1-based position of the selected event among the events sharing its timestamp, up to it. */
+  position: number;
+  first_event_index: number;
+  /** Up to and including the selected event, in source order (never a later one). */
+  events: SameTimestampEvent[];
+  events_truncated: boolean;
+}
+
+/** The book immediately before (after event `before_event_index`) and after one event. */
+export interface EventDetail {
+  event: MarketEvent;
+  /** `null`: the event is the first frame, the before-state is the empty book. */
+  before_event_index: number | null;
+  levels: number;
+  orders_per_level: number;
+  before: Depth;
+  after: Depth;
+  affected: AffectedLevel[];
+  order_before: OrderPosition | null;
+  order_after: OrderPosition | null;
+  /** Completed lifetime when this event removed or replaced the referenced order. */
+  lifetime_ns: string | null;
+  same_timestamp: SameTimestamp;
+}
+
+export interface CuratedExample {
+  id: string;
+  title: string;
+  event_index: number;
+  /** The deterministic selection rule the event satisfies. */
+  rule: string;
+}
+
 export interface MarketComparison {
   basis: string;
   events: number;
@@ -184,6 +284,9 @@ export const marketApi = {
     }),
   book: (id: string, q: BookQuery, o: Opts = {}) => request<MarketBook>('GET', `${base(id)}/book`, { query: q, signal: o.signal }),
   comparison: (id: string, o: Opts = {}) => request<MarketComparison>('GET', `${base(id)}/comparison`, o),
+  eventDetail: (id: string, index: number, q: { levels?: number; orders_per_level?: number } = {}, o: Opts = {}) =>
+    request<EventDetail>('GET', `${base(id)}/events/${index}`, { query: q, signal: o.signal }),
+  examples: (id: string, o: Opts = {}) => request<{ items: CuratedExample[] }>('GET', `${base(id)}/examples`, o),
   metrics: (id: string, q: { max_points?: number } = {}, o: Opts = {}) =>
     request<MarketMetrics>('GET', `${base(id)}/metrics`, { query: q, signal: o.signal }),
 };

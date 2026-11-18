@@ -15,7 +15,9 @@
     <title>BlackBox HFT</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Painted (with the stylesheet) while the entry script downloads; React replaces it on its
+         first render. Same element as App.tsx `AppLoading`. -->
+    <div id="root"><p class="state-line" role="status">Loading BlackBox HFT…</p></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

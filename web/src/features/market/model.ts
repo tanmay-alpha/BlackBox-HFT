@@ -40,7 +40,9 @@ function nonNegativeInt(raw: string | null, max = Number.MAX_SAFE_INTEGER): numb
 /** Reads the workbench state from the query string; anything malformed is ignored, not guessed. */
 export function parseWorkbenchQuery(sp: URLSearchParams): WorkbenchQuery {
   const rawTab = sp.get('tab');
-  const tab = MARKET_TABS.some((t) => t.id === rawTab) ? (rawTab as MarketTab) : 'dataset';
+  // A curated-example link (`?example=replace`) opens the book step unless it names another.
+  const fallback: MarketTab = parseExampleParam(sp) !== null ? 'book' : 'dataset';
+  const tab = MARKET_TABS.some((t) => t.id === rawTab) ? (rawTab as MarketTab) : fallback;
   const rawType = sp.get('type');
   return {
     tab,
@@ -48,6 +50,12 @@ export function parseWorkbenchQuery(sp: URLSearchParams): WorkbenchQuery {
     type: rawType !== null && /^[A-Za-z]$/.test(rawType) ? rawType : null,
     from: nonNegativeInt(sp.get('from'), MAX_FROM_INDEX),
   };
+}
+
+/** The curated example id of a shareable link (`?example=cancel-ahead`), or `null`. */
+export function parseExampleParam(sp: URLSearchParams): string | null {
+  const raw = sp.get('example');
+  return raw !== null && /^[a-z][a-z0-9-]{0,39}$/.test(raw) ? raw : null;
 }
 
 // ----- exact text ---------------------------------------------------------------------------
@@ -278,4 +286,22 @@ export function ratio(part: number, whole: number): number | null {
 /** A fraction as a percentage with one decimal, `null` as a dash. */
 export function fmtShare(x: number | null): string {
   return x === null || !Number.isFinite(x) ? '\u2014' : `${(x * 100).toFixed(1)}%`;
+}
+
+// ----- chart axes -----------------------------------------------------------------------------
+
+/** Upper bound of one axis-label character's width in px (11 px monospace, `--text-2xs`). */
+const AXIS_CHAR_PX = 7;
+
+/** Left plot margin that fits the widest value label plus its 6 px gap (at least 40 px). */
+export function axisLeftMargin(labels: readonly string[]): number {
+  let chars = 0;
+  for (const l of labels) chars = Math.max(chars, l.length);
+  return Math.max(40, Math.ceil(chars * AXIS_CHAR_PX) + 10);
+}
+
+/** Centre x of a middle-anchored label moved inside `[0, width]`, so neither end is cut off. */
+export function clampAxisLabel(x: number, label: string, width: number): number {
+  const half = (label.length * AXIS_CHAR_PX) / 2 + 1;
+  return Math.min(Math.max(x, half), width - half);
 }

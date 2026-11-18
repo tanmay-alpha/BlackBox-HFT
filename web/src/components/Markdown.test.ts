@@ -2,11 +2,18 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { Markdown, parseBlocks, safeHref, sectionOf } from './Markdown';
+import { LIMITATIONS_HEADING, Markdown, parseBlocks, safeHref, sectionOf } from './Markdown';
 
 const html = (md: string) => renderToStaticMarkup(createElement(Markdown, { source: md }));
 
 describe('Markdown', () => {
+  it('finds the final limitations section in old and new report formats', () => {
+    const old = '# R\n\n## Standard limitations\n\n- old one\n';
+    const now = '# R\n\n## Dataset limitations\n\n- dataset\n\n## Limitations\n\n- final\n';
+    expect(sectionOf(old, LIMITATIONS_HEADING)).toEqual(parseBlocks('- old one'));
+    expect(sectionOf(now, LIMITATIONS_HEADING)).toEqual(parseBlocks('- final'));
+  });
+
   it('parses the report structure', () => {
     const blocks = parseBlocks('# Title\n\nPara one\nstill one.\n\n## Table\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```json\n{"x":1}\n```\n\n- item\n- two\n');
     expect(blocks.map((b) => b.type)).toEqual(['heading', 'paragraph', 'heading', 'table', 'code', 'list']);

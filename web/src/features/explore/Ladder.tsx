@@ -1,6 +1,6 @@
-// Observed order book at the replay time (reconstructed L2 of the synthetic dataset) with each
+// Reconstructed order book at the replay time (L2 rebuilt from the synthetic dataset) with each
 // scenario's simulated resting orders marked at their price. The simulated orders are never part
-// of the observed book; the replay has no market impact.
+// of the reconstructed book; the replay has no market impact.
 
 import type { DepthFrame, InstrumentMeta, OrderRecord } from '../../api/types';
 import { fmtPrice, fmtQty } from '../../components/fmt';
@@ -47,7 +47,7 @@ export function Ladder({ frame, t, inst, resting, focus, names, selected, onSele
               type="button"
               className={`ex-chip ex-chip-${k}`}
               aria-pressed={o.order_id === selected}
-              title={`Simulated ${o.side} order ${o.order_id} in the ${names[k]} scenario, ${fmtQty(o.qty, inst)} (not part of the observed book)`}
+              title={`Simulated ${o.side} order ${o.order_id} in the ${names[k]} scenario, ${fmtQty(o.qty, inst)} (not part of the reconstructed book)`}
               onClick={() => onSelectOrder(o.order_id)}
             >
               {names[k]} #{o.order_id}
@@ -61,11 +61,11 @@ export function Ladder({ frame, t, inst, resting, focus, names, selected, onSele
   return (
     <div className="ex-ladder">
       <p className="ex-muted">
-        Observed book at <span className="ex-num">{fmtSec(frame.ts, 4)}</span>, the last change at or before the replay time. Chips are
+        Reconstructed book (synthetic data) at <span className="ex-num">{fmtSec(frame.ts, 4)}</span>, the last change at or before the replay time. Chips are
         simulated resting orders.
       </p>
       <table className="ex-table ex-ladder-table">
-        <caption className="visually-hidden">Observed order book with simulated resting orders</caption>
+        <caption className="visually-hidden">Reconstructed order book with simulated resting orders</caption>
         <thead>
           <tr>
             <th scope="col">Price</th>

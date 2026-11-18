@@ -6,7 +6,10 @@ import { paths } from './shell/paths';
 import { Shell } from './shell/Shell';
 import { Workspace } from './shell/Workspace';
 
-// Every workspace is its own chunk (PRODUCT_BASELINE D7); the shell suspends while one loads.
+// Every workspace is its own chunk (PRODUCT_BASELINE D7). While one loads, the shell stays mounted
+// and its workspace area shows `WorkspaceLoading` (shell/Shell.tsx). The boundary here only
+// catches a suspension outside the shell; it shows the same line as index.html's boot markup
+// instead of an empty page.
 const BookIndexPage = lazy(() => import('./features/book/BookIndexPage'));
 const DatasetsPage = lazy(() => import('./features/datasets/DatasetsPage'));
 const PairWorkspace = lazy(() => import('./features/experiments/PairWorkspace'));
@@ -27,6 +30,9 @@ const WorkbenchPage = lazy(() => import('./features/sim/WorkbenchPage'));
 const SystemPage = lazy(() => import('./features/system/SystemPage'));
 const ReplayTerminalPage = lazy(() => import('./features/terminal/ReplayTerminalPage'));
 const ExplorePage = lazy(() => import('./features/explore/ExplorePage'));
+const StudiesPage = lazy(() => import('./features/study/StudiesPage'));
+const QueueLabPage = lazy(() => import('./features/queuelab/QueueLabPage'));
+const ResearchPage = lazy(() => import('./features/research/ResearchPage'));
 
 /**
  * Redirect that keeps the query string (UI_DESIGN_SPEC.md §9.2). `to` maps the matched route
@@ -72,14 +78,24 @@ const LEGACY: [string, (p: Record<string, string | undefined>) => string][] = [
   ['sim/runs/:runId', (p) => paths.run(r(p.runId))],
 ];
 
+/** Same element as the boot markup in index.html (no providers above it). */
+function AppLoading() {
+  return (
+    <p className="state-line" role="status">
+      Loading BlackBox HFT{'\u2026'}
+    </p>
+  );
+}
+
 export default function App() {
   return (
     <BrowserRouter>
-      <Suspense fallback={null}>
+      <Suspense fallback={<AppLoading />}>
       <Routes>
         <Route element={<Shell />}>
           <Route index element={<ExplorePage />} />
           <Route path="experiments" element={<MissionControlPage />} />
+          <Route path="research" element={<ResearchPage />} />
           <Route path="data" element={<DatasetsPage />} />
           <Route path="data/:datasetId" element={<DatasetsPage />} />
           <Route path="book" element={<BookIndexPage />} />
@@ -100,6 +116,10 @@ export default function App() {
           <Route path="reports/saved/:reportId" element={<ReportsPage />} />
           <Route path="reports/:runId" element={<ReportsPage />} />
           <Route path="system" element={<SystemPage />} />
+          <Route path="studies" element={<StudiesPage />} />
+          <Route path="queue-lab" element={<QueueLabPage />} />
+          <Route path="studies/queue-shadow" element={<Redirect to={() => paths.queueLab()} />} />
+          <Route path="studies/:studyId" element={<StudiesPage />} />
           <Route path="compare/pair" element={<PairWorkspace />} />
           <Route path="compare/set" element={<LatencyLabPage />} />
           <Route path="compare/sweeps" element={<SweepsPage />} />

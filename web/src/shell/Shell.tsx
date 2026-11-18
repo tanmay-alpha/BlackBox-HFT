@@ -9,7 +9,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-do
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { ChevronDown, CircleHelp, Menu, PanelRightClose, PanelRightOpen, Search } from 'lucide-react';
 
-import { BasisLegend, ErrorBox, Spinner } from '../components/ui';
+import { BasisLegend, ErrorBox } from '../components/ui';
 import { GLOSSARY } from '../components/glossary';
 import { fmtClock } from '../components/fmt';
 import { AccessProvider, useAccess } from './access';
@@ -23,6 +23,7 @@ import { paths } from './paths';
 import { SettingsProvider, useSettings } from './settings';
 import { StatusBar } from './StatusBar';
 import { SECTIONS, WORKSPACES, workspaceFor } from './workspaces';
+import { WorkspaceLoading } from './Workspace';
 
 const ICON = { size: 16, strokeWidth: 1.5, 'aria-hidden': true } as const;
 
@@ -106,6 +107,21 @@ function useBreadcrumb(): Crumb[] {
   if (seg[0] === 'sim' && seg[1] === 'sweep' && q.get('base')) run(q.get('base')!);
   if (seg[0] === 'strategy' && q.get('dataset')) dataset(q.get('dataset')!);
   if (seg[0] === 'strategy' && q.get('from')) run(q.get('from')!);
+  if (seg[0] === 'market' && seg[1]) {
+    crumbs.push({ label: seg[1], title: `Workbench dataset ${seg[1]}`, to: paths.marketDataset(seg[1]) });
+    const event = q.get('event');
+    if (event !== null && /^\d{1,12}$/.test(event)) {
+      crumbs.push({ label: `event #${event}`, title: `Source event index ${event} of ${seg[1]}`, to: `${pathname}${search}` });
+    }
+  }
+  if (seg[0] === 'studies' && seg[1]) {
+    crumbs.push({ label: `study ${seg[1]}`, title: `Study ${seg[1]}`, to: paths.study(seg[1]) });
+    const cell = q.get('cell');
+    if (cell) {
+      const label = cell.length > 30 ? `${cell.slice(0, 29)}\u2026` : cell;
+      crumbs.push({ label: `cell ${label}`, title: `Study cell ${cell}`, to: `${pathname}${search}` });
+    }
+  }
   const t = q.get('t');
   if (seg[0] === 'book' && t !== null && /^-?\d{1,19}$/.test(t)) {
     crumbs.push({ label: `t ${fmtClock(t)}`, title: `Cursor ${t} ns after dataset origin`, to: `${pathname}${search}` });
@@ -587,7 +603,7 @@ function ShellFrame({ announce }: { announce: (text: string) => void }) {
         <Panel id="workspace" minSize="40%">
           <main id="main" tabIndex={-1} className="shell-main">
             <WorkspaceErrorBoundary key={location.pathname}>
-              <Suspense fallback={<Spinner label="Loading workspace" />}>
+              <Suspense fallback={<WorkspaceLoading />}>
                 <Outlet />
               </Suspense>
             </WorkspaceErrorBoundary>

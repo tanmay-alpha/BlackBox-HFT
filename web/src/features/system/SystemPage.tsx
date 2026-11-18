@@ -14,6 +14,7 @@ import { DataTable, type Column } from '../../components/DataTable';
 import { DASH, fmtBytes, fmtDuration, fmtInt, fmtPct } from '../../components/fmt';
 import { fmtNsUtc } from '../../components/ns';
 import { Empty, ErrorBox, Notice, Panel, Pill, Spinner, useAsync } from '../../components/ui';
+import { valueLabel } from '../../components/labels';
 import { useAccess } from '../../shell/access';
 import { useHealth } from '../../shell/health';
 import { paths } from '../../shell/paths';
@@ -431,7 +432,7 @@ function EventsTab() {
       { id: 'at', header: 'At (UTC)', cell: (e) => <span className="mono">{utc(e.at_ns)}</span>, sortValue: (e) => BigInt(e.at_ns) },
       { id: 'source', header: 'Source', cell: (e) => e.source },
       { id: 'level', header: 'Level', cell: (e) => e.level },
-      { id: 'kind', header: 'Kind', cell: (e) => <span className="mono">{e.kind}</span> },
+      { id: 'kind', header: 'Kind', cell: (e) => <span title={e.kind}>{valueLabel(e.kind)}</span> },
       { id: 'message', header: 'Message', rowHeader: true, cell: (e) => e.message },
     ],
     [],

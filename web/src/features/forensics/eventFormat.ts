@@ -3,7 +3,7 @@
 
 import type { FlightEvent, InstrumentMeta, MarketView } from "../../api/types";
 import { fmtClock, fmtDuration, fmtNum, fmtPrice, fmtQty } from "../../components/fmt";
-import { strategyName } from "../../components/describe";
+import { reasonText } from "../../components/labels";
 import { EM_DASH, words } from "./labels";
 
 export type EventField = [label: string, value: string];
@@ -18,12 +18,6 @@ function touch(market: MarketView, inst: InstrumentMeta): string {
       ? "no ask"
       : `${fmtPrice(market.best_ask_tick, inst)} x ${fmtQty(market.best_ask_qty, inst)}`;
   return `${bid} / ${ask}`;
-}
-
-/** A strategy's reason with its kind id prefix (`touch_maker: quote bid …`) named in words. */
-function reasonText(reason: string): string {
-  const m = /^([a-z][a-z0-9_]*): ([\s\S]*)$/.exec(reason);
-  return m ? `${strategyName(m[1])}: ${m[2]}` : reason;
 }
 
 /** Human title of an event type. Fill and response wording always states that it is simulated. */
@@ -126,18 +120,18 @@ export function eventFields(ev: FlightEvent, inst: InstrumentMeta): EventField[]
           "queue ahead (modeled)",
           b.queue_ahead === null ? "not readable from the queue model" : fmtQty(b.queue_ahead, inst),
         ],
-        ["displayed qty at price (observed)", fmtQty(b.level_qty, inst)],
+        ["displayed qty at price (source data)", fmtQty(b.level_qty, inst)],
         ["best bid", fmtPrice(b.best_bid_tick, inst)],
         ["best ask", fmtPrice(b.best_ask_tick, inst)],
       ];
     case "queue_update": {
       const cause: EventField =
         b.cause.type === "trade"
-          ? ["trade qty (observed)", fmtQty(b.cause.qty, inst)]
+          ? ["trade qty (source data)", fmtQty(b.cause.qty, inst)]
           : b.cause.type === "fill_reset"
             ? ["cause (modeled)", "remainder moved to the front of the queue after a partial fill"]
             : [
-                "displayed qty (observed)",
+                "displayed qty (source data)",
                 `${fmtQty(b.cause.prev_qty, inst)} \u2192 ${fmtQty(b.cause.new_qty, inst)}`,
               ];
       return [

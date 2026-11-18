@@ -9,6 +9,7 @@ import type { Job } from '../../api/model';
 import { DASH, fmtBytes, fmtInt } from '../../components/fmt';
 import { fmtNsUtc } from '../../components/ns';
 import { ErrorBox, HashText, Notice, Pill } from '../../components/ui';
+import { valueLabel } from '../../components/labels';
 import { GatedButton } from '../../shell/access';
 import { useAnnounce } from '../../shell/announce';
 import { paths } from '../../shell/paths';
@@ -166,7 +167,7 @@ export function JobDetail({ job, nowMs, onChanged }: { job: Job; nowMs: number; 
         <dt>Job</dt>
         <dd className="mono wrap-anywhere">{job.id}</dd>
         <dt>Kind</dt>
-        <dd>{job.kind}</dd>
+        <dd title={job.kind}>{valueLabel(job.kind)}</dd>
         <dt>Experiment</dt>
         <dd>
           <HashText hash={job.experiment_fingerprint} chars={16} />

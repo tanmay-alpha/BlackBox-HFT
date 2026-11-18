@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { FlightEvent, InstrumentMeta, QueuePoint, Side } from "../../api/types";
 import { fmtQty } from "../../components/fmt";
-import { Badge, Empty } from "../../components/ui";
+import { Badge, BasisBadge, Empty } from "../../components/ui";
 import { fmtAxisNs, lastAtOrBefore, niceStep, ticksBetween } from "./axis";
 import { fmtSince } from "./labels";
 import type { AxisMode } from "./timeline";
@@ -287,7 +287,7 @@ export function QueueChart({
                 }}
               >
                 <title>
-                  {`#${t.seq} market trade at the order's price (observed): ${fmtQty(t.qty, instrument)} at ${fmtSince(t.ts, originNs)} from decision`}
+                  {`#${t.seq} market trade at the order's price (source data): ${fmtQty(t.qty, instrument)} at ${fmtSince(t.ts, originNs)} from decision`}
                 </title>
               </rect>
             );
@@ -352,7 +352,7 @@ export function QueueChart({
         </li>
         <li>
           <span className="fx-swatch fx-swatch-bar" aria-hidden="true" />
-          market trades printed at the order's price <Badge kind="observed">observed</Badge>
+          market trades printed at the order's price <BasisBadge basis="observed" />
         </li>
         <li>
           <span className={`fx-swatch fx-swatch-fill fx-tone-${side}`} aria-hidden="true" />

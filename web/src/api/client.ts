@@ -1,10 +1,12 @@
 // Typed client for `/api/v1` (docs/engineering/API_CONTRACT.md §8). Every method returns exactly
 // what the server sent, with every nanosecond field checked and converted by `normalize`
-// (components/ns.ts). Nothing is synthesized, cached or retried here. Every method takes an
-// optional `AbortSignal` so a superseded view cancels its request.
+// (components/ns.ts). Nothing is synthesized or cached here, and nothing is retried unless a
+// caller wraps an idempotent read in `retryBusy`. Every method takes an optional `AbortSignal`
+// so a superseded view cancels its request.
 
 import { getApiKey } from './auth';
 import {
+  ApiError,
   collectAll,
   request,
   requestDownload,
@@ -88,6 +90,54 @@ export const LIST_CAP = 1000;
 
 /** Items per list page the console requests (the server accepts at most 100). */
 export const PAGE_LIMIT = 50;
+
+/** Attempts of an idempotent read that the server answers `503` busy: the first and two retries. */
+export const BUSY_ATTEMPTS = 3;
+
+/**
+ * Whether the server refused a request only because it was momentarily at capacity (its
+ * heavy-read or in-flight limit, or a read that ran out of time): `503 unavailable` with reason
+ * `busy`. Storage, database and draining refusals are not retried here.
+ */
+export function isBusy(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 503 && e.code === 'unavailable' && e.details?.reason === 'busy';
+}
+
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new ApiError('aborted', 'The wait before a retry was cancelled.', 0));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new ApiError('aborted', 'The wait before a retry was cancelled.', 0));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Runs an idempotent read and retries it after a `503 busy` answer, at most `attempts` times in
+ * all, waiting the server's `Retry-After` clamped to 1–5 s (plus up to 250 ms of jitter so
+ * parallel reads do not return together). Any other error, the last busy answer or an abort
+ * ends it with that error: a real capacity problem stays visible.
+ */
+export async function retryBusy<T>(read: () => Promise<T>, signal?: AbortSignal, attempts = BUSY_ATTEMPTS): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await read();
+    } catch (e) {
+      if (attempt >= attempts || !isBusy(e) || signal?.aborted) throw e;
+      const seconds = Math.min(5, Math.max(1, (e as ApiError).retryAfterS ?? 1));
+      await pause(seconds * 1000 + Math.random() * 250, signal);
+    }
+  }
+}
 
 export const api = {
   // ----- health, identity ----------------------------------------------------------------------

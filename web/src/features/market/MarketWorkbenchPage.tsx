@@ -19,12 +19,12 @@ import { useInspector } from '../../shell/inspector';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
 import { marketApi, type MarketSummary } from './api';
-import { BookView } from './BookView';
 import { DatasetTab } from './DatasetTab';
+import { EventCompare } from './EventCompare';
 import { EventFacts } from './EventFacts';
 import { DataClassBadge } from './labels';
 import { MetricsTab } from './MetricsTab';
-import { MARKET_TABS, parseWorkbenchQuery, stepWithin, type MarketTab, type WorkbenchQuery } from './model';
+import { MARKET_TABS, parseExampleParam, parseWorkbenchQuery, stepWithin, type MarketTab, type WorkbenchQuery } from './model';
 import { EventTouch, TimelineTab } from './TimelineTab';
 import { findNeighbour, PAGE_SIZE, useEventPager, useSelectedEvent } from './useEvents';
 import { ValidationTab } from './ValidationTab';
@@ -129,7 +129,10 @@ function Workbench({ datasetId }: { datasetId: string }) {
   const s = summary.data;
   const maxIndex = s ? Math.max(0, s.events - 1) : null;
   const pager = useEventPager(datasetId, q.type, q.from, q.tab === 'events');
-  const selectedEvent = useSelectedEvent(datasetId, q.event);
+  // The book step reads its event from the event detail; only the timeline needs this lookup.
+  const selectedEvent = useSelectedEvent(datasetId, q.tab === 'book' ? null : q.event);
+  const examples = useAsync((signal) => marketApi.examples(datasetId, { signal }), [datasetId]);
+  const exampleId = parseExampleParam(sp);
   const [navNote, setNavNote] = useState<string | null>(null);
   const [stepping, setStepping] = useState(false);
   const stepCtl = useRef<AbortController | null>(null);
@@ -146,6 +149,14 @@ function Workbench({ datasetId }: { datasetId: string }) {
     },
     [navigate, datasetId, q],
   );
+
+  // A book step without an event (or a `?example=` link) opens on a curated example.
+  useEffect(() => {
+    if (q.tab !== 'book' || q.event !== null || !examples.data) return;
+    const items = examples.data.items;
+    const pick = items.find((x) => x.id === exampleId) ?? items[0];
+    if (pick) go({ event: pick.event_index }, true);
+  }, [q.tab, q.event, examples.data, exampleId, go]);
 
   const select = useCallback(
     (index: number) => {
@@ -318,6 +329,9 @@ function Workbench({ datasetId }: { datasetId: string }) {
         }
       />
     );
+  else if (q.event === null && !examples.error && (examples.data === null || examples.data.items.length > 0))
+    // The book step opens on a curated example (the effect above selects it), never an empty early book.
+    content = <Spinner label="Opening a curated example event" />;
   else if (q.event === null || eventOutOfRange)
     content = (
       <div className="mk-scroll">
@@ -342,15 +356,7 @@ function Workbench({ datasetId }: { datasetId: string }) {
       </div>
     );
   else
-    content = (
-      <BookView
-        datasetId={datasetId}
-        eventIndex={q.event}
-        event={selectedEvent.loading ? undefined : selectedEvent.data}
-        eventFailure={failure}
-        phone={phone}
-      />
-    );
+    content = <EventCompare datasetId={datasetId} eventIndex={q.event} examples={examples.data?.items ?? []} phone={phone} onSelect={select} />;
 
   return (
     <Workspace context={s ? `${s.symbol} \u00b7 ${MARKET_TABS.find((t) => t.id === q.tab)?.label ?? ''}` : datasetId} layout toolbar={toolbar} ownHeading>

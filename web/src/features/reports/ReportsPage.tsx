@@ -11,10 +11,10 @@ import { api, PAGE_LIMIT, saveDownload, saveText } from '../../api/client';
 import type { Report, Run, RunDetail } from '../../api/model';
 import { DataTable, type Column } from '../../components/DataTable';
 import { latencyLabel, strategyName } from '../../components/describe';
-import { runLabelText, useDemoTitles } from '../../components/labels';
+import { runLabelText, useDemoTitles, valueLabel } from '../../components/labels';
 import { usePhone } from '../../components/PaneTabs';
 import { RouteTabs } from '../../components/Tabs';
-import { MarkdownBlocks, parseBlocks, renderInline, sectionOf, type Block } from '../../components/Markdown';
+import { LIMITATIONS_HEADING, MarkdownBlocks, parseBlocks, renderInline, sectionOf, type Block } from '../../components/Markdown';
 import { DASH, fmtBytes, fmtDuration, fmtInt, fmtNum, fmtPct, fmtPnl } from '../../components/fmt';
 import { fmtNsUtc } from '../../components/ns';
 import { Empty, ErrorBox, HashText, Notice, Panel, Pill, Spinner, useAsync } from '../../components/ui';
@@ -130,7 +130,7 @@ function AtAGlance({ run }: { run: RunDetail }) {
         ))}
       </dl>
       <p className="note">
-        Simulated on historical replay without market impact; fills and queue position are modeled. The full report follows; Download .md saves the same
+        Simulated on a replay of the run&apos;s dataset without market impact; simulated fills and estimated queue position are modeled. The full report follows; Download .md saves the same
         text. <Link to={paths.riskRun(run.run_id)}>Charts in Risk &amp; P&amp;L</Link>
       </p>
     </section>
@@ -277,7 +277,7 @@ function RunReport({ runId }: { runId: string }) {
   const [actionError, setActionError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const phone = usePhone();
-  const limitations = useMemo(() => (report.data ? sectionOf(report.data, /limitation/i) : null), [report.data]);
+  const limitations = useMemo(() => (report.data ? sectionOf(report.data, LIMITATIONS_HEADING) : null), [report.data]);
   const blocks = useMemo(() => (report.data ? parseBlocks(report.data) : null), [report.data]);
 
   const act = async (fn: () => Promise<void>) => {
@@ -373,7 +373,7 @@ function RunReport({ runId }: { runId: string }) {
                   <p className="note">
                     The report states its limitations as separate sections, starting at{' '}
                     {shown
-                      .filter((b): b is Extract<Block, { type: 'heading' }> => b.type === 'heading' && /limitation/i.test(b.text))
+                      .filter((b): b is Extract<Block, { type: 'heading' }> => b.type === 'heading' && LIMITATIONS_HEADING.test(b.text))
                       .slice(0, 1)
                       .map((h) => (
                         <a key={h.text} href={`#${headingId(h.text)}`}>
@@ -441,7 +441,7 @@ function SavedReport({ reportId }: { reportId: string }) {
                 <dt>Title</dt>
                 <dd>{m.title}</dd>
                 <dt>Kind</dt>
-                <dd>{m.kind}</dd>
+                <dd title={m.kind}>{valueLabel(m.kind)}</dd>
                 <dt>Subject</dt>
                 <dd className="mono">{m.subject_id}</dd>
                 <dt>Generator</dt>

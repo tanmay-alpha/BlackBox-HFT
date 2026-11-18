@@ -114,13 +114,18 @@ function Header({ answer, actions }: { answer?: ReactNode; actions?: ReactNode }
         <p className="ex-flags">
           <span className="ex-eyebrow">Latency experiment</span>
           <span className="ex-flag ex-flag-data">Synthetic data</span>
-          <span className="ex-flag">Simulated historical replay</span>
+          <span className="ex-flag">Simulated replay</span>
           <span className="ex-flag">No market impact</span>
         </p>
         {actions ? (
           <details className="ex-head-actions">
             <summary>Research views</summary>
-            <div>{actions}</div>
+            <div>
+              {actions}
+              <Link className="btn" to={paths.research()}>
+                Research home: five investigations
+              </Link>
+            </div>
           </details>
         ) : null}
       </div>
@@ -588,7 +593,7 @@ function Loaded({ exp, scroller }: { exp: Experiment; scroller: RefObject<HTMLDi
       </section>
 
       <footer className="ex-foot">
-        Simulated historical replay of a synthetic dataset. Simulated orders do not affect the observed market; results do not predict live
+        Simulated replay of a synthetic dataset. Simulated orders do not affect the generated market events; results do not predict live
         performance, and a smaller loss is not a profit. <Link to={paths.overview()}>All experiments</Link>
       </footer>
     </>

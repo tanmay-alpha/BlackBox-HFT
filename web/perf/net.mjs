@@ -93,12 +93,17 @@ export class NetLog {
       total += r.encoded;
     }
     const ms = (r) => (r.end === null ? null : Math.round((r.end - r.start) * 1000 * 10) / 10);
+    // Offsets from the first request of the page (the document), for a waterfall.
+    const origin = this.requests.length ? this.requests[0].start : 0;
+    const at = (t) => (t === null ? null : Math.round((t - origin) * 1000));
     const view = (r) => ({
       method: r.method,
       url: r.url.startsWith(this.apiBase) ? r.url.slice(this.apiBase.length) : r.url,
       type: r.type,
       status: r.status,
       duration_ms: ms(r),
+      start_ms: at(r.start),
+      end_ms: at(r.end),
       ttfb_ms: r.responseAt === null ? null : Math.round((r.responseAt - r.start) * 1000 * 10) / 10,
       encoded_bytes: r.encoded,
       decoded_bytes: r.decoded,

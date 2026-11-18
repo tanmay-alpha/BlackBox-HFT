@@ -1,10 +1,12 @@
 // The workspaces in the navigation (UI_DESIGN_SPEC.md §5.3, §8.1, §12), each backed by `/api/v1`
-// endpoints (API_CONTRACT.md §8): Simulation Workbench by jobs, Risk & Performance by run metrics
-// and equity, Research Reports by run reports and saved reports, System by status, readiness and
-// the admin reads.
+// endpoints (API_CONTRACT.md §8) or a published artefact: Research home by the study result and
+// the workbench examples, Execution studies and the Queue model lab by published study results,
+// Simulation Workbench by jobs, Risk & Performance by run metrics and equity, Research Reports by
+// run reports and saved reports, System by status, readiness and the admin reads.
 
 import {
   BookOpen,
+  Compass,
   Cpu,
   Database,
   FileText,
@@ -12,9 +14,11 @@ import {
   GitCompareArrows,
   LayoutDashboard,
   Layers,
+  ListOrdered,
   LineChart,
   Microscope,
   Server,
+  Sigma,
   SlidersHorizontal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -33,7 +37,22 @@ export const SECTIONS: { id: SectionId; name: string }[] = [
 ];
 
 export interface WorkspaceDef {
-  id: 'explore' | 'overview' | 'data' | 'book' | 'market' | 'strategy' | 'sim' | 'forensics' | 'risk' | 'compare' | 'reports' | 'system';
+  id:
+    | 'research'
+    | 'explore'
+    | 'overview'
+    | 'data'
+    | 'book'
+    | 'market'
+    | 'strategy'
+    | 'sim'
+    | 'studies'
+    | 'queuelab'
+    | 'forensics'
+    | 'risk'
+    | 'compare'
+    | 'reports'
+    | 'system';
   name: string;
   section: SectionId;
   /** Two-letter mnemonic, shown only in the collapsed rail. */
@@ -49,10 +68,13 @@ export interface WorkspaceDef {
 const under = (prefix: string) => (p: string) => p === prefix || p.startsWith(`${prefix}/`);
 
 export const WORKSPACES: WorkspaceDef[] = [
+  { id: 'research', name: 'Research home', section: 'explore', mnemonic: 'RH', chord: 'h', path: paths.research(), icon: Compass, owns: under('/research') },
   { id: 'explore', name: 'Latency experiment', section: 'explore', mnemonic: 'LX', chord: 'e', path: paths.explore(), icon: FlaskConical, owns: (p) => p === '/' },
   { id: 'overview', name: 'All experiments', section: 'explore', mnemonic: 'EX', chord: 'o', path: paths.overview(), icon: LayoutDashboard, owns: under('/experiments') },
   { id: 'strategy', name: 'Strategy Lab', section: 'studio', mnemonic: 'SL', chord: 'l', path: paths.strategy(), icon: SlidersHorizontal, owns: under('/strategy') },
   { id: 'sim', name: 'Jobs & Sweeps', section: 'studio', mnemonic: 'JS', chord: 'w', path: paths.sim(), icon: Cpu, owns: under('/sim') },
+  { id: 'studies', name: 'Execution studies', section: 'studio', mnemonic: 'ST', chord: 's', path: paths.studies(), icon: Sigma, owns: under('/studies') },
+  { id: 'queuelab', name: 'Queue model lab', section: 'studio', mnemonic: 'QL', chord: 'q', path: paths.queueLab(), icon: ListOrdered, owns: under('/queue-lab') },
   { id: 'reports', name: 'Reports', section: 'studio', mnemonic: 'RE', chord: 'p', path: paths.reports(), icon: FileText, owns: under('/reports') },
   { id: 'data', name: 'Datasets', section: 'market', mnemonic: 'DS', chord: 'm', path: paths.datasets(), icon: Database, owns: under('/data') },
   { id: 'book', name: 'Order Book Replay', section: 'market', mnemonic: 'OB', chord: 'b', path: paths.book(), icon: BookOpen, owns: under('/book') },

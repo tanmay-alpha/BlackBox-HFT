@@ -6,6 +6,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import type { Collected } from '../../api/client';
 import type { Run } from '../../api/model';
 import { paths } from '../../shell/paths';
+import { runLabelText, useDemoTitles } from '../../components/labels';
 import type { AsyncResult } from '../../components/ui';
 
 export type BookMarketQuery = { t0?: number; len?: number; levels?: number };
@@ -30,6 +31,7 @@ export function BookModeMarket({
   cursor: number | null;
 }) {
   const navigate = useNavigate();
+  const demoTitles = useDemoTitles();
   const matching = (runs.data?.items ?? []).filter((r) => r.dataset.id === datasetId);
   const shown = `${matching.length} stored run${matching.length === 1 ? '' : 's'}${runs.data?.incomplete ? ' (list incomplete: first runs shown)' : ''}`;
   const reason = runReason(runs, matching);
@@ -51,7 +53,7 @@ export function BookModeMarket({
           <option value="">{reason ?? shown}</option>
           {matching.map((r) => (
             <option key={r.run_id} value={r.run_id}>
-              {r.label ? `${r.label} \u00b7 ${r.run_id}` : r.run_id}
+              {r.label ? `${runLabelText(r.label, demoTitles)} \u00b7 ${r.run_id}` : r.run_id}
             </option>
           ))}
         </select>

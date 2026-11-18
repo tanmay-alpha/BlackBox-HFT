@@ -377,7 +377,7 @@ const DATASET_COLUMNS: Column<DatasetSummary>[] = [
           synthetic
         </Badge>
       ) : (
-        <Badge kind="observed" title="Recorded historical market data.">
+        <Badge kind="observed" title="Converted from recorded exchange data.">
           recorded
         </Badge>
       ),
@@ -555,7 +555,7 @@ function System() {
           What this laboratory can and cannot tell you
         </h3>
         <p className="prose">
-          Replay historical Level-2 market data, simulate a strategy&apos;s orders through a pinned matching engine, and take every simulated order
+          Replay Level-2 market data (recorded or synthetic, as each dataset declares), simulate a strategy&apos;s orders through a pinned matching engine, and take every simulated order
           apart on two clocks. Research only: nothing here is a live or real execution.
         </p>
         <dl className="ov-bases">
@@ -563,14 +563,14 @@ function System() {
             <BasisBadge basis="observed" />
           </dt>
           <dd>
-            Historical Level-2 book updates and trade prints, with the timestamps the data records. Prices and displayed quantity per price level
+            Level-2 book updates and trade prints of the dataset (recorded market data or synthetic generated events, as its kind declares), with the timestamps the data records. Prices and displayed quantity per price level
             come from the dataset, not from us.
           </dd>
           <dt>
             <BasisBadge basis="modeled" />
           </dt>
           <dd>
-            Everything about your orders: latency, queue position, fills and fees are outputs of the configured execution model on a historical
+            Everything about your orders: latency, estimated queue position, simulated fills and fees are outputs of the configured execution model on a dataset
             replay. A simulated fill is not an execution.
           </dd>
           <dt>

@@ -1,16 +1,13 @@
-// Step 3, Order book at the selected event: the L3 book (every resting order per price level in
-// FIFO order) beside the L2 aggregate of the same instant, which is all a market-by-price feed
-// shows. Both come from one server response, so they always describe the same event.
+// Expert view of the order book step: the raw L3 table (every listed resting order per price
+// level in FIFO order) beside the L2 ladder of the same instant, after the selected event. Both
+// come from one `book` response for that source event index.
 
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { fmtDuration, fmtInt } from '../../components/fmt';
-import { PaneTabs } from '../../components/PaneTabs';
-import { SplitPane } from '../../components/SplitPane';
-import { Badge, Empty, ErrorBox, Notice, Panel, Spinner, useAsync } from '../../components/ui';
+import { Badge, Empty, ErrorBox, Panel, Spinner, useAsync } from '../../components/ui';
 import { marketApi, type BookLevel, type MarketBook, type MarketEvent } from './api';
-import { EventFacts } from './EventFacts';
 import { fmtPrice4, fmtSessionNs, fmtShares, listedOf, nsBetween, topOfBook } from './model';
 
 const LEVEL_CHOICES = [5, 10, 20];
@@ -40,7 +37,7 @@ function L3Side({ side, levels, book, highlight }: { side: Side; levels: BookLev
               Shares ahead
             </th>
             <th scope="col" className="num">
-              Age
+              Age so far
             </th>
             <th scope="col" className="num">
               Entered at
@@ -179,23 +176,18 @@ function Touch({ book }: { book: MarketBook }) {
   );
 }
 
-export function BookView({
+export function RawBook({
   datasetId,
   eventIndex,
   event,
-  phone,
-  eventFailure,
 }: {
   datasetId: string;
   eventIndex: number;
-  /** The selected event: `undefined` while loading, `null` for another symbol's frame. */
+  /** The selected event, when known (its orders are marked). */
   event: MarketEvent | null | undefined;
-  eventFailure: string | null;
-  phone: boolean;
 }) {
   const [levels, setLevels] = useState(5);
   const [perLevel, setPerLevel] = useState(20);
-  const [pane, setPane] = useState<'l3' | 'l2'>('l3');
   const book = useAsync(
     (signal) => marketApi.book(datasetId, { event_index: eventIndex, levels, orders_per_level: perLevel }, { signal }),
     [datasetId, eventIndex, levels, perLevel],
@@ -232,67 +224,32 @@ export function BookView({
   else if (!book.data) content = <Spinner label={`Reconstructing the book after event #${fmtInt(eventIndex)}`} />;
   else {
     const b = book.data;
-    const l3 = (
-      <Panel
-        title="L3: individual orders"
-        basis="observed"
-        fill
-        caption="Every resting order, its reference, size, FIFO position at its price, and age at this event. Queue position is the reconstruction's arrival order, not a proof of the venue's matching sequence."
-      >
-        <div className="col">
-          <L3Side side="ask" levels={b.asks} book={b} highlight={highlight} />
-          <L3Side side="bid" levels={b.bids} book={b} highlight={highlight} />
-        </div>
-      </Panel>
-    );
-    const l2 = (
-      <Panel title="L2: price levels" basis="derived" fill caption="The same book aggregated per price, as a market-by-price feed shows it.">
-        <div className="col">
-          <Notice tag="L2 hides" tone="info">
-            A Level-2 view shows only price and total shares. It hides which orders make up a level, their order references, their
-            ages and every order{'\u2019'}s queue position, so a cancel or fill cannot be placed in the queue from L2 alone.
-          </Notice>
-          <L2Ladder book={b} />
-        </div>
-      </Panel>
-    );
     content = (
-      <div className="mk-book">
-        <div className="mk-book-head">
-          <Touch book={b} />
-          {b.bids.length === 0 && b.asks.length === 0 ? <Empty>The book is empty after this event.</Empty> : null}
+      <>
+        <Touch book={b} />
+        {b.bids.length === 0 && b.asks.length === 0 ? <Empty>The book is empty after this event.</Empty> : null}
+        <div className="mk-raw-grid">
+          <Panel
+            title="L3: individual orders"
+            basis="observed"
+            caption="Every listed resting order, its reference, size, FIFO position at its price, and age so far at this event. Queue position is the reconstruction's arrival order, not a proof of the venue's matching sequence."
+          >
+            <div className="col">
+              <L3Side side="ask" levels={b.asks} book={b} highlight={highlight} />
+              <L3Side side="bid" levels={b.bids} book={b} highlight={highlight} />
+            </div>
+          </Panel>
+          <Panel title="L2: price levels" basis="derived" caption="The same book aggregated per price, as a market-by-price feed shows it.">
+            <L2Ladder book={b} />
+          </Panel>
         </div>
-        <div className="mk-book-panes">
-          {phone ? (
-            <PaneTabs<'l3' | 'l2'>
-              label="Book views"
-              active={pane}
-              onChange={setPane}
-              tabs={[
-                { id: 'l3', label: 'L3 orders', content: l3 },
-                { id: 'l2', label: 'L2 levels', content: l2 },
-              ]}
-            />
-          ) : (
-            <SplitPane
-              id="market.book"
-              panes={[
-                { id: 'l3', label: 'L3 individual orders', defaultSize: '62%', minSize: '35%', content: l3 },
-                { id: 'l2', label: 'L2 price levels', defaultSize: '38%', minSize: 240, content: l2 },
-              ]}
-            />
-          )}
-        </div>
-      </div>
+      </>
     );
   }
 
   return (
-    <div className="mk-book-wrap">
-      <div className="mk-book-bar">
-        <EventFacts index={eventIndex} event={event} failure={eventFailure} />
-        {controls}
-      </div>
+    <div className="mk-raw">
+      {controls}
       {content}
     </div>
   );

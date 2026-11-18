@@ -15,6 +15,7 @@ import { Badge, BasisBadge, Empty } from "../../components/ui";
 import { ClockText } from "./evidence";
 import { eventFields, eventTitle } from "./eventFormat";
 import { EM_DASH, fmtSince } from "./labels";
+import { reasonText } from "../../components/labels";
 import type { BadgeKind } from "./labels";
 
 // ---------------------------------------------------------------------------------------------
@@ -56,7 +57,7 @@ export function ExplanationSteps({
                   onClick={() => onStep(active ? null : i)}
                 >
                   <span className="fx-step-no mono">{i + 1}</span>
-                  <Badge kind={step.basis}>{step.basis}</Badge>
+                  <BasisBadge basis={step.basis} />
                   <span className="fx-step-text">{step.statement}</span>
                 </button>
                 <div className="fx-step-cites">
@@ -376,7 +377,7 @@ export function DecisionContext({
           </tr>
           <tr>
             <th scope="row">Strategy's stated reason</th>
-            <td className="wrap">{reason}</td>
+            <td className="wrap" title={reason}>{reasonText(reason)}</td>
           </tr>
         </tbody>
       </table>

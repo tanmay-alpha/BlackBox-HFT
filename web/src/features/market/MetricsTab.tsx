@@ -208,7 +208,7 @@ function lossRows(c: MarketComparison): LossRow[] {
   const cancels = c.cancel_messages;
   return [
     { measure: 'Events naming an individual order', value: c.order_identity_observations, of: 'of events', share: ratio(c.order_identity_observations, c.events) },
-    { measure: 'Queue positions observed at the touch', value: c.touch_queue_observations, of: '', share: null },
+    { measure: 'Queue positions read at the touch', value: c.touch_queue_observations, of: '', share: null },
     { measure: 'Execution messages', value: c.execution_messages, of: '', share: null },
     {
       measure: 'Executions attributable to a specific order',

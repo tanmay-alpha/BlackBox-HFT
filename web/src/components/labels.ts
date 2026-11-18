@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react';
 
 import { api } from '../api/client';
 import { LAB_FIELD_LABELS, LATENCY_MODEL_LABELS } from './labFieldLabels';
-import { EXCHANGE_MODEL_INFO, QUEUE_MODEL_INFO, SIGMA_SOURCE_INFO, STRATEGY_INFO, fractionToBps } from './describe';
+import { EXCHANGE_MODEL_INFO, QUEUE_MODEL_INFO, SIGMA_SOURCE_INFO, STRATEGY_INFO, fractionToBps, strategyName } from './describe';
 import { fmtDurationExact } from './fmt';
 
 // ----- configuration paths ----------------------------------------------------------------------
@@ -70,17 +70,46 @@ export function valueLabel(value: string): string {
   return VALUE_LABEL[value] ?? value.replace(/_/g, ' ');
 }
 
-/** One configuration value as read: durations for `_ns`, basis points beside fee fractions. */
+/** A strategy's reason with its kind id prefix (`touch_maker: quote bid …`) named in words. Show the raw reason as the title. */
+export function reasonText(reason: string): string {
+  const m = /^([a-z][a-z0-9_]*): ([\s\S]*)$/.exec(reason);
+  return m ? `${strategyName(m[1])}: ${m[2]}` : reason;
+}
+
+/** Keys of a configuration object listed first, in this order (a latency leg reads `min …, jitter …`). */
+const KEY_ORDER = ['min_ns', 'median_ns', 'mean_ns', 'jitter', 'sigma', 'clip', 'unit'];
+
+function keyRank(k: string): number {
+  const i = KEY_ORDER.indexOf(k);
+  return i === -1 ? KEY_ORDER.length : i;
+}
+
+/**
+ * The one formatter for a stored configuration value: `none` for null/empty, durations for `_ns`
+ * (numbers or integer strings), basis points beside fee fractions, enum words for strings and
+ * `key value` lists for objects (`min 768.92 µs, jitter 0.5, clip 0.1, unit 10`).
+ */
 export function configValueText(path: string, v: unknown): string {
   if (v === null || v === undefined) return 'none';
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
-  if (typeof v === 'string') return valueLabel(v);
-  if (typeof v === 'number') {
-    if (path.endsWith('_ns') && Number.isFinite(v)) return fmtDurationExact(v);
-    if (path.startsWith('execution.fees.') && Number.isFinite(v)) return `${v} (${fractionToBps(v)} bp)`;
-    return String(v);
+  if (path.endsWith('_ns') && (typeof v === 'number' || (typeof v === 'string' && /^-?\d+$/.test(v)))) {
+    return typeof v === 'number' && !Number.isFinite(v) ? String(v) : fmtDurationExact(v);
   }
-  return JSON.stringify(v);
+  if (typeof v === 'number') {
+    return path.startsWith('execution.fees.') && Number.isFinite(v) ? `${v} (${fractionToBps(v)} bp)` : String(v);
+  }
+  if (typeof v === 'string') return valueLabel(v);
+  if (Array.isArray(v)) return v.length === 0 ? 'none' : v.map((x) => configValueText(path, x)).join(', ');
+  if (typeof v !== 'object') return String(v);
+  const entries = Object.entries(v as Record<string, unknown>).sort(([x], [y]) => keyRank(x) - keyRank(y));
+  if (entries.length === 0) return 'none';
+  return entries
+    .map(([k, x]) => {
+      const name = k.replace(/_ns$/, '').replace(/_/g, ' ');
+      const text = configValueText(`${path}.${k}`, x);
+      return `${name} ${x !== null && typeof x === 'object' && !Array.isArray(x) ? `(${text})` : text}`;
+    })
+    .join(', ');
 }
 
 function leaves(obj: Record<string, unknown>, prefix = ''): [string, unknown][] {

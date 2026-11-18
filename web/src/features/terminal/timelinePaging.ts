@@ -5,7 +5,21 @@
 
 import type { RunTimeline } from '../../api/model';
 import type { FlightEvent } from '../../api/types';
-import { lastEventAtOrBefore } from './EventLog';
+
+/**
+ * Index of the last event with `ts <= t` in `events` sorted by `ts`, or -1. Lives here, not in
+ * EventLog, so pages that only search a timeline (Explore) do not load the table code.
+ */
+export function lastEventAtOrBefore(events: FlightEvent[], t: number): number {
+  let lo = 0;
+  let hi = events.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (events[mid].ts <= t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
 
 /** The first event after `t` (forward) or last before it (backward), on the sorted time axis. */
 export function findStep(events: FlightEvent[], t: number, dir: 1 | -1): FlightEvent | null {

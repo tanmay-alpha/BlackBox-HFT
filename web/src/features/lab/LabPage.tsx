@@ -1050,7 +1050,7 @@ export default function LabPage() {
     <section className="lab-step" id="lab-step-run" aria-labelledby="lab-step-run-title">
       <StepHead n={4} id="lab-step-run" title="Run" lede="Name the run if you like, then submit it to the simulation queue." />
       <Notice tag="simulated">
-        Results are simulated on historical replay: orders never reach an exchange and the simulation has no market impact.
+        Results are simulated on a replay of the selected dataset: orders never reach an exchange and the simulation has no market impact.
         {synthetic ? ' This dataset is synthetic, not market data.' : ''}
       </Notice>
       <form

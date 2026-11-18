@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  axisLeftMargin,
   checkCounts,
   checkStatus,
+  clampAxisLabel,
   fmtPrice4,
   fmtSessionNs,
   fmtShare,
   fmtShares,
   listedOf,
   nsBetween,
+  parseExampleParam,
   parseWorkbenchQuery,
   ratio,
   sampleAtOrBefore,
@@ -31,6 +34,37 @@ describe('parseWorkbenchQuery', () => {
       from: null,
     });
     expect(parseWorkbenchQuery(new URLSearchParams('event=1.5'))).toMatchObject({ event: null });
+  });
+});
+
+describe('parseExampleParam', () => {
+  it('accepts curated-example ids and opens the book step for them', () => {
+    expect(parseExampleParam(new URLSearchParams('example=cancel-ahead'))).toBe('cancel-ahead');
+    expect(parseExampleParam(new URLSearchParams('example=Cancel'))).toBeNull();
+    expect(parseExampleParam(new URLSearchParams('example=a/b'))).toBeNull();
+    expect(parseWorkbenchQuery(new URLSearchParams('example=replace')).tab).toBe('book');
+    expect(parseWorkbenchQuery(new URLSearchParams('example=replace&tab=metrics')).tab).toBe('metrics');
+  });
+});
+
+describe('event indices and timestamps', () => {
+  it('reads event indices only as safe integers and keeps nanoseconds exact as strings', () => {
+    expect(parseWorkbenchQuery(new URLSearchParams('event=9007199254740993'))).toMatchObject({ event: null });
+    expect(parseWorkbenchQuery(new URLSearchParams('event=30033'))).toMatchObject({ event: 30033 });
+    // Two timestamps one nanosecond apart beyond 2^53 stay distinct (no float rounding).
+    expect(nsBetween('9007199254740992', '9007199254740993')).toBe('1');
+    expect(fmtSessionNs('34209610400033')).toBe('09:30:09.610\u2009400\u2009033');
+  });
+});
+
+describe('chart axes', () => {
+  it('reserves room for the widest value label and keeps tick labels inside the plot', () => {
+    expect(axisLeftMargin(['100.0500', '99.9500'])).toBe(66);
+    expect(axisLeftMargin(['0'])).toBe(40);
+    // `#30,033` (7 characters) at the right edge of a 600 px chart is pulled inside it.
+    expect(clampAxisLabel(588, '#30,033', 600)).toBe(574.5);
+    expect(clampAxisLabel(40, '#0', 600)).toBe(40);
+    expect(clampAxisLabel(3, '#0', 600)).toBe(8);
   });
 });
 

@@ -2,14 +2,15 @@
 // Run only on purpose: `PROD_RESEARCH_KEY=… npx playwright test -c playwright.prod.config.ts
 // e2e-prod/research.prod.spec.ts`. The key is read from the environment, typed into the access
 // dialog and never logged. Evidence (ids, states, timings) is written to
-// `../docs/rebuild/prod-research-evidence.json`.
+// `../docs/rebuild/prod-research-evidence.json` when the target is the deployed product.
 
 import { writeFileSync } from 'node:fs';
 
 import { expect, test } from '@playwright/test';
 
-const API = process.env.PROD_API_URL ?? 'https://blackbox-hft-api.onrender.com/api/v1';
-const ORIGIN = process.env.PROD_URL ?? 'https://blackbox-hft.vercel.app';
+import { API_URL, IS_PRODUCTION, WEB_URL as ORIGIN } from './env';
+
+const API = `${API_URL}/api/v1`;
 const KEY = process.env.PROD_RESEARCH_KEY ?? '';
 const DEMO_RUN = '253bbc23b342f373';
 
@@ -131,6 +132,6 @@ test('bounded keyed experiment: submit, complete, inspect, compare, report, relo
 
   evidence.page_errors = errors;
   evidence.finished_at = new Date().toISOString();
-  writeFileSync('../docs/rebuild/prod-research-evidence.json', JSON.stringify(evidence, null, 2));
+  if (IS_PRODUCTION) writeFileSync('../docs/rebuild/prod-research-evidence.json', JSON.stringify(evidence, null, 2));
   expect(errors).toEqual([]);
 });
