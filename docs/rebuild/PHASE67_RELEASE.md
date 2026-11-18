@@ -61,8 +61,24 @@ Commits `c450764` (API), `06e98b3` (study page), `ad1a08b` (docs). PR and `main`
   0 DB acquisitions); anonymous analytics keeps one report query.
 - Study page links stored runs from the verified run list; unlisted runs are read one at a time with the busy retry.
 
-Still open: AT-5/SEC-6 (largest-job phases 362–394 MiB, above 300 MB), SEC-10 analytics report query
-([SECURITY_DISPOSITIONS.md](SECURITY_DISPOSITIONS.md)).
+Still open after follow-up 2: AT-5/SEC-6 (largest-job phases 362–394 MiB, above 300 MB; under-covered read set), SEC-10
+analytics report query.
+
+## Follow-up 3: `18aed41` (PR #7)
+
+Commits `4adf4df` (hosted), `860f0c6` (docs). PR CI 44382600504 and `main` CI 44385000957 green; publish 44387431947,
+image `sha256:bac3807b893d5fb99d9882a039c16ac35dc7aeaa656a7a99d52d093da2e84511`; Render deploy
+`dep-dbv0d1d6e07s73ab741g`; `/status` `git_sha=18aed41…`, worker idle; smoke 8/8; Vercel built from `main`;
+production suite 15 passed, 1 skipped (keyed), no retries.
+
+- SEC-10 closed for demo bundles that contain analytics: anonymous `/analytics` and `/analytics/series` project the
+  authenticated bundle-trailer report text (24 reads, 0 DB acquisitions; bytes identical to keyed responses).
+- Hosted memory: one-run/128 MiB parsed-run cache, exact-size cached response bodies (32 MiB, idle expiry),
+  `MALLOC_MMAP_THRESHOLD_=131072`, SQLx buffer shrink on connection release; memory fixture read set corrected (1,289
+  URIs). 512 MB, three pinned repeats: job + concurrent reads + comparison 273.6–288.7 MiB (was 397.3), largest single
+  job 186.6–202.7 (339.7), idle 123.7–126.9 (200.5). AT-5/SEC-6 remains Open: 2.6 MiB over in one repeat.
+- The mmap threshold costs about 15–20% more CPU under phase-4 concurrency; it is an image `ENV` that can be overridden
+  in the Render service settings without a rebuild.
 
 ## Rollback
 
