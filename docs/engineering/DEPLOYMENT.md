@@ -142,7 +142,13 @@ cook` = dependency layer, then `cargo build --release --locked --target x86_64-u
 | Web assets | none (the SPA is on Vercel) | `/app/web` |
 | Command | `blackbox --data-dir /var/lib/blackbox serve` | `blackbox --data-dir /data demo --addr 0.0.0.0:8787 --web-dir /app/web` |
 | Data | `/var/lib/blackbox`, ephemeral scratch (synthetic datasets, verified-bundle cache) | volume `/data` |
-| Env baked in | `PORT=8787` (Render overrides), `BB_GIT_SHA=<commit>`, `MALLOC_ARENA_MAX=2` (glibc arena cap, `docs/rebuild/HOSTED_MEMORY.md`) | `MALLOC_ARENA_MAX=2` |
+| Env baked in | `PORT=8787` (Render overrides), `BB_GIT_SHA=<commit>`, `MALLOC_ARENA_MAX=2`, `MALLOC_MMAP_THRESHOLD_=131072` | `MALLOC_ARENA_MAX=2` |
+
+The glibc arena cap limits allocator fragmentation. The hosted-only fixed 128 KiB mmap threshold
+returns large freed read/job buffers directly to the kernel instead of letting glibc's adaptive
+threshold retain them inside arenas. It disables dynamic threshold adjustment and can add
+`mmap`/`munmap` calls: CPU time, simulation wall time and warm-read latency were measured before
+keeping it (see `docs/rebuild/HOSTED_MEMORY.md`). Recheck those trade-offs if the workload changes.
 
 - **Base images** are pinned as `tag@sha256:<index digest>`: `rust:1.100.0-trixie`, `node:22.23.5-trixie-slim`,
   `debian:trixie-20261104-slim`. Each digest was read on 2026-11-14 with an anonymous registry token and
@@ -249,7 +255,10 @@ no second `BLACKBOX_` convention.
 | `BB_ADMIN_BOOTSTRAP_KEY_SHA256` | no | **yes** | 64 lowercase hex = sha256 of a `bbk_…` key | Render secret (may stay empty) | startup: ensure one active `admin` key with this digest exists (§8 step 7) |
 | `BB_GIT_SHA` | baked in | no | 40-hex commit | Dockerfile `ARG GIT_SHA` ← publish.yml | `/api/v1/status` `git_sha`; smoke test waits for it |
 | `RUST_LOG` | no | no | `info` | render.yaml | `tracing-subscriber` filter |
-| `BB_RESULT_PLATFORM`, `BB_PAGE_CACHE_BYTES`, `BB_ARTIFACT_DISK_CACHE_BYTES`, `BB_ARTIFACT_WHOLE_FETCH_MAX`, `BB_MAX_RESPONSE_BYTES`, `BB_COMPARISON_TIMEOUT_S` (default 60, 1–600; API_CONTRACT §8.6) | no | no | defaults in TARGET_ARCHITECTURE §7–§9, §17 and API_CONTRACT §7 | – | tuning; unset on Render |
+| `BB_PARSED_RUN_CACHE_BYTES` | no | no | hosted `134217728` (128 MiB), local `67108864` (64 MiB); `0` disables retention | profile default | timeline parsed-run LRU (hosted: at most one run; local: two; decoded section-byte estimate); fits the measured largest admitted runs, concurrent misses still share one decode |
+| `BB_RESPONSE_CACHE_BYTES` | no | no | `33554432` (32 MiB); `0` disables retention | default | anonymous response-body cache (at most 512 entries); expired bodies released during maintenance |
+| `BB_ARTIFACT_DISK_CACHE_BYTES` | no | no | `268435456` (256 MiB) | default | verified bundle files on disk; Linux's reclaimable cgroup file cache is not a separately configured process page cache (`BB_PAGE_CACHE_BYTES` is not implemented) |
+| `BB_RESULT_PLATFORM`, `BB_ARTIFACT_WHOLE_FETCH_MAX`, `BB_MAX_RESPONSE_BYTES`, `BB_COMPARISON_TIMEOUT_S` (default 60, 1–600; API_CONTRACT §8.6) | no | no | defaults in TARGET_ARCHITECTURE §7–§9, §17 and API_CONTRACT §7 | – | tuning; unset on Render |
 | `BB_ALLOW_CLOUD_CREDENTIALS` | never on Render | no | `true` | operator env file only (`scripts/ops/prod-run.sh`) | local profile: permit `BLOB_READ_WRITE_TOKEN` or a non-local database URL for one operator command; startup logs `cloud_credentials_override` |
 
 Outside the container:
