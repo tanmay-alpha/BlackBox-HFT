@@ -149,6 +149,18 @@ APIs. A search of both code bases (`grep -rn "\.extract(\|ZipStreamReader"` over
 been checked against the dataset manifest. The CI job lists these IDs in `ignore` with this
 justification; revisit when the engine moves to zip 9.
 
+Four advisories issued on 2026-11-17 failed the Phase 6/7 release CI (run 44287056318) and were
+accepted with this evidence:
+
+| Advisory | Crate | Issue | Status |
+|---|---|---|---|
+| RUSTSEC-2026-0545 | zip 6.0.0 | AES entries accepted without their authentication code when truncated or empty (`aes-crypto`, password reads such as `by_name_decrypt`) | Not reachable: no password-decrypting read in either code base |
+| RUSTSEC-2026-0547 | zip 6.0.0 | Shrink/Reduce/Implode decoders preallocate the declared size | Not reachable: needs the `legacy-zip` feature, which `cargo tree -e features -i zip` does not list |
+| RUSTSEC-2026-0548 | zip 6.0.0 | `ZipStreamReader` uses local-header names | Not reachable: `ZipStreamReader` is never called |
+| RUSTSEC-2026-0543 | chrono 0.4.45 | unmaintained (informational) | Accepted: no known vulnerability; used by sqlx and for timestamps; replacing it means moving sqlx to `time` |
+
+All three zip fixes are in zip 9.x only, so the same engine constraint applies.
+
 ### Hosted console
 
 The removed static-file viewer is not a deployment mode. The Vercel SPA reads the live v1 API;

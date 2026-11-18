@@ -189,7 +189,12 @@ jobs:
           # - RUSTSEC-2026-0459: libsqlite3-sys (C SQLite). Present in Cargo.lock only as an
           #   optional dependency of sqlx-sqlite; sqlx is built with the `postgres` driver only and
           #   `cargo tree -i libsqlite3-sys --target all -e all` prints nothing: never compiled.
-          ignore: RUSTSEC-2026-0367,RUSTSEC-2026-0368,RUSTSEC-2026-0369,RUSTSEC-2026-0429,RUSTSEC-2025-0141,RUSTSEC-2026-0459
+          # - RUSTSEC-2026-0545/0547/0548 (zip 6, issued 2026-11-17; patched only in zip 9):
+          #   0545 needs a password-decrypting read (`by_name_decrypt`), 0547 needs the `legacy-zip`
+          #   feature (not enabled: `cargo tree -e features -i zip`), 0548 needs `ZipStreamReader`;
+          #   none is called by the engine or BlackBox.
+          # - RUSTSEC-2026-0543: chrono unmaintained (informational, no known vulnerability).
+          ignore: RUSTSEC-2026-0367,RUSTSEC-2026-0368,RUSTSEC-2026-0369,RUSTSEC-2026-0429,RUSTSEC-2025-0141,RUSTSEC-2026-0459,RUSTSEC-2026-0545,RUSTSEC-2026-0547,RUSTSEC-2026-0548,RUSTSEC-2026-0543
 
   docker:
     # The documented local quick start must work: docker-compose.yml builds the `local` image and
