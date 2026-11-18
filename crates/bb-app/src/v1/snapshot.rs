@@ -266,6 +266,8 @@ pub async fn maintain(state: Shared) {
     loop {
         tick.tick().await;
         let now = state.data_generation();
+        state.anon_cache.expire(now);
+        super::market::expire_idle();
         let stable = now == seen;
         seen = now;
         if stable && state.snapshot.generation().is_some_and(|g| g != now) {

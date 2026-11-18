@@ -1235,8 +1235,9 @@ pub async fn run_analytics(
     Query(q): Query<PlatformQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let view = resolve_run(&state, &caller, &run_id, q.platform.as_deref()).await?;
-    let report = run_analytics_json(&state, &view).await?;
+    let (view, artifact) =
+        resolve_run_for_read(&state, &caller, &run_id, q.platform.as_deref()).await?;
+    let report = run_analytics_json(&state, &view, artifact).await?;
     let body = analytics_text_body(&report, byte_cap(&state, &caller), caller.is_anonymous())?;
     Ok(conditional(
         &headers,
@@ -1309,9 +1310,10 @@ pub async fn run_analytics_series(
     Query(p): Query<PlatformQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let view = resolve_run(&state, &caller, &run_id, p.platform.as_deref()).await?;
-    let report: Value = serde_json::from_str(&run_analytics_json(&state, &view).await?)?;
-    let page = series_page(&report, &q, byte_cap(&state, &caller))?;
+    let (view, artifact) =
+        resolve_run_for_read(&state, &caller, &run_id, p.platform.as_deref()).await?;
+    let report = run_analytics_json(&state, &view, artifact).await?;
+    let page = series_text_page(&report, &q, byte_cap(&state, &caller))?;
     immutable(&headers, &page)
 }
 
@@ -1348,11 +1350,61 @@ pub fn series_page(
     })
 }
 
-/// The stored analytics report of a verified run (exact JSON, digest checked). Computed and
-/// stored first if missing.
-async fn run_analytics_json(state: &Shared, view: &RunView) -> Result<String, ApiError> {
-    verified_summary(state, view, false).await?;
-    verify_bundle(state, view).await?;
+/// Projects one page from authenticated text, borrowing all discarded points.
+pub fn series_text_page(
+    report: &str,
+    q: &SeriesQuery,
+    cap: usize,
+) -> Result<analytics::SeriesPage, ApiError> {
+    let points = analytics::series_json(report, &q.path)?.ok_or_else(|| {
+        ApiError::invalid_field("path", "path must name a series listed in `downsampled`")
+    })?;
+    let offset = usize::try_from(q.offset.unwrap_or(0))
+        .map_err(|_| ApiError::invalid_field("offset", "offset must be ≥ 0"))?;
+    let limit = super::respond::limit_param(q.limit, 1000, 5000)? as usize;
+    let mut selected = Vec::new();
+    let total = analytics::raw_array(points, |index, row| {
+        if index >= offset && index < offset.saturating_add(limit) {
+            selected.push(row);
+        }
+        Ok(())
+    })?;
+    let start = offset.min(total);
+    let (items, by_bytes) = bounded(&selected, cap)?;
+    let next = start + items.len();
+    Ok(analytics::SeriesPage {
+        path: q.path.clone(),
+        total,
+        offset: start,
+        next_offset: (next < total).then_some(next),
+        truncated_by: if by_bytes {
+            Some(TruncatedBy::Bytes)
+        } else if next < total {
+            Some(TruncatedBy::Limit)
+        } else {
+            None
+        },
+        items,
+    })
+}
+
+/// The authenticated analytics text of a run. Anonymous snapshot reads use the bundle report;
+/// keyed/system reads and older bundles retain the digest-checked database path.
+async fn run_analytics_json(
+    state: &Shared,
+    view: &RunView,
+    artifact: Option<Arc<RunArtifact>>,
+) -> Result<String, ApiError> {
+    verified_summary_with_artifact(state, view, false, artifact.clone()).await?;
+    if artifact.is_some() {
+        let _permit = heavy(state).await?;
+        let run = open_with_artifact(state, view.clone(), artifact).await?;
+        if let Some(report) = run.analytics_json().await? {
+            return Ok(report);
+        }
+    } else {
+        verify_bundle(state, view).await?;
+    }
     Ok(match state.db.run_analytics(view.run.id).await? {
         Some(row) => {
             let digest = <sha2::Sha256 as sha2::Digest>::digest(row.report_json.as_bytes());

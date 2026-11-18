@@ -481,20 +481,50 @@ struct Cached {
 
 /// Responses of anonymous GETs, valid while no state change happened (`WorkerHub::generation`)
 /// and for at most 30 s (2 s for job status).
-#[derive(Default)]
 pub struct AnonCache {
     entries: Mutex<HashMap<String, Cached>>,
+    capacity: usize,
+}
+
+impl Default for AnonCache {
+    fn default() -> Self {
+        Self::new(ANON_MAX_BYTES)
+    }
 }
 
 impl AnonCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            capacity,
+        }
+    }
+
+    /// Drop stale bodies even when traffic stops (TTL checks on lookup alone retain them).
+    pub(super) fn expire(&self, generation: u64) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, c| c.generation == generation && c.at.elapsed() < ANON_TTL);
+    }
+
     /// Stores `entry`, first dropping entries of an older generation or past the longest TTL,
-    /// then the least recently used ones until it fits in 512 entries / 32 MiB.
-    fn insert(&self, key: String, entry: Cached) {
+    /// then the least recently used ones until it fits in the entry and byte budgets.
+    /// Returns the body shared by the cache and the outgoing response.
+    fn insert(&self, key: String, mut entry: Cached) -> Bytes {
+        if self.capacity == 0 || entry.body.len() > self.capacity {
+            return entry.body;
+        }
+        // Bytes otherwise retains serde_json's geometrically grown Vec capacity while the
+        // budget counts only its length. Reclaim a uniquely owned Vec, discard spare capacity,
+        // and only then share it with the response. Shared/static inputs are copied as needed.
+        entry.body = Bytes::from(Vec::<u8>::from(entry.body).into_boxed_slice());
+        let body = entry.body.clone();
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         entries.remove(&key);
         entries.retain(|_, c| c.generation == entry.generation && c.at.elapsed() < ANON_TTL);
         let mut used: usize = entries.values().map(|c| c.body.len()).sum();
-        while entries.len() >= ANON_MAX_ENTRIES || used + entry.body.len() > ANON_MAX_BYTES {
+        while entries.len() >= ANON_MAX_ENTRIES || used + entry.body.len() > self.capacity {
             let Some(oldest) = entries
                 .iter()
                 .min_by_key(|(_, c)| c.used)
@@ -507,6 +537,7 @@ impl AnonCache {
             }
         }
         entries.insert(key, entry);
+        body
     }
 }
 
@@ -603,6 +634,7 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
             c.clone()
         });
     if let Some(c) = hit {
+        tracing::trace!(hit = true, "anonymous response cache lookup");
         let mut response = Response::new(Body::from(c.body));
         *response.status_mut() = c.status;
         for (k, v) in c.headers {
@@ -610,6 +642,7 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         }
         return response;
     }
+    tracing::trace!(hit = false, "anonymous response cache lookup");
     let response = next.run(request).await;
     // Only bodies within the anonymous cap are cached; a longer one passes through to `egress`,
     // which refuses it.
@@ -639,7 +672,7 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let now = Instant::now();
-    state.anon_cache.insert(
+    let bytes = state.anon_cache.insert(
         key,
         Cached {
             generation,
@@ -647,7 +680,7 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
             used: now,
             status: parts.status,
             headers,
-            body: bytes.clone(),
+            body: bytes,
         },
     );
     Response::from_parts(parts, Body::from(bytes))
@@ -720,5 +753,94 @@ mod tests {
         assert_eq!(entries.len(), ANON_MAX_ENTRIES);
         assert!(entries.contains_key("k0") && entries.contains_key("new"));
         assert!(!entries.contains_key("k1"));
+    }
+
+    #[test]
+    fn anonymous_cache_respects_small_and_disabled_budgets() {
+        let entry = || Cached {
+            generation: 1,
+            at: Instant::now(),
+            used: Instant::now(),
+            status: StatusCode::OK,
+            headers: Vec::new(),
+            body: Bytes::from_static(b"{}"),
+        };
+        let cache = AnonCache::new(2);
+        cache.insert("a".into(), entry());
+        cache.insert("b".into(), entry());
+        assert_eq!(cache.entries.lock().unwrap().len(), 1);
+        let cache = AnonCache::new(1);
+        cache.insert("oversized".into(), entry());
+        assert!(cache.entries.lock().unwrap().is_empty());
+        let cache = AnonCache::new(0);
+        cache.insert("disabled".into(), entry());
+        assert!(cache.entries.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn anonymous_cache_releases_expired_and_stale_bodies_without_new_requests() {
+        let cache = AnonCache::default();
+        let at = Instant::now() - Duration::from_secs(31);
+        let mut entries = cache.entries.lock().unwrap();
+        for (key, generation, at) in [
+            ("expired", 1, at),
+            ("stale", 0, Instant::now()),
+            ("fresh", 1, Instant::now()),
+        ] {
+            entries.insert(
+                key.into(),
+                Cached {
+                    generation,
+                    at,
+                    used: at,
+                    status: StatusCode::OK,
+                    headers: Vec::new(),
+                    body: Bytes::from_static(b"{}"),
+                },
+            );
+        }
+        drop(entries);
+        cache.expire(1);
+        let entries = cache.entries.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries.contains_key("fresh"));
+    }
+
+    #[tokio::test]
+    async fn cached_body_discards_spare_capacity_without_changing_bytes_or_etag() {
+        use crate::v1::respond::{self, Cache};
+        use axum::http::header;
+
+        let mut encoded = Vec::with_capacity(1 << 20);
+        encoded.push(b'"');
+        encoded.resize(40_001, b'x');
+        encoded.push(b'"');
+        let expected = encoded.clone();
+        let response = respond::json_bytes(StatusCode::OK, encoded, Cache::Immutable);
+        let etag = response.headers()[header::ETAG].clone();
+        let (parts, body) = response.into_parts();
+        let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
+        let cache = AnonCache::new(1 << 20);
+        let now = Instant::now();
+        let outgoing = cache.insert(
+            "body".into(),
+            Cached {
+                generation: 1,
+                at: now,
+                used: now,
+                status: parts.status,
+                headers: vec![(header::ETAG, etag.clone())],
+                body: bytes,
+            },
+        );
+        assert_eq!(outgoing.as_ref(), expected);
+        drop(outgoing);
+        let cached = cache.entries.lock().unwrap().remove("body").unwrap();
+        assert_eq!(cached.headers[0].1, etag);
+        let retained = Vec::<u8>::from(cached.body);
+        assert_eq!(retained.capacity(), retained.len());
+        assert_eq!(retained, expected);
+        let response = respond::json_bytes(StatusCode::OK, retained, Cache::Immutable);
+        assert_eq!(response.headers()[header::ETAG], etag);
     }
 }

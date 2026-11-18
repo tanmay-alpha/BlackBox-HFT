@@ -14,6 +14,7 @@ use bb_analytics::{
 };
 use bb_core::result::RunResult;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
 
@@ -134,6 +135,40 @@ pub fn downsampled(report: &serde_json::Value, max_points: usize) -> serde_json:
     copy
 }
 
+/// Visits borrowed array elements without retaining or decoding discarded points.
+pub(crate) fn raw_array<'a>(
+    raw: &'a RawValue,
+    mut each: impl FnMut(usize, &'a RawValue) -> Result<(), serde_json::Error>,
+) -> Result<usize, serde_json::Error> {
+    struct Rows<F>(F);
+    impl<'de, F> serde::de::Visitor<'de> for Rows<F>
+    where
+        F: FnMut(usize, &'de RawValue) -> Result<(), serde_json::Error>,
+    {
+        type Value = usize;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an array")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            mut self,
+            mut seq: A,
+        ) -> Result<usize, A::Error> {
+            let mut total = 0;
+            while let Some(row) = seq.next_element::<&RawValue>()? {
+                (self.0)(total, row).map_err(serde::de::Error::custom)?;
+                total += 1;
+            }
+            Ok(total)
+        }
+    }
+    serde::Deserializer::deserialize_seq(
+        &mut serde_json::Deserializer::from_str(raw.get()),
+        Rows(&mut each),
+    )
+}
+
 /// Projects stored JSON without materializing discarded series points. Only the response and
 /// the current object's borrowed raw fields are retained, rather than the complete report.
 pub fn downsampled_json(
@@ -143,39 +178,6 @@ pub fn downsampled_json(
     use std::collections::BTreeMap;
 
     use serde_json::{Value, value::RawValue};
-
-    fn array<'a>(
-        raw: &'a RawValue,
-        mut each: impl FnMut(usize, &'a RawValue) -> Result<(), serde_json::Error>,
-    ) -> Result<usize, serde_json::Error> {
-        struct Rows<F>(F);
-        impl<'de, F> serde::de::Visitor<'de> for Rows<F>
-        where
-            F: FnMut(usize, &'de RawValue) -> Result<(), serde_json::Error>,
-        {
-            type Value = usize;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("an array")
-            }
-
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                mut self,
-                mut seq: A,
-            ) -> Result<usize, A::Error> {
-                let mut total = 0;
-                while let Some(row) = seq.next_element::<&RawValue>()? {
-                    (self.0)(total, row).map_err(serde::de::Error::custom)?;
-                    total += 1;
-                }
-                Ok(total)
-            }
-        }
-        serde::Deserializer::deserialize_seq(
-            &mut serde_json::Deserializer::from_str(raw.get()),
-            Rows(&mut each),
-        )
-    }
 
     fn walk(
         raw: &RawValue,
@@ -193,7 +195,7 @@ pub fn downsampled_json(
                     path.push_str(&key.replace('~', "~0").replace('/', "~1"));
                     let total =
                         if SERIES_FIELDS.contains(&key.as_str()) && child.get().starts_with('[') {
-                            array(child, |_, _| Ok(()))?
+                            raw_array(child, |_, _| Ok(()))?
                         } else {
                             0
                         };
@@ -205,7 +207,7 @@ pub fn downsampled_json(
                         });
                         let mut selected = evenly_spaced(total, max).peekable();
                         let mut items = Vec::with_capacity(max);
-                        array(child, |index, row| {
+                        raw_array(child, |index, row| {
                             if selected.peek() == Some(&index) {
                                 selected.next();
                                 items.push(serde_json::from_str(row.get())?);
@@ -223,7 +225,7 @@ pub fn downsampled_json(
             }
             Some(b'[') => {
                 let mut items = Vec::new();
-                array(raw, |index, row| {
+                raw_array(raw, |index, row| {
                     let len = path.len();
                     path.push('/');
                     path.push_str(&index.to_string());
@@ -261,6 +263,52 @@ pub fn series<'a>(report: &'a serde_json::Value, path: &str) -> Option<&'a [serd
         return None;
     }
     report.pointer(path)?.as_array().map(Vec::as_slice)
+}
+
+/// Resolves a series JSON Pointer while borrowing the report's raw fields and array elements.
+/// Only one object's field map is retained at each step; no series points are decoded.
+pub fn series_json<'a>(
+    report: &'a str,
+    path: &str,
+) -> Result<Option<&'a RawValue>, serde_json::Error> {
+    if !SERIES_FIELDS.contains(&path.rsplit('/').next().unwrap_or_default())
+        || !path.starts_with('/')
+    {
+        return Ok(None);
+    }
+    let mut raw: &RawValue = serde_json::from_str(report)?;
+    for token in path[1..].split('/') {
+        let token = token.replace("~1", "/").replace("~0", "~");
+        let child = match raw.get().as_bytes().first() {
+            Some(b'{') => {
+                let fields: std::collections::BTreeMap<String, &RawValue> =
+                    serde_json::from_str(raw.get())?;
+                fields.get(&token).copied()
+            }
+            Some(b'[') => {
+                if token.starts_with('+') || (token.starts_with('0') && token.len() != 1) {
+                    return Ok(None);
+                }
+                let Ok(wanted) = token.parse::<usize>() else {
+                    return Ok(None);
+                };
+                let mut child = None;
+                raw_array(raw, |index, row| {
+                    if index == wanted {
+                        child = Some(row);
+                    }
+                    Ok(())
+                })?;
+                child
+            }
+            _ => None,
+        };
+        let Some(child) = child else {
+            return Ok(None);
+        };
+        raw = child;
+    }
+    Ok(raw.get().starts_with('[').then_some(raw))
 }
 
 /// `GET …/analytics/series`: one page of the complete points of a downsampled series.
@@ -383,6 +431,58 @@ mod projection_tests {
                 serde_json::to_vec(&old).unwrap(),
                 serde_json::to_vec(&new).unwrap(),
             );
+        }
+    }
+
+    #[test]
+    fn borrowed_series_pages_preserve_legacy_bytes_and_errors() {
+        use crate::v1::runs::{SeriesQuery, series_page, series_text_page};
+
+        let text = r#"{"z":{"points":[{"b":-0.0,"a":9000000000000000000},{"b":1e-7,"a":2},{"b":0.3333333333333333,"a":3}]},"a/~":[{"curve":[1,2,3],"points":[]}],"scalar":{"curve":0}}"#;
+        let report: serde_json::Value = serde_json::from_str(text).unwrap();
+        for path in [
+            "/z/points",
+            "/a~1~0/0/curve",
+            "/a~1~0/0/points",
+            "/scalar/curve",
+            "/missing/points",
+            "/a~1~0/00/curve",
+            "/a~1~0/+0/curve",
+            "/a~1~0/-1/curve",
+            "/z",
+            "points",
+            "",
+        ] {
+            for offset in [None, Some(-1), Some(0), Some(1), Some(3), Some(i64::MAX)] {
+                for limit in [None, Some(-1), Some(0), Some(1), Some(5000), Some(5001)] {
+                    for cap in [4096, 4120, 1 << 20] {
+                        let q = SeriesQuery {
+                            path: path.into(),
+                            offset,
+                            limit,
+                        };
+                        let old = series_page(&report, &q, cap);
+                        let new = series_text_page(text, &q, cap);
+                        match (old, new) {
+                            (Ok(old), Ok(new)) => {
+                                let wire = |page| {
+                                    let mut value = serde_json::to_value(page).unwrap();
+                                    crate::wire::to_wire(&mut value).unwrap();
+                                    serde_json::to_vec(&value).unwrap()
+                                };
+                                assert_eq!(wire(old), wire(new), "{path} {offset:?} {limit:?}");
+                            }
+                            (Err(old), Err(new)) => {
+                                assert_eq!(old.status, new.status);
+                                assert_eq!(old.code, new.code);
+                                assert_eq!(old.message, new.message);
+                                assert_eq!(old.details, new.details);
+                            }
+                            _ => panic!("page result differs: {path} {offset:?} {limit:?}"),
+                        }
+                    }
+                }
+            }
         }
     }
 }

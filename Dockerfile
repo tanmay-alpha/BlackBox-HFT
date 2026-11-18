@@ -85,6 +85,9 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # full-process fixture (docs/rebuild/HOSTED_MEMORY.md) 32 concurrent anonymous heavy readers
 # drove the server from 246 to 697 MiB with the default and to 354 MiB with this setting.
 ENV MALLOC_ARENA_MAX=2
+# The hosted target also fixes the mmap threshold at 128 KiB. glibc's adaptive threshold can
+# otherwise move freed large read buffers into retained arenas. This disables dynamic threshold
+# adjustment; CPU, job wall time and warm-read trade-offs are measured in HOSTED_MEMORY.md.
 
 # ---------------------------------------------------------------------------------------------
 # Hosted API image (Render). Process environment contract: docs/engineering/DEPLOYMENT.md §5.
@@ -94,7 +97,8 @@ ENV MALLOC_ARENA_MAX=2
 FROM runtime AS hosted
 ARG GIT_SHA=unknown
 ENV BB_GIT_SHA=${GIT_SHA} \
-    PORT=8787
+    PORT=8787 \
+    MALLOC_MMAP_THRESHOLD_=131072
 WORKDIR /var/lib/blackbox
 USER 10001:10001
 EXPOSE 8787

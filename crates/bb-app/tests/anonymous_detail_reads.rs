@@ -6,6 +6,8 @@ mod common;
 use std::time::Duration;
 
 use bb_app::{
+    analytics::{RunAnalytics, encode},
+    artifacts::open_run_with_artifact,
     metrics::Metrics,
     v1::snapshot::{MAX_ARTIFACT_BYTES, MAX_ROWS, artifact_metadata_bytes},
 };
@@ -58,6 +60,16 @@ async fn assert_quarantined(server: &Server, run: &str) {
     let (status, _, body) = server.get(&format!("/api/v1/runs/{run}"), None).await;
     assert_eq!(status, 500, "{body}");
     assert_eq!(body["error"]["code"], "integrity_failed");
+}
+
+async fn get_bytes(server: &Server, path: &str, key: Option<&str>) -> Vec<u8> {
+    let mut request = server.http.get(server.url(path));
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+    let response = request.send().await.unwrap();
+    assert_eq!(response.status(), 200, "{path}");
+    response.bytes().await.unwrap().to_vec()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -124,6 +136,27 @@ async fn warm_anonymous_detail_misses_are_database_free_and_trust_rows_refresh()
         assert_eq!(bytes, serde_json::to_vec(row.as_ref()).unwrap().len());
         assert!(bytes <= MAX_ARTIFACT_BYTES);
         eprintln!("demo {id}: {bytes} encoded trust-row bytes (cap {MAX_ARTIFACT_BYTES})");
+        let opened = open_run_with_artifact(
+            &server.db,
+            &server.state.storage,
+            &server.state.cache,
+            &server.metrics,
+            server.state.bundle_limits(),
+            view.clone(),
+            Some(row.clone()),
+        )
+        .await
+        .unwrap();
+        let trailer_text = opened.analytics_json().await.unwrap().unwrap();
+        let stored = server.db.run_analytics(view.run.id).await.unwrap().unwrap();
+        // Bundles sort object keys; DB rows preserve the typed report's field order.
+        // Re-encoding that same typed report must reproduce every original DB text byte.
+        let trailer_report: RunAnalytics = serde_json::from_str(&trailer_text).unwrap();
+        assert_eq!(encode(&trailer_report).unwrap().json, stored.report_json);
+        assert_eq!(
+            serde_json::from_str::<Value>(&trailer_text).unwrap(),
+            serde_json::from_str::<Value>(&stored.report_json).unwrap()
+        );
         let fingerprint = hex::encode(&view.fingerprint);
         let mut url = reqwest::Url::parse(&server.url(&format!("/api/v1/runs/{id}"))).unwrap();
         url.query_pairs_mut()
@@ -207,27 +240,56 @@ async fn warm_anonymous_detail_misses_are_database_free_and_trust_rows_refresh()
     );
     assert!(Metrics::get(&server.metrics.artifact_cache_hits_total) - hits >= 48);
 
-    // Analytics still queries its stored report once (not retained in the bounded snapshot).
-    // Both routes must remove all metadata/trust-row acquisitions, including normalization's
-    // trailer check. The keyed route retains DB resolution and the artifact lookup.
-    for id in &ids {
+    // Analytics reports stay out of the bounded snapshot: the authenticated bundle trailer
+    // supplies anonymous reads without a DB lookup, including series response-cache misses.
+    // Keyed reads retain the original DB report and metadata lookups.
+    for (id, row_id) in ids.iter().zip(&row_ids) {
+        let row = server.db.artifact(*row_id).await.unwrap();
+        let view = server
+            .db
+            .run_view(
+                server.db.workspace("demo").await.unwrap().id,
+                id,
+                &server.state.cfg.result_platform,
+            )
+            .await
+            .unwrap();
         for suffix in [
             "analytics",
             "analytics/series?path=/execution/first_fill/km/curve&limit=1",
+            "analytics/series?path=/execution/first_fill/km/curve&offset=1&limit=5000",
+            "analytics/series?path=/execution/first_fill/km/curve&offset=999999",
         ] {
-            let path = format!("/api/v1/runs/{id}/{suffix}");
-            let before = acquires(&server);
-            let (status, _, expected) = server.get(&path, Some(&admin)).await;
-            assert_eq!(status, 200, "{path}: {expected}");
-            let keyed_cost = acquires(&server) - before;
-            let before = acquires(&server);
-            let (status, _, body) = server.get(&path, None).await;
-            let anonymous_cost = acquires(&server) - before;
-            assert_eq!(status, 200, "{path}: {body}");
-            assert_eq!(body, expected, "{path}");
-            assert_eq!(anonymous_cost, 1, "{path}: only the stored analytics row");
-            assert!(keyed_cost >= anonymous_cost + 2, "{path}: {keyed_cost}");
-            eprintln!("{path}: keyed {keyed_cost}, anonymous {anonymous_cost} acquisitions");
+            for cold_bundle in [false, true] {
+                let mut url =
+                    reqwest::Url::parse(&server.url(&format!("/api/v1/runs/{id}/{suffix}")))
+                        .unwrap();
+                if cold_bundle {
+                    url.query_pairs_mut()
+                        .append_pair("platform", &view.run.platform);
+                }
+                let path = format!("{}?{}", url.path(), url.query().unwrap_or_default());
+                let before = acquires(&server);
+                let expected = get_bytes(&server, &path, Some(&admin)).await;
+                let keyed_cost = acquires(&server) - before;
+                if cold_bundle {
+                    std::fs::remove_file(
+                        server
+                            .state
+                            .cache
+                            .dir()
+                            .join(format!("{}.bbz", hex::encode(&row.sha256))),
+                    )
+                    .unwrap();
+                }
+                let before = acquires(&server);
+                let body = get_bytes(&server, &path, None).await;
+                let anonymous_cost = acquires(&server) - before;
+                assert_eq!(body, expected, "{path}: exact response bytes");
+                assert_eq!(anonymous_cost, 0, "{path}: authenticated trailer report");
+                assert!(keyed_cost >= 3, "{path}: {keyed_cost}");
+                eprintln!("{path}: keyed {keyed_cost}, anonymous {anonymous_cost} acquisitions");
+            }
         }
     }
 
@@ -274,6 +336,68 @@ async fn warm_anonymous_detail_misses_are_database_free_and_trust_rows_refresh()
     assert!(!snapshot.runs_by_id.contains_key(&row_ids[1]));
     assert!(!snapshot.artifacts.contains_key(&row_ids[1]));
     drop(snapshot);
+
+    // A legacy bundle has no trailer report. Preserve its exact DB-backed responses rather
+    // than treating absence as corruption or recomputing analytics on an anonymous read.
+    let snapshot = server.state.snapshot.get(&server.state).await.unwrap();
+    let view = snapshot.runs_by_id[&row_ids[2]].clone();
+    let row = snapshot.artifacts[&row_ids[2]].clone();
+    drop(snapshot);
+    let opened = open_run_with_artifact(
+        &server.db,
+        &server.state.storage,
+        &server.state.cache,
+        &server.metrics,
+        server.state.bundle_limits(),
+        view.clone(),
+        Some(row.clone()),
+    )
+    .await
+    .unwrap();
+    let full = opened.full().await.unwrap();
+    let legacy = bb_artifacts::BundleWriter::new(server.state.bundle_limits())
+        .unwrap()
+        .write_run(dir.path(), &full)
+        .unwrap();
+    server.state.storage.delete(&row.storage_key).await.unwrap();
+    server
+        .state
+        .storage
+        .put(&row.storage_key, legacy.path(), None)
+        .await
+        .unwrap();
+    let trust = serde_json::to_value(&legacy.trust).unwrap();
+    let mut tx = external.pool().begin().await.unwrap();
+    sqlx::query("ALTER TABLE bb.run_artifacts DISABLE TRIGGER run_artifacts_immutable")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE bb.run_artifacts SET sha256=$2,size_bytes=$3,uncompressed_bytes=$4,page_index=$5,page_index_sha256=$6 WHERE run_id=$1")
+        .bind(view.run.id)
+        .bind(hex::decode(&legacy.trust.sha256).unwrap())
+        .bind(i64::try_from(legacy.trust.size_bytes).unwrap())
+        .bind(i64::try_from(legacy.trust.uncompressed_bytes).unwrap())
+        .bind(&trust)
+        .bind(bb_app::canonical::sha256(&trust))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE bb.run_artifacts ENABLE TRIGGER run_artifacts_immutable")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    force_recheck(&server).await;
+    for suffix in [
+        "analytics",
+        "analytics/series?path=/execution/first_fill/km/curve&limit=1",
+    ] {
+        let path = format!("/api/v1/runs/{}/{suffix}", hex::encode(&view.fingerprint));
+        let expected = get_bytes(&server, &path, Some(&admin)).await;
+        let before = acquires(&server);
+        assert_eq!(get_bytes(&server, &path, None).await, expected);
+        assert_eq!(acquires(&server) - before, 1, "legacy report DB fallback");
+    }
 
     // Trust metadata has an explicit per-run cap; oversized rows fall back to DB reads and
     // cannot turn a bounded list snapshot into an unbounded copy of bundle metadata.

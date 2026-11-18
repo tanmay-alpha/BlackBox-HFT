@@ -874,6 +874,21 @@ impl<'a> BundleReader<'a> {
             .metadata_file(&mut File::open(path).map_err(io_error)?)?
             .0)
     }
+    /// The authenticated analytics report as stored JSON text, without building its values.
+    /// Older bundles without a report return `None`. Metadata and the complete compressed
+    /// trailer digest are checked before any report text is returned.
+    pub fn trailer_analytics_json(&self, path: &Path) -> Result<Option<String>, ArtifactError> {
+        #[derive(Deserialize)]
+        struct Report<'a> {
+            #[serde(borrow)]
+            analytics: Option<&'a serde_json::value::RawValue>,
+        }
+
+        let (_, row) = self.metadata_file(&mut File::open(path).map_err(io_error)?)?;
+        let report: Report<'_> =
+            serde_json::from_slice(&row).map_err(|e| integrity("metadata", e.to_string()))?;
+        Ok(report.analytics.map(|raw| raw.get().to_owned()))
+    }
     /// Returns verified uncompressed NDJSON for one index entry (never the whole section).
     pub fn page(&self, path: &Path, page_no: usize) -> Result<Vec<u8>, ArtifactError> {
         let mut file = File::open(path).map_err(io_error)?;

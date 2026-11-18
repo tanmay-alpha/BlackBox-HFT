@@ -335,6 +335,11 @@ pub struct AppConfig {
     /// Longest idle sleep of a standalone worker that cannot be woken in process.
     pub idle_poll_max: Duration,
     pub artifact_disk_cache_bytes: u64,
+    /// Decoded section-byte budget for timeline's parsed-run cache (0 disables retention).
+    pub parsed_run_cache_bytes: u64,
+    pub parsed_run_cache_runs: usize,
+    /// Anonymous response-body cache budget (0 disables retention).
+    pub response_cache_bytes: usize,
     pub max_response_bytes: usize,
     /// Request timeout of `POST /api/v1/comparisons` (`BB_COMPARISON_TIMEOUT_S`, default 60 s);
     /// other mutations have 10 s.
@@ -656,6 +661,18 @@ impl AppConfig {
             256u64 << 20,
             &mut problem,
         );
+        let parsed_run_cache_bytes = parse(
+            &get("BB_PARSED_RUN_CACHE_BYTES"),
+            "BB_PARSED_RUN_CACHE_BYTES",
+            if hosted { 128u64 << 20 } else { 64u64 << 20 },
+            &mut problem,
+        );
+        let response_cache_bytes = parse(
+            &get("BB_RESPONSE_CACHE_BYTES"),
+            "BB_RESPONSE_CACHE_BYTES",
+            32usize << 20,
+            &mut problem,
+        );
         let max_response_bytes = parse(
             &get("BB_MAX_RESPONSE_BYTES"),
             "BB_MAX_RESPONSE_BYTES",
@@ -747,6 +764,9 @@ impl AppConfig {
             heartbeat_interval: Duration::from_millis(heartbeat_ms),
             idle_poll_max: Duration::from_secs(30),
             artifact_disk_cache_bytes,
+            parsed_run_cache_bytes,
+            parsed_run_cache_runs: if hosted { 1 } else { 2 },
+            response_cache_bytes,
             max_response_bytes,
             comparison_timeout: Duration::from_secs(comparison_timeout_s),
             rate_limits,
@@ -929,6 +949,27 @@ mod tests {
         assert_eq!(c.worker_slots, 1);
         assert!(c.allowed_hosts.contains(&"localhost".to_string()));
         assert_eq!(c.storage.backend(), "fs");
+        assert_eq!(c.parsed_run_cache_bytes, 64 << 20);
+        assert_eq!(c.response_cache_bytes, 32 << 20);
+    }
+
+    #[test]
+    fn cache_retention_can_be_disabled_or_overridden() {
+        let c = config(&[
+            ("BB_PARSED_RUN_CACHE_BYTES", "0"),
+            ("BB_RESPONSE_CACHE_BYTES", "0"),
+        ])
+        .unwrap();
+        assert_eq!(c.parsed_run_cache_bytes, 0);
+        assert_eq!(c.response_cache_bytes, 0);
+        let c = config(&[
+            ("BB_PARSED_RUN_CACHE_BYTES", "12345"),
+            ("BB_RESPONSE_CACHE_BYTES", "67890"),
+        ])
+        .unwrap();
+        assert_eq!(c.parsed_run_cache_bytes, 12345);
+        assert_eq!(c.response_cache_bytes, 67890);
+        assert!(config(&[("BB_RESPONSE_CACHE_BYTES", "-1")]).is_err());
     }
 
     #[test]
@@ -983,6 +1024,9 @@ mod tests {
         let text = format!("{} {:?}", c.summary(), c);
         assert!(!text.contains("supersecret"), "{text}");
         assert_eq!(c.limits, ExecutionLimits::hosted());
+        assert_eq!(c.parsed_run_cache_bytes, 128 << 20);
+        assert_eq!(c.response_cache_bytes, 32 << 20);
+        assert_eq!(c.parsed_run_cache_runs, 1);
     }
 
     #[test]

@@ -81,7 +81,7 @@ impl AppState {
         Self {
             limiters: auth::Limiters::new(&cfg),
             workspaces: auth::WorkspaceCache::default(),
-            anon_cache: edge::AnonCache::default(),
+            anon_cache: edge::AnonCache::new(cfg.response_cache_bytes),
             snapshot: snapshot::DemoSnapshot::default(),
             egress: edge::Egress::default(),
             heavy: Arc::new(Semaphore::new(cfg.heavy_read_concurrency)),

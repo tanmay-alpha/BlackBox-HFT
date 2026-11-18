@@ -22,6 +22,7 @@ import os
 import random
 import socketserver
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -255,6 +256,85 @@ class Memory:
             pass
         return out
 
+    def smaps_rollup(self):
+        """Resident mappings, including allocator pages and actually touched thread stacks."""
+        values = {}
+        with open(f"/proc/{self.pid}/smaps_rollup") as f:
+            for line in f:
+                name, _, rest = line.partition(":")
+                if rest.strip().endswith("kB"):
+                    values[name] = round(int(rest.split()[0]) / 1024.0, 3)
+        return values
+
+    def process_age_s(self):
+        with open(f"/proc/{self.pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        return round(time.monotonic() - int(fields[19]) / os.sysconf("SC_CLK_TCK"), 3)
+
+    def mappings(self):
+        """Account touched stacks separately from reserved address space on glibc/Linux.
+
+        pthread stacks are anonymous 2--8 MiB read/write mappings immediately after a guard
+        mapping. Report the count too, so it can be checked against status's thread count.
+        """
+        mappings, current = [], None
+        with open(f"/proc/{self.pid}/smaps") as f:
+            for line in f:
+                fields = line.split()
+                if fields and "-" in fields[0] and len(fields) >= 5:
+                    if current:
+                        mappings.append(current)
+                    start, end = (int(x, 16) for x in fields[0].split("-"))
+                    current = {
+                        "start": start, "end": end, "perms": fields[1],
+                        "name": fields[5] if len(fields) > 5 else "", "rss": 0,
+                    }
+                elif current and fields and fields[0] == "Rss:":
+                    current["rss"] = int(fields[1])
+        if current:
+            mappings.append(current)
+        stacks = []
+        for before, mapping in zip(mappings, mappings[1:]):
+            if (
+                not mapping["name"] and mapping["perms"] == "rw-p"
+                and before["perms"] == "---p" and before["end"] == mapping["start"]
+                and (2 << 20) <= mapping["end"] - mapping["start"] <= (8 << 20)
+            ):
+                stacks.append(mapping)
+        main = sum(m["rss"] for m in mappings if m["name"] == "[stack]")
+        return {
+            "guarded_thread_stacks": len(stacks),
+            "thread_stack_reserved_mib": round(sum(m["end"] - m["start"] for m in stacks) / 1048576, 3),
+            "thread_stack_rss_mib": round(sum(m["rss"] for m in stacks) / 1024, 3),
+            "main_stack_rss_mib": round(main / 1024, 3),
+            "named_file_rss_mib": round(sum(m["rss"] for m in mappings if m["name"].startswith("/")) / 1024, 3),
+            "binary_rss_mib": round(sum(m["rss"] for m in mappings if m["name"].endswith("/blackbox")) / 1024, 3),
+        }
+
+    def cpu_seconds(self):
+        with open(f"/proc/{self.pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        ticks = os.sysconf("SC_CLK_TCK")
+        return int(fields[11]) / ticks, int(fields[12]) / ticks
+
+    def dump_allocator(self, label):
+        """Diagnostic only: glibc's own arena/free/mmap counters, without heaptrack overhead."""
+        if os.environ.get("MALLOC_DIAG") != "1":
+            return
+        marker = f"\nBBMALLOC:{label}\n"
+        commands = [
+            "set language c",
+            "set scheduler-locking off",
+            f"call (long)write(2, {json.dumps(marker)}, {len(marker)})",
+            "call (int)malloc_info(0, *(void **)&stderr)",
+            "detach",
+        ]
+        args = ["gdb", "--batch", "--quiet", "-p", str(self.pid)]
+        for command in commands:
+            args += ["-ex", command]
+        result = subprocess.run(args, check=True, capture_output=True, text=True, timeout=30)
+        log("allocator diagnostic:", label, result.stdout.strip())
+
     def reset_hwm(self) -> bool:
         try:
             with open(f"/proc/{self.pid}/clear_refs", "w") as f:
@@ -294,6 +374,7 @@ class Phase:
         m = self.memory
         self.hwm_reset = m.reset_hwm()
         self.start = m.status()
+        self.start_cpu = m.cpu_seconds()
         self.t = time.monotonic()
         with m.lock:
             m.phase = self.name
@@ -304,6 +385,7 @@ class Phase:
         m = self.memory
         time.sleep(2 * SAMPLE_S)
         end = m.status()
+        cpu = m.cpu_seconds()
         with m.lock:
             m.phase = None
             sampled, cg = m.phase_max.get(self.name, [0, 0])
@@ -317,8 +399,15 @@ class Phase:
             "end_rss_file_mib": mib(end["RssFile"]),
             "end_threads": end["Threads"],
             "sampled_peak_cgroup_mib": round(cg / 1048576.0, 1) if cg else None,
+            "cpu_user_seconds": round(cpu[0] - self.start_cpu[0], 3),
+            "cpu_system_seconds": round(cpu[1] - self.start_cpu[1], 3),
+            "cpu_total_seconds": round(sum(cpu) - sum(self.start_cpu), 3),
         }
         record.update(m.cgroup_stat())
+        record["smaps_rollup_mib"] = m.smaps_rollup()
+        record["process_age_s"] = m.process_age_s()
+        record["mappings"] = m.mappings()
+        m.dump_allocator(self.name)
         record.update(getattr(self, "extra", {}))
         self.results[self.name] = record
         log(f"phase {self.name}: {json.dumps(record)}")
@@ -337,8 +426,8 @@ def anonymous_reads(rng):
     spans = {}
     for d in datasets:
         detail = get_json(f"/api/v1/datasets/{d['id']}")
-        manifest = (detail.get("current") or detail).get("manifest") or detail.get("manifest") or {}
-        start, end = int(manifest.get("start", 0) or 0), int(manifest.get("end", 0) or 0)
+        version = detail["current_version"]
+        start, end = int(version["start_ns"]), int(version["end_ns"])
         spans[d["id"]] = (start, end)
         for _ in range(40):
             if end > start:
@@ -348,7 +437,7 @@ def anonymous_reads(rng):
                     f"&step_ns={rng.choice([50, 100, 250])}000000&levels=10&max_trades=500"
                 )
     for r in runs:
-        rid = r["run_id"] if "run_id" in r else r["id"]
+        rid = r["run_id"]
         base = f"/api/v1/runs/{rid}"
         urls += [
             base,
@@ -361,7 +450,7 @@ def anonymous_reads(rng):
             base + "/tape?limit=500",
             base + "/timeline",
         ]
-        start, end = spans.get(r.get("dataset_id") or "", (0, 0))
+        start, end = spans[r["dataset"]["id"]]
         for _ in range(8):
             if end > start:
                 t0 = rng.randrange(start, end - 2_000_000_000)
@@ -385,6 +474,40 @@ def anonymous_reads(rng):
         "/api/v1/market/datasets/l3-demo/metrics?max_points=500",
     ]
     return urls, runs, comparisons
+
+
+def read_family_counts(urls):
+    """Fail loudly if schema drift or generator changes omit a heavy read family."""
+    expected = (
+        "run/detail", "run/analytics", "run/report", "run/engine-check", "run/equity",
+        "run/fills", "run/orders", "run/tape", "run/timeline", "run/timeline_window",
+        "comparison/detail", "comparison/pairs", "comparison/report", "dataset/replay",
+        "market/event_detail", "market/book", "market/metrics",
+    )
+    counts = dict.fromkeys(expected, 0)
+    for url in urls:
+        parsed = urllib.parse.urlsplit(url)
+        parts = parsed.path.strip("/").split("/")
+        family = None
+        if parts[2] in ("runs", "comparisons"):
+            group = "run" if parts[2] == "runs" else "comparison"
+            route = parts[4] if len(parts) > 4 else "detail"
+            family = f"{group}/{route}"
+            if family == "run/timeline":
+                query = urllib.parse.parse_qs(parsed.query)
+                if "t0_ns" in query and "t1_ns" in query:
+                    counts["run/timeline_window"] += 1
+        elif parts[2] == "datasets" and parts[-1] == "replay":
+            family = "dataset/replay"
+        elif parts[2] == "market":
+            route = "event_detail" if len(parts) == 7 and parts[5] == "events" else parts[-1]
+            family = f"market/{route}"
+        if family in counts:
+            counts[family] += 1
+    missing = [family for family, count in counts.items() if count == 0]
+    if missing:
+        raise RuntimeError(f"anonymous read set omits required families: {', '.join(missing)}")
+    return counts
 
 
 class Load:
@@ -479,6 +602,81 @@ def wait_job(job_id, until, timeout=1800):
     raise RuntimeError(f"job {job_id} did not reach {until}")
 
 
+def latency():
+    """Run after the RSS sampler stops, so probes do not change its phases."""
+    run = get_json("/api/v1/runs?limit=1")["items"][0]
+    rid = run["run_id"]
+    dataset = run["dataset"]["id"]
+    timeline = f"/api/v1/runs/{rid}/timeline?t0_ns=1000000000&t1_ns=2000000000"
+    replay = (
+        f"/api/v1/datasets/{dataset}/replay?t0_ns=1000000000&t1_ns=2000000000"
+        "&step_ns=100000000&levels=10"
+    )
+    paths = [
+        ("/api/v1/runs?limit=20", None),
+        ("/api/v1/runs?limit=20", None, True),
+        ("/api/v1/market/datasets/l3-demo", None),
+        ("/api/v1/market/datasets/l3-demo/book?event_index=20000&levels=20&orders_per_level=100", None),
+        (f"/api/v1/runs/{rid}/tape?limit=500", None),
+        (timeline, None),
+        (timeline, "max_events"),
+        (replay, None),
+        (replay, "max_trades"),
+    ]
+    measure_latency(paths)
+
+
+def largest_latency():
+    """Keyed reads of the completed largest-job run, not the small seeded demo."""
+    with open("/fixture/measured-result.json") as f:
+        measured = json.load(f)
+    completed = [
+        phase for name, phase in measured["phases"].items()
+        if name.startswith("3_job_") and phase.get("job_state") == "completed"
+    ]
+    completed.sort(key=phase_peak, reverse=True)
+    ids = [phase["run_id"] for phase in completed[:2]]
+    combined = measured["phases"].get("4_job_plus_concurrent_reads", {})
+    ids.append(combined.get("compare", {}).get("run_b"))
+    paths = [("/api/v1/runs?limit=10", None)]
+    if ids and ids[0]:
+        paths.append((f"/api/v1/runs/{ids[0]}", None))
+    paths += [
+        (f"/api/v1/runs/{rid}/timeline?t0_ns=1000000000&t1_ns=2000000000", "max_events")
+        for rid in dict.fromkeys(ids) if rid
+    ]
+    measure_latency(paths, keyed=True)
+
+
+def measure_latency(paths, keyed=False):
+    results = []
+    for probe, (path, varying, *key) in enumerate(paths):
+        probe_keyed = key[0] if key else keyed
+        samples, digests, statuses = [], set(), {}
+        for n in range(12):
+            # Distinct valid windows/limits bypass only the serialized-response cache, exposing
+            # the latency of warm parsed-run and dataset caches underneath it.
+            uri = f"{path}&{varying}={100 + n}" if varying else path
+            start = time.monotonic()
+            status, body = request("GET", uri, key=KEY if probe_keyed else None, ip=f"10.9.{probe}.{n + 1}")
+            elapsed = (time.monotonic() - start) * 1000
+            if n == 0:
+                first_ms = elapsed
+            statuses[str(status)] = statuses.get(str(status), 0) + 1
+            digests.add(hashlib.sha256(body).hexdigest())
+            if n:
+                samples.append(elapsed)
+        samples.sort()
+        results.append({
+            "path": path, "varying": varying, "keyed": probe_keyed, "warm_requests": len(samples),
+            "p50_ms": round(samples[len(samples) // 2], 3),
+            "first_ms": round(first_ms, 3),
+            "p95_ms": round(samples[-1], 3), "statuses": statuses,
+            "body_sha256": sorted(digests),
+        })
+    print(json.dumps(results, indent=1))
+
+
 def drive() -> None:
     candidates = parse_candidates(os.environ["JOB_CANDIDATES"])
     rng = random.Random(20261118)
@@ -496,9 +694,17 @@ def drive() -> None:
     phases = results["phases"]
     time.sleep(3)
     results["boot"] = {k: (mib(v) if k != "Threads" else v) for k, v in memory.status().items()}
+    results["boot"]["smaps_rollup_mib"] = memory.smaps_rollup()
+    results["boot"]["process_age_s"] = memory.process_age_s()
+    results["boot"]["mappings"] = memory.mappings()
+    memory.dump_allocator("boot")
     # Also in driver.log: an OOM kill of the server ends the shared PID namespace, so the driver
     # dies with it and result.json stays empty; the per-phase log lines are what remains.
     log(f"boot: {json.dumps(results['boot'])}")
+    stop_after = os.environ.get("STOP_AFTER", "")
+    if stop_after == "boot":
+        finish(memory, sampler, results)
+        return
 
     preset_configs = {}
     for dataset in sorted({c[0] for c in candidates}):
@@ -508,18 +714,41 @@ def drive() -> None:
     # 1. Cache fill: one client touches every heavy read once (lazy market demo, dataset
     #    regeneration, parsed-run cache, demo snapshot, anonymous response cache).
     urls, runs, comparisons = anonymous_reads(rng)
-    results["read_set"] = {"uris": len(urls), "runs": len(runs), "comparisons": len(comparisons)}
+    results["read_set"] = {
+        "uris": len(urls), "runs": len(runs), "comparisons": len(comparisons),
+        "families": read_family_counts(urls),
+    }
     with Phase(memory, phases, "1_cache_fill_sequential") as p:
         statuses = {}
         for i, url in enumerate(urls[::7]):
             status, _ = request("GET", url, ip=f"10.1.{i // 250}.{i % 250 + 1}")
             statuses[status] = statuses.get(status, 0) + 1
         p.extra = {"requests": len(urls[::7]), "statuses": {str(k): v for k, v in statuses.items()}}
+    if stop_after == "cache_fill":
+        finish(memory, sampler, results)
+        return
     time.sleep(5)
 
     # 2. Concurrent anonymous heavy reads alone.
     with Phase(memory, phases, "2_concurrent_anonymous_reads") as p:
         p.extra = Load(urls, LOAD_S, 1, LOAD_SERVED).start().join()
+    if stop_after == "reads":
+        if os.environ.get("PROFILE_DATASETS") == "1":
+            with Phase(memory, phases, "2b_loaded_datasets") as p:
+                datasets = get_json("/api/v1/datasets", key=KEY)
+                if isinstance(datasets, dict):
+                    datasets = datasets["items"]
+                statuses = {}
+                for n, dataset in enumerate(datasets):
+                    status, _ = request(
+                        "GET", f"/api/v1/datasets/{dataset['id']}/replay"
+                        "?t0_ns=1000000000&t1_ns=2000000000&step_ns=100000000&levels=10",
+                        key=KEY, ip=f"10.10.0.{n + 1}",
+                    )
+                    statuses[str(status)] = statuses.get(str(status), 0) + 1
+                p.extra = {"datasets": len(datasets), "statuses": statuses}
+        finish(memory, sampler, results)
+        return
     time.sleep(5)
 
     if candidates:
@@ -530,6 +759,10 @@ def drive() -> None:
         time.sleep(float(os.environ.get("RECOVERY_S", "40")))
         p.extra = {}
 
+    finish(memory, sampler, results)
+
+
+def finish(memory, sampler, results):
     memory.stop.set()
     sampler.join()
     final = memory.status()
@@ -572,11 +805,15 @@ def job_phases(memory, phases, results, candidates, preset_configs, urls):
             run = {}
             if job["state"] == "completed":
                 detail = get_json(f"/api/v1/runs/{job['run_id']}", key=KEY)
-                run = {"ticks": detail.get("ticks"), "tape_len": detail.get("tape_len"),
+                run = {"counts": detail.get("counts"), "wall_time_ms": detail.get("wall_time_ms"),
                        "bundle_bytes": (detail.get("bundle") or {}).get("size_bytes")}
             p.extra = {"candidate": "/".join(map(str, c)), "job_state": job["state"],
                        "error": job.get("error"), "estimate": submitted["experiment"].get("estimate"),
                        "run_id": job.get("run_id"), "run": run}
+            if job.get("started_at_ns") and job.get("finished_at_ns"):
+                p.extra["job_elapsed_ms"] = round(
+                    (int(job["finished_at_ns"]) - int(job["started_at_ns"])) / 1_000_000, 3
+                )
         scan.append((phase_peak(phases[name]), name, c, job))
         time.sleep(2)
     scan.sort(key=lambda s: -s[0])
@@ -586,17 +823,28 @@ def job_phases(memory, phases, results, candidates, preset_configs, urls):
                               "candidate": "/".join(map(str, worst[2]))}
     largest = worst[2]
     largest_config = preset_configs[(largest[0], largest[1])]
+    pinned = parse_candidates(os.environ.get("COMBINED_CANDIDATE", "none"))
+    if len(pinned) > 1:
+        raise RuntimeError("COMBINED_CANDIDATE must name one measured candidate")
+    combined = worst
+    if pinned:
+        combined = next((entry for entry in scan if entry[2] == pinned[0]), None)
+        if combined is None or combined[3]["state"] != "completed":
+            raise RuntimeError("the pinned combined candidate must have a completed standalone run")
+    combined_candidate = combined[2]
+    combined_config = preset_configs[(combined_candidate[0], combined_candidate[1])]
+    results["combined_job_candidate"] = "/".join(map(str, combined_candidate))
     time.sleep(3)
 
     # 4. Everything at once: the largest job runs again (new seed, so a new run identity) while
     #    anonymous heavy reads hit every demo route and the keyed client reads the largest
     #    completed run whole (timeline, analytics, report, pages); once the job ends, the keyed
     #    client compares the two largest runs (both decoded at once) while the load continues.
-    run_a = completed[0][3]["run_id"] if completed else None
+    run_a = combined[3]["run_id"] if pinned else (completed[0][3]["run_id"] if completed else None)
     with Phase(memory, phases, "4_job_plus_concurrent_reads") as p:
         load = Load(urls, 3600, 2).start()
         time.sleep(1)
-        submitted = submit(job_config(largest_config, largest, 2), "hosted-memory: largest again")
+        submitted = submit(job_config(combined_config, combined_candidate, 2), "hosted-memory: largest again")
         keyed = {}
 
         def keyed_reads():
@@ -624,6 +872,7 @@ def job_phases(memory, phases, results, candidates, preset_configs, urls):
                     compare[path or "/"] = request("GET", f"/api/v1/comparisons/{cid}{path}", key=KEY)[0]
         load.stop.set()
         p.extra = {"load": load.join(), "job_state": job_b["state"], "job_error": job_b.get("error"),
+                   "candidate": "/".join(map(str, combined_candidate)),
                    "keyed_reads": keyed, "compare": compare}
     time.sleep(5)
 
@@ -664,11 +913,11 @@ def summarize(results):
     jobs = [name for name in phases if name.startswith("3_job_")]
     largest = results.get("largest_job", {})
     summary = {
-        "rss_peak_mib": max(phase_peak(p) for p in phases.values()),
+        "rss_peak_mib": max((phase_peak(p) for p in phases.values()), default=results["boot"]["VmRSS"]),
         "boot_rss_mib": results["boot"]["VmRSS"],
         "cache_contribution_mib": round(
             end("1_cache_fill_sequential") - results["boot"]["VmRSS"], 1
-        ),
+        ) if "1_cache_fill_sequential" in phases else None,
         "cache_fill_peak_mib": peak("1_cache_fill_sequential"),
         "concurrent_reads_peak_mib": peak("2_concurrent_anonymous_reads"),
         "concurrent_overhead_mib": above_start("2_concurrent_anonymous_reads"),
@@ -696,6 +945,10 @@ RESULTS = {}
 if __name__ == "__main__":
     if sys.argv[1] == "blob":
         blob()
+    elif sys.argv[1] == "latency":
+        latency()
+    elif sys.argv[1] == "largest-latency":
+        largest_latency()
     else:
         try:
             drive()
