@@ -30,12 +30,39 @@ Tracker: [../engineering/PHASE6_TRACKER.md](../engineering/PHASE6_TRACKER.md).
 
 About 20 production page loads in total, paced; no bot checkpoint was hit.
 
-## Not in this release
+## Not in the first release (shipped in the follow-ups below)
 
-- AT-5/SEC-6 remains **Open**: a largest admitted job peaks at 452–460 MiB in the 512 MB Linux fixture. A follow-up
-  (`p7/amem`: leaner per-order analytics, single serialisation of the analytics report) is measured separately.
-- Post-simulation cancellation waited 60 s for the reaper; fixed on `p7/cancel` (`af7543e`, 22–28 ms), not yet
-  released ([CANCELLATION.md](CANCELLATION.md) on that branch).
+- AT-5/SEC-6: a largest admitted job peaked at 452–460 MiB in the 512 MB Linux fixture.
+- Post-simulation cancellation waited 60 s for the reaper.
+
+## Follow-up 1: `5fe8923` (PR #4)
+
+Commits `68798af` (worker), `6bd0e6a` (production spec), `91db0de` (docs). PR CI 44345185372 8/8; `main` CI
+44347566565; image `sha256:0f5fdba142592d573fe4fc515d828f5078b31a7da07b963e62bc5f339d4e6ae3`; Render deploy
+`dep-dbutcf5ckfvc73a778m0`; `/status` `git_sha=5fe8923…`; smoke 8/8; production suite 14 passed, 1 flaky, 1 skipped.
+
+- Cancellation after the simulation is recorded as `cancelled` in 22–28 ms ([CANCELLATION.md](CANCELLATION.md)).
+- Job memory: one order's analytics state at a time, the analytics report held once as stored text, the result hash
+  streamed; analytics, bundle and result bytes unchanged. 512 MB fixture: largest job 340 MiB, job with concurrent
+  reads 435 MiB (was OOM-killed).
+- The flaky test was a real defect: the study page read every candidate run by id in parallel, and one read was
+  refused `503 busy` on the cold server right after the deploy. Fixed in follow-up 2.
+
+## Follow-up 2: `36536d0` (PR #5)
+
+Commits `c450764` (API), `06e98b3` (study page), `ad1a08b` (docs). PR and `main` CI green; publish 44357312552, image
+`sha256:d5d2562bef5620364c95195d92cb1b4effec48a8640ecbd919cbc091e2d25595`; Render deploy `dep-dbutv4u1egvs739lbbf0`;
+`/status` `git_sha=36536d0…`, worker idle; smoke 8/8; Vercel built from `main`; production suite **15 passed,
+1 skipped** (keyed journey, no `PROD_RESEARCH_KEY`), no retries.
+
+- Read path: `/analytics` projects the stored report from a borrowed `RawValue`; run Markdown uses trailer metadata;
+  response bytes unchanged. 512 MB fixture: 32 concurrent readers 207 MiB, job with concurrent reads 394 MiB.
+- SEC-10: warm anonymous detail, paged and engine-check reads of demo runs use snapshot artefact trust rows (48 reads,
+  0 DB acquisitions); anonymous analytics keeps one report query.
+- Study page links stored runs from the verified run list; unlisted runs are read one at a time with the busy retry.
+
+Still open: AT-5/SEC-6 (largest-job phases 362–394 MiB, above 300 MB), SEC-10 analytics report query
+([SECURITY_DISPOSITIONS.md](SECURITY_DISPOSITIONS.md)).
 
 ## Rollback
 
@@ -44,5 +71,6 @@ render deploys create srv-dbs11fm1egvs73chs7lg --image ghcr.io/tanmay-alpha/blac
 vercel rollback <previous production deployment> --scope tanmay-alphas-projects
 ```
 
-The previous release (`cdde05e`) runs against the migrated schema: 0010 adds a defaulted column it never reads, 0011
-only widens a CHECK.
+Neither follow-up adds a migration; any of the three images can be redeployed against the current schema. The release
+before Phase 6 (`cdde05e`) runs against the migrated schema: 0010 adds a defaulted column it never reads, 0011 only
+widens a CHECK.
