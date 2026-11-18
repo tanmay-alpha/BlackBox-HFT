@@ -4,19 +4,20 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Phases 6 and 7 released (2026-11-19), with follow-ups `5fe8923` (PR #4) and `36536d0` (PR #5).** `main` = `36536d0`.
-Image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:d5d2562bef5620364c95195d92cb1b4effec48a8640ecbd919cbc091e2d25595`,
-Render deploy `dep-dbutv4u1egvs739lbbf0`, migrations through 0011, `/status` `git_sha=36536d0…`, worker idle. Smoke 8/8;
+**Phases 6 and 7 released (2026-11-19), with follow-ups `5fe8923` (PR #4), `36536d0` (PR #5) and `18aed41` (PR #7).**
+`main` = `18aed41`. Image
+`ghcr.io/tanmay-alpha/blackbox-hft@sha256:bac3807b893d5fb99d9882a039c16ac35dc7aeaa656a7a99d52d093da2e84511`, Render
+deploy `dep-dbv0d1d6e07s73ab741g`, migrations through 0011, `/status` `git_sha=18aed41…`, worker idle. Smoke 8/8;
 anonymous production suite 15 passed, 1 skipped (keyed). First Phase 6/7 release `a1d128c` (image `sha256:ef148a3b…`). Phase 6: compare-set cold `503 busy` and false "missing
 comparison" fixed; demo snapshot freshness ≤ 15 min; SEC-11 §6.3, SEC-17, SEC-18, SEC-25 closed; credential guard;
-read-side memory 697 → 207 MiB; prompt post-simulation cancellation; SEC-10 warm anonymous detail reads DB-free. Phase 7: `/research`, `/studies` explorer, `/queue-lab`, Market Data Workbench L3/L2
+hosted memory cut (512 MB fixture, corrected read set: job + reads 397 → 274–289 MiB, idle 201 → 124–127); prompt post-simulation cancellation; SEC-10 anonymous detail and analytics reads DB-free. Phase 7: `/research`, `/studies` explorer, `/queue-lab`, Market Data Workbench L3/L2
 view, evidence-structured reports, ITCH three-way validation (local NASDAQ prefixes, 100% agreement), queue shadow
 experiment. Independent reviews by GPT-6.1 Sol (backend and science, both REJECT before fixes; all must-fix items
-fixed and merged). Open: AT-5/SEC-6 hosted job memory (largest-job phases 362–394 MiB at 512 MB), SEC-10 analytics report query. Record:
+fixed and merged). Open: AT-5/SEC-6 (2.6 MiB over 300 MB in one of three repeats, phase 4 only). Record:
 [../rebuild/PHASE67_RELEASE.md](../rebuild/PHASE67_RELEASE.md). Tracker:
-[PHASE6_TRACKER.md](PHASE6_TRACKER.md). Rollback: redeploy `sha256:0f5fdba1…e6ae3` (`5fe8923`) or `sha256:ef148a3b…`
-(`a1d128c`); no migration since 0011. The pre-Phase-6 image `sha256:2c14ea32…4ec4` (`cdde05e`) is also compatible
-with the migrations.
+[PHASE6_TRACKER.md](PHASE6_TRACKER.md). Rollback: redeploy `sha256:d5d2562b…25595` (`36536d0`), `sha256:0f5fdba1…e6ae3`
+(`5fe8923`) or `sha256:ef148a3b…` (`a1d128c`); no migration since 0011. The pre-Phase-6 image `sha256:2c14ea32…4ec4`
+(`cdde05e`) is also compatible with the migrations.
 
 Previous release:
 
