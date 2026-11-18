@@ -28,7 +28,8 @@
 # Knobs: BBMEM_IMAGE, BBMEM_PG_IMAGE, BBMEM_PY_IMAGE, BBMEM_MEMORY (512m), BBMEM_CPUS (unset:
 # no CPU quota), BBMEM_CLIENTS (32), BBMEM_LOAD_SERVED (600 handler-answered reads in phase 2),
 # BBMEM_LOAD_S (180, phase 2 time cap), BBMEM_CANDIDATES (`none`: reads only), BBMEM_APP_ENV,
-# BBMEM_HEAPTRACK=1, BBMEM_OUT, BBMEM_KEEP=1 (keep containers).
+# BBMEM_HEAPTRACK=1, BBMEM_STOP_AFTER (boot/cache_fill/reads), BBMEM_LATENCY=1, BBMEM_OUT,
+# BBMEM_KEEP=1 (keep containers).
 # Output: $BBMEM_OUT/result.json (phases, summary, RSS series), driver.log, app.log.
 # Exit status: 0 when the measured peak (VmHWM) stays under 300 MB and no container was
 # OOM-killed, 1 otherwise.
@@ -259,28 +260,65 @@ docker cp "$(hostpath "$trust")" bbmem-app:/etc/bbmem > /dev/null
 docker start bbmem-app > /dev/null
 
 printf 'BB_FIXTURE_KEY=%s\n' "$api_key" > "$work/driver.env"
-docker create --name bbmem-driver --network "$NET" --pid container:bbmem-app --user 10001:10001 \
+driver_image=$PY_IMAGE
+driver_security=(--user 10001:10001)
+if [ "${BBMEM_MALLOC_DIAG:-0}" = 1 ]; then
+    # Observer privileges only; the application image, user and memory limit are unchanged.
+    driver_image=blackbox-hft:hosted-mem-gdb-driver
+    printf 'FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends gdb && rm -rf /var/lib/apt/lists/*\n' \
+        "$PY_IMAGE" | docker build -q -t "$driver_image" - > /dev/null
+    driver_security=(--user 0:0 --cap-add SYS_PTRACE --security-opt seccomp=unconfined)
+fi
+docker create --name bbmem-driver --network "$NET" --pid container:bbmem-app "${driver_security[@]}" \
     --env-file "$(hostpath "$work/driver.env")" \
     -e APP_HOST=app -e "JOB_CANDIDATES=${BBMEM_CANDIDATES:-$JOB_CANDIDATES}" \
     -e "CLIENTS=${BBMEM_CLIENTS:-32}" \
+    -e "STOP_AFTER=${BBMEM_STOP_AFTER:-}" \
+    -e "COMBINED_CANDIDATE=${BBMEM_COMBINED_CANDIDATE:-}" \
+    -e "MALLOC_DIAG=${BBMEM_MALLOC_DIAG:-0}" \
+    -e "PROFILE_DATASETS=${BBMEM_HEAPTRACK:-0}" \
     -e "LOAD_S=${BBMEM_LOAD_S:-180}" -e "LOAD_SERVED=${BBMEM_LOAD_SERVED:-600}" \
-    "$PY_IMAGE" python3 /fixture/hosted_memory_fixture.py drive > /dev/null
+    "$driver_image" python3 /fixture/hosted_memory_fixture.py drive > /dev/null
 docker cp "$(hostpath "$fixture")" bbmem-driver:/fixture > /dev/null
 echo "driving phases (results in $OUT)"
 driver_code=0
 docker start -a bbmem-driver > "$OUT/result.json" 2> "$OUT/driver.log" || driver_code=$?
 oom=$(docker inspect -f '{{.State.OOMKilled}}' bbmem-app)
 running=$(docker inspect -f '{{.State.Running}}' bbmem-app)
+if [ "$running" = true ] && { [ "${BBMEM_LATENCY:-0}" = 1 ] || [ "${BBMEM_LATENCY:-0}" = largest ]; }; then
+    latency_command=latency
+    [ "${BBMEM_LATENCY:-0}" != largest ] || latency_command=largest-latency
+    docker create --name bbmem-oneoff --network "$NET" --env-file "$(hostpath "$work/driver.env")" \
+        -e APP_HOST=app "$PY_IMAGE" python3 /fixture/hosted_memory_fixture.py "$latency_command" > /dev/null
+    docker cp "$(hostpath "$fixture")" bbmem-oneoff:/fixture > /dev/null
+    if [ "$latency_command" = largest-latency ]; then
+        docker cp "$(hostpath "$OUT/result.json")" bbmem-oneoff:/fixture/measured-result.json > /dev/null
+    fi
+    docker start -a bbmem-oneoff > "$OUT/latency.json"
+    docker rm bbmem-oneoff > /dev/null
+fi
 if [ "${BBMEM_HEAPTRACK:-0}" = 1 ]; then
-    # SIGTERM: the server drains and exits, heaptrack writes its data file.
-    docker stop -t 60 bbmem-app > /dev/null
+    # Signal the application, not heaptrack's shell wrapper: stopping the wrapper can kill the
+    # interpreter/compressor before it flushes, leaving a truncated profile.
+    docker exec bbmem-app sh -c '
+        for comm in /proc/[0-9]*/comm; do
+            read -r name < "$comm" || continue
+            if [ "$name" = blackbox ]; then
+                pid=${comm#/proc/}
+                kill -TERM "${pid%/comm}"
+                break
+            fi
+        done'
+    timeout 90 docker wait bbmem-app > /dev/null
     for suffix in zst gz; do
         docker cp "bbmem-app:/var/lib/blackbox/heaptrack.serve.$suffix" "$(hostpath "$OUT")" > /dev/null 2>&1 &&
             docker create --name bbmem-oneoff "$app_image" heaptrack_print -f "/tmp/heaptrack.serve.$suffix" \
-                --print-peaks 1 --print-allocators 0 --print-temporary 0 --print-leaks 0 \
-                --print-histogram 0 -n 30 > /dev/null &&
+                --print-peaks 1 --print-allocators 0 --print-temporary 0 --print-leaks 1 \
+                --print-massif /tmp/heaptrack.massif --massif-detailed-freq 1 --massif-threshold 0.1 \
+                -n 30 > /dev/null &&
             docker cp "$(hostpath "$OUT/heaptrack.serve.$suffix")" bbmem-oneoff:/tmp/ > /dev/null &&
             { docker start -a bbmem-oneoff > "$OUT/heaptrack.txt" 2>&1 || true; } &&
+            docker cp bbmem-oneoff:/tmp/heaptrack.massif "$(hostpath "$OUT/heaptrack.massif")" > /dev/null &&
             docker rm bbmem-oneoff > /dev/null && echo "heaptrack report: $OUT/heaptrack.txt" && break
     done
 fi

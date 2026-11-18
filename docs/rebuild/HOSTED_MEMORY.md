@@ -4,12 +4,22 @@ Date: 2026-11-18. Branches `p7/mem` (causes 1–2, rebased on `p6/int` `1c6acab`
 (cause 3, on `p6/int` `42d9237`), `p7/amem` (causes 4–6) and `p8/readmem` (read-path follow-up).
 Requirement: the hosted `blackbox serve` process (API + in-process worker + analytics +
 parsed-run cache + concurrent HTTP heavy reads) peaks below **300 MB** on Linux. Result: **not
-met**. The read path was fixed (peak under 32 concurrent anonymous heavy readers 697 → 207 MiB),
-resident memory no longer ratchets from job to job, and a largest job's own working set shrank
-(run analytics state, the analytics report as `Value` trees, the result-hash buffer). The latest
-512 MB fixture completes every phase: largest jobs up to 362 MiB, the largest job plus concurrent
-reads 394 MiB (was OOM-killed), cancellation 375 MiB, idle 210 MiB. Phases 3–5 still exceed
-286.1 MiB. Historical measurements and the latest read-path comparison follow.
+met**, by a 2.6 MiB residual in one of three controlled repeats (phase 4: 288.7 MiB; the other
+repeats 277.7 and 273.6). See [Corrected read set](#corrected-read-set-p9baseline) for the current
+figures; every other phase stays under 286.1 MiB in all three repeats.
+
+**Every read-phase figure (phases 1, 2 and 4, and summaries quoting them) before the
+corrected-read-set section, including those quoted in `SECURITY_DISPOSITIONS.md` and release
+records, is marked † = old read set, under-covered: no dataset replay or timeline-window reads.**
+The fixture read the dataset span from the wrong DTO fields and the run's dataset from a field
+that does not exist, so its 1,073-URI set silently omitted all 120 dataset-replay and 96
+timeline-window URIs. The generator now asserts every read family is present.
+
+Historical † summary: the read path was fixed (peak under 32 concurrent anonymous heavy readers
+697 → 207 MiB †), resident memory no longer ratchets from job to job, and a largest job's own
+working set shrank (run analytics state, the analytics report as `Value` trees, the result-hash
+buffer). The `p8/readmem` 512 MB fixture completed every phase: largest jobs up to 362 MiB, the
+largest job plus concurrent reads 394 MiB † (was OOM-killed), cancellation 375 MiB, idle 210 MiB.
 
 All figures below come from the runs named with them; MiB = 2^20 bytes (300 MB = 286.1 MiB).
 
@@ -32,11 +42,13 @@ Blob token, API-key pepper and API key are generated per run (Postgres uses the 
 lives only in the containers and a temp file deleted on exit. Nothing external is contacted.
 `blackbox migrate`, `demo seed --wait` and `keys mint` run in one-off containers first.
 
-Phases: (1) cache fill — one client touches 154 heavy anonymous reads once (lazy market workbench,
-dataset regeneration, parsed-run cache, demo snapshot, response cache); (2) 32 clients issue
-random distinct anonymous heavy reads (run detail/timeline/tape/fills/orders/equity/report,
-comparison detail/pairs/report, dataset replay windows, market workbench event detail and book),
-each from a new forwarded address, until 600 requests were answered by a handler; (3) every
+Phases: (1) cache fill — one client touches every heavy anonymous read family once (lazy market
+workbench, dataset regeneration, parsed-run cache, demo snapshot, response cache); (2) 32 clients
+issue random distinct anonymous heavy reads (run detail/timeline/timeline windows/tape/fills/
+orders/equity/report/analytics/engine-check, comparison detail/pairs/report, dataset replay
+windows, market workbench event detail, book and metrics; 1,289 URIs, per-family counts in
+`result.json` `read_set.families`, any zero count fails the run), each from a new forwarded
+address, until 600 requests were answered by a handler; (3) every
 candidate job alone; (4) the largest job again with phase-2 load, keyed whole-run reads and a
 comparison of the two largest runs; (5) cancellation of a running largest job; (6) 40 s idle.
 
@@ -80,7 +92,8 @@ trailer) remains for the one caller that needs the report (the analytics fallbac
 
 ## Cause 2: glibc malloc arenas keep freed memory resident
 
-Reads-only runs, 2 GB limit, 600 handler-answered requests from 32 clients (phase-2 peak `VmHWM`):
+Reads-only runs, 2 GB limit, 600 handler-answered requests from 32 clients (phase-2 peak `VmHWM`;
+phase-1/2 columns †, old read set, under-covered: no dataset replay or timeline-window reads):
 
 | image | `MALLOC_ARENA_MAX` | phase 1 end | phase 2 peak | after 40 s idle |
 |---|---|---:|---:|---:|
@@ -97,6 +110,9 @@ showed 172 MB under `OpenRun::trailer` (summary checks); the final change routes
 `trailer_core` too (`p6/int` now uses `verified_trailer` there, which returns the core trailer).
 
 ## Results with causes 1–2 fixed (before cause 3)
+
+Phase-1, phase-2 and phase-4 figures in this section are †: old read set, under-covered: no
+dataset replay or timeline-window reads.
 
 Run `target/hosted-memory/final2` (image `blackbox-hft:hosted-mem-final`, `p7/mem`, 512 MB limit):
 
@@ -157,6 +173,9 @@ and admission are unchanged. Effect in the diagnostic run with trim
 cannot return (RSS − in use − mmap ≈ 39–67 MiB) is the binary, thread stacks and partly used pages.
 
 ## Results with all three fixes
+
+Phase-1, phase-2 and phase-4 figures in this section are †: old read set, under-covered: no
+dataset replay or timeline-window reads.
 
 Runs `target/hosted-memory/jobmem-512m` and `jobmem-2g` (image `blackbox-hft:hosted-jobmem`,
 `p7/jobmem`, identical fixture; phase 4 needs 2 GB to complete):
@@ -230,6 +249,9 @@ special floats and 200,000-row arrays; golden pins unchanged).
 
 ## Results with causes 1–6 fixed
 
+Phase-1, phase-2 and phase-4 figures in this section are †: old read set, under-covered: no
+dataset replay or timeline-window reads.
+
 Runs at 512 MB, identical fixture, 57 candidate jobs (`target/hosted-memory/<run>`): `jobmem-512m`
 (causes 1–3), `amem-512m` (+ cause 4, image `blackbox-hft:hosted-amem`), `amem2-512m` (+ cause 5,
 `hosted-amem2`), `amem3-512m` (+ cause 6, `hosted-amem3`, `p7/amem` `bfa7dfb`). `jobmem-512m` was
@@ -261,10 +283,11 @@ The phase-3 highest peak is `synthetic-stress-wide-spreads/latency_lognormal` wi
 
 ## Residual
 
-Final run (`amem3-512m`): phases 1, 2 and 6 stay under 286.1 MiB (141.0, 245.0, 217.3). Every
+Final run (`amem3-512m`): phases 1, 2 and 6 stay under 286.1 MiB (141.0 †, 245.0 †, 217.3). Every
 phase that runs a largest admitted job exceeds it: phase 3 by up to 53.8 MiB (339.9; 19 of 57
-jobs above, 14 completed and 5 budget-stopped), phase 4 by 148.9 MiB (435.0), phase 5 by
-89.5 MiB (375.6).
+jobs above, 14 completed and 5 budget-stopped), phase 4 by 148.9 MiB (435.0 †), phase 5 by
+89.5 MiB (375.6). († = old read set, under-covered: no dataset replay or timeline-window reads;
+the concurrent-read attribution below is from the same under-covered set.)
 
 heaptrack of the final image, one largest job (`amem3-heaptrack-job`, 2 GB, the phase-3 peak job
 `synthetic-stress-wide-spreads/latency_lognormal` without a cap): heap peak **322.8 MB**, reached
@@ -330,13 +353,18 @@ simulation finished was refused at completion and dropped as a lost lease; the w
 
 ## Not done / open
 
-- **Bound not met** for phases 3–5, which run a largest admitted job (residual above). Every
-  phase now completes at 512 MB.
+- **Bound not met**: with the corrected read set and the final `p9/baseline` policy, phase 4
+  peaked at 288.7 MiB in one of three repeats (2.6 MiB over 286.1); every other phase of every
+  repeat stays under it ([Corrected read set](#corrected-read-set-p9baseline)).
 - No CI job: one run needs a release image build (~10–20 min uncached) plus seeding and 57 jobs,
   and the figures depend on thread count and allocator state; it does not meet the "< 10 min,
   deterministic" bar.
 
-## AT-5 / SEC-6 disposition text
+## AT-5 / SEC-6 disposition text (historical, superseded)
+
+Superseded by the proposed row in [Corrected read set](#corrected-read-set-p9baseline). Its
+read-phase figures (32 readers 245.0, combined 435.0, concurrent reads ≈ 196 MB) are †: old read
+set, under-covered: no dataset replay or timeline-window reads.
 
 > **Open.** Linux full-process fixture `scripts/research/hosted-memory.sh` (hosted image, 512 MB
 > container, Postgres + fake Blob, demo seeded; `docs/rebuild/HOSTED_MEMORY.md`). Fixed: metadata
@@ -381,6 +409,9 @@ previous JSON bytes and ETags.
 
 ### Hosted remeasurement (512 MB, no swap)
 
+Phase-1, phase-2 and phase-4 figures in this section, both columns, are †: old read set,
+under-covered: no dataset replay or timeline-window reads.
+
 Image `blackbox-hft:hosted-readmem`, output
 `D:/bbwt/p8-readmem/target/hosted-memory/readmem-512m/`, compared with the previous complete
 `D:/bbwt/p7-amem/target/hosted-memory/amem3-512m/`. Same fixture, 32 clients, 600 handler-answered
@@ -412,3 +443,186 @@ Cancellation returned 202 and reached `cancelled`, with no run stored. The fixtu
 because the measured overall RSS peak is still above 300,000,000 bytes, not because a phase or
 container failed. **AT-5 / SEC-6 remains open for phases 3–5**; the read changes do not establish
 the full-process 300 MB bound.
+
+## Baseline cache experiments (`p9/baseline`)
+
+Every read-phase figure in this section (cache hit rates, phase-2 503s and peaks) is †: old
+read set, under-covered: no dataset replay or timeline-window reads. The latency probes and
+keyed largest-run timeline probes name their URIs explicitly and are unaffected.
+
+The fresh unmodified `36536d0` image is `blackbox-hft:hosted-baseline-before-ready` (the
+`-ready` layer only supplies the valid `BB_GIT_SHA=36536d0` runtime environment). Output is under
+`D:/bbwt/p9-baseline/target/hosted-memory/`. These runs use the same 512 MiB/no-swap limit,
+32 readers and 600 handler-answered phase-2 requests. As in the historical fixture, there is
+no CPU quota; these are not latency predictions for Render's 0.1-CPU service.
+
+### Rejecting undersized caches
+
+Warm-read probes run in a fresh fixture after the RSS sampler stops (`BBMEM_STOP_AFTER=boot
+BBMEM_LATENCY=1`), not after the full fixture exhausts the anonymous egress budget. Each path
+has one initial read and 11 measured warm reads; p95 is the largest of those 11 observations.
+Identical URIs exercise the serialized-response cache. Changing the documented `max_events`
+or `max_trades` parameter bypasses only that cache, exercising warm parsed-run/dataset reads.
+
+| warm read, p50 / p95 (ms) | unmodified | 4 MiB parsed / 4 MiB response | one-run 32 MiB parsed / 4 MiB response |
+|---|---:|---:|---:|
+| identical timeline URI | 0.505 / 0.901 | 0.528 / 0.742 | 0.510 / 0.681 |
+| timeline, changing `max_events` | 1.421 / 1.693 | **58.160 / 59.433** | 1.426 / 1.538 |
+| identical replay URI | 0.461 / 0.875 | 0.473 / 0.819 | 0.455 / 0.788 |
+| replay, changing `max_trades` | 1.270 / 2.062 | 1.234 / 1.743 | 1.146 / 1.293 |
+
+Sources: `baseline-before-latency`, `baseline-4m-latency`, `baseline-32m-latency`.
+The measured seeded runs need 7,592,095–9,120,374 decoded section bytes for cache admission.
+The 4 MiB parsed cap admits none of them: the unchanged single-flight prevents simultaneous
+decodes of the same run, but each subsequent window decodes it again. **The 4 MiB parsed cap
+was rejected**; fast repeated identical URIs alone would have hidden the regression.
+
+Controlled response-cache measurements use the same after-image, a one-run 32 MiB parsed cap
+and trace-level lookup counters (`baseline-32m-control`, `baseline-32m-response4`):
+
+| response-body budget | hits / lookups (whole reads-only fixture) | phase-2 503s / 600 handler answers | phase-2 peak RSS (MiB) |
+|---|---:|---:|---:|
+| 32 MiB | 162 / 761 (21.3%) | 90 | 195.9 |
+| 4 MiB | 33 / 761 (4.3%) | 74 | 172.0 |
+
+The 4 MiB response cache saved memory but lost most hits. **That cut was rejected too**:
+the response cache retains its 32 MiB budget. Its expired/stale bodies are now released by
+periodic maintenance even when requests stop, rather than waiting for a subsequent insertion.
+The 503 figures vary with concurrent scheduling; lower 503s in one sample do not establish that
+discarding cache hits is safe on a CPU-limited service.
+
+### Largest runs, not just seeded demo runs
+
+The 16 MiB/one-run trial also had to be rejected: it kept the small demo runs but not the
+largest completed jobs. `baseline-largest-before`, `baseline-largest-16m` and
+`baseline-largest-128m` run the same wide-spread lognormal/no-cap and heavy-tail/capped
+candidates. The heavy-tail run has 61,906,333 decoded section bytes; the lognormal run and its
+new-seed repeat have 70,989,182–71,431,683. The former fit the original 64 MiB cache; the latter
+did not. The hosted policy therefore retains **one run / 128 MiB decoded section bytes**,
+not two runs / 64 MiB and not an undersized cache that continually re-decodes large runs.
+
+| keyed warm timeline, p50 / p95 (ms), 11 windows | original | 16 MiB / one run | 128 MiB / one run |
+|---|---:|---:|---:|
+| heavy-tail, capped | 5.652 / 6.411 | **289.431 / 345.894** | 6.892 / 8.125 |
+| lognormal, no queue cap | **305.036 / 525.056** | 322.873 / 427.176 | 6.182 / 7.470 |
+
+All 12 requests per probe (initial plus warm reads) returned 200. Keyed reads bypass the
+anonymous response cache; the difference is parsed-run retention, not repeated-URI hits.
+The 128 MiB trial admitted each of these runs once, not once per window. The local profile's
+two-run / 64 MiB defaults are unchanged.
+
+### Retained capacity is not the serialized length
+
+Heaptrack of the original image, replayed to the end of phase 2, attributes **46.6 MiB** to
+response-body serialization even though the response cache charges at most 32 MiB of body
+lengths. Its `Bytes` retain `serde_json::to_vec`'s geometrically grown `Vec` allocations:
+many cached market books hold 262,144-byte allocations. The cache now reclaims the uniquely
+owned vector, discards spare capacity with `into_boxed_slice`, and only then shares the bytes
+with the outgoing response. Shared/static inputs are copied only when ownership requires it.
+No body, ETag, cache key, TTL, hit policy or response-size cap changes. The regression test
+`cached_body_discards_spare_capacity_without_changing_bytes_or_etag` checks the retained vector
+capacity, exact body bytes and ETag.
+
+The market demo was already lazy. Once its report/examples are built, its source-order
+observation and L2 arrays are no longer read by public book/event routes; dropping them reduces
+retained market state from **25.708 to 15.557 MiB** in the allocation trace. Book/event-detail
+reads across checkpoint boundaries and curated examples are pinned by
+`discarded_analytics_inputs_do_not_change_workbench_reads`. The workbench expires after 30 s
+without use; a later read rebuilds the same deterministic data rather than retaining it
+throughout unrelated jobs.
+
+## Corrected read set (`p9/baseline`)
+
+These are the current figures. The read-set generator now takes each dataset's span from
+`current_version.start_ns/end_ns` and a run's dataset from `dataset.id`, and
+`read_family_counts` fails the run if any family has zero URIs. Generated set (identical in
+every run below, seed `20261118`): 1,289 URIs — run detail/analytics/report/engine-check/equity/
+fills/orders 12 each, tape 108, timeline 108 of which **96 time windows**, comparison detail 11,
+pairs 44, report 11, **dataset replay 120**, market event detail 400, book 400, metrics 1.
+
+Controlled comparison: the phase-4 job is pinned (`BBMEM_COMBINED_CANDIDATE`) to
+`synthetic-stress-depletion/latency_heavy_tail`, interval 1 ms, offset 22.099 s, no queue cap —
+the worst-case candidate by standalone peak (the highest phase-3 peak in two of the three final
+repeats; in the before run wide-spreads `latency_lognormal`, cap 2000,
+peaked 10.2 MiB higher alone) — instead of being chosen by RSS in each run. It completed in
+every run. Before = unmodified `36536d0` (`blackbox-hft:hosted-baseline-before-ready`,
+`v2-before-pinned`); after = final policy (`blackbox-hft:hosted-baseline-final`,
+`v2-final-pinned-{1,2,3}`): one-run 128 MiB parsed-run cache, 32 MiB response cache with
+exact-size cached bodies and idle expiry, `MALLOC_MMAP_THRESHOLD_=131072`, hosted pool
+`shrink_buffers()` on release, market workbench analytics inputs dropped and idle expiry.
+512 MB, no swap, 32 readers, 600 handler-answered phase-2 requests, all 57 jobs. Peak =
+max(sampled `VmRSS`, per-phase `VmHWM`), MiB.
+
+| phase (peak MiB) | before | after min | after median | after max |
+|---|---:|---:|---:|---:|
+| boot | 57.9 | 56.8 | 57.3 | 57.3 |
+| 1: cache fill | 149.8 | 90.1 | 94.4 | 114.8 |
+| 2: 32 concurrent anonymous heavy readers | 224.6 | 156.9 | 165.6 | 166.3 |
+| 3: highest single-job peak (of 57) | 339.7 | 186.6 | 198.9 | 202.7 |
+| 3: jobs peaking ≥ 286.1 | 22 | 0 | 0 | 0 |
+| 4: pinned job + concurrent reads + keyed reads + comparison | 397.3 | 273.6 | 277.7 | **288.7** |
+| 5: cancellation of a running largest job | 357.5 | 227.1 | 229.8 | 230.0 |
+| 6: after 40 s idle | 200.5 | 123.7 | 124.2 | 126.9 |
+| cgroup `memory.peak` (anon + page cache) | 474.0 | 354.0 | 355.3 | 368.5 |
+
+Phase-3 job start RSS: 185.3–260.2 before, 96.0–144.7 after. Phase-2 statuses: before
+478×200, 20×400, 7×409, 95×503; after 487/464/457×200, 17/21/17×400, 10/8/9×409,
+86/107/117×503 (the rest 429). Every run: server running, `oom_killed=false`, 27 jobs completed.
+
+CPU and wall time (`/proc/<pid>/stat` deltas per phase, no CPU quota):
+
+| figure | before | after (3 repeats) |
+|---|---:|---:|
+| phase 3: 57 jobs, total CPU s / wall s | 28.23 / 35.5 | 26.99–27.67 / 34.4–35.2 |
+| phase 3: pinned candidate standalone (2 seeds), CPU s / wall s | 1.36, 1.35 / 1.5, 1.4 | 1.15–1.42 / 1.3–1.5 |
+| phase 4: wall s | 3.8 | 4.3–4.6 |
+| phase 4: user / system CPU s | 7.45 / 3.02 | 8.80–9.11 / 4.76–5.27 |
+
+The fixed mmap threshold does not slow a job alone, but under phase 4's concurrent load the
+process spends ≈ 1.5 s more user and ≈ 2 s more system CPU (consistent with mmap/munmap of large
+read buffers), +0.5–0.8 s wall (+13–21%). On a 0.1-CPU instance that cost is proportionally
+larger; it is the price of the ≈ 90 MiB lower job baseline.
+
+Warm reads (`v2-before-ready-latency2`, `v2-final-latency2`; fresh fixture after boot, one
+initial and 11 warm requests per probe, p95 = largest of 11; ms):
+
+| warm read, p50 / p95 (ms) | before | after |
+|---|---:|---:|
+| run list `?limit=20`, anonymous (response cache) | 0.474 / 0.555 | 0.487 / 0.586 |
+| run list `?limit=20`, keyed (database) | 1.653 / 2.315 | 1.587 / 2.728 |
+| identical timeline window | 0.553 / 0.925 | 0.503 / 0.872 |
+| timeline window, changing `max_events` (parsed-run cache) | 1.278 / 1.462 | 1.495 / 1.635 |
+| identical dataset replay window | 0.440 / 0.719 | 0.549 / 0.849 |
+| replay window, changing `max_trades` (dataset cache) | 1.127 / 1.359 | 1.206 / 1.938 |
+| market summary | 0.521 / 0.799 | 0.475 / 0.771 |
+| market book | 0.447 / 0.468 | 0.424 / 0.637 |
+| run tape `limit=500` | 0.555 / 0.955 | 0.459 / 0.709 |
+
+All probes returned 200 with identical bodies. Differences are within a few hundred µs.
+Keyed largest-run timeline windows (pool shrink + compaction, `baseline-pool-before/after`):
+5.96–6.50 / 6.55–7.53 ms before versus 5.94–7.92 / 6.93–10.11 ms after (p50 / p95).
+
+### Verdict
+
+**AT-5 / SEC-6 stays Open.** Phases 1–3, 5 and 6 are under 286.1 MiB in every repeat with
+≥ 56 MiB margin; phase 4 is 273.6–288.7 MiB, over the bound in one of three repeats by
+2.6 MiB, inside the run-to-run variance (15.1 MiB spread). It is not Fixed until every phase is
+below 286.1 MiB in every repeat.
+
+### Proposed AT-5 / SEC-6 row text
+
+> **Open (2.6 MiB residual, phase 4 only).** Linux full-process fixture
+> `scripts/research/hosted-memory.sh` (hosted image, 512 MB container, no swap, Postgres + fake
+> Blob, demo seeded; read set of 1,289 URIs with every read family asserted non-empty, including
+> 120 dataset-replay and 96 timeline-window URIs; `docs/rebuild/HOSTED_MEMORY.md`). Earlier
+> read-phase figures used an under-covered read set and are superseded. `p9/baseline` adds a
+> hosted one-run/128 MiB parsed-run cache, exact-size cached response bodies (32 MiB budget,
+> idle expiry), `MALLOC_MMAP_THRESHOLD_=131072`, SQLx buffer shrink on connection release and a
+> leaner, idle-expiring market workbench; bytes, ETags, golden hashes and run identities are
+> unchanged. Three controlled repeats (phase-4 job pinned to the worst standalone candidate),
+> peak MiB min/median/max versus unmodified `36536d0`: 32 concurrent readers
+> 156.9/165.6/166.3 (was 224.6), largest single job 186.6/198.9/202.7 (339.7; 0 of 57 jobs
+> above 286.1, was 22), cancellation 227.1/229.8/230.0 (357.5), idle 123.7/124.2/126.9 (200.5),
+> largest job + concurrent reads + comparison 273.6/277.7/288.7 (397.3). Remaining: phase 4
+> exceeded 286.1 MiB in one repeat. The mmap threshold costs ≈ 15–20% more CPU in phase 4.
+> Next step: page keyed whole-run reads or run the worker out of process.

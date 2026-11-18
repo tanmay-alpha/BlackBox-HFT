@@ -255,10 +255,9 @@ impl Storage {
     }
 }
 
-/// Parsed runs kept in memory for paged whole-run reads (timeline cursor pages).
+/// Default local count limit for parsed runs kept for timeline cursor pages.
 const PARSED_RUNS: usize = 2;
-/// Byte budget of the parsed runs (estimated by their decoded section bytes); a run above it is
-/// never retained.
+/// Default local decoded section-byte budget. Hosted limits are set by `AppConfig`.
 const PARSED_BYTES: u64 = 64 << 20;
 
 /// One in-flight whole-run decode, shared by concurrent misses on the same bundle.
@@ -268,6 +267,8 @@ type ParsedLoad = Arc<tokio::sync::OnceCell<(Arc<RunResult>, u64)>>;
 struct ParsedLru<T> {
     entries: Vec<(String, T, u64)>,
     bytes: u64,
+    capacity: u64,
+    max_runs: usize,
 }
 
 impl<T: Clone> ParsedLru<T> {
@@ -275,6 +276,8 @@ impl<T: Clone> ParsedLru<T> {
         Self {
             entries: Vec::new(),
             bytes: 0,
+            capacity: PARSED_BYTES,
+            max_runs: PARSED_RUNS,
         }
     }
 
@@ -287,11 +290,20 @@ impl<T: Clone> ParsedLru<T> {
     }
 
     fn insert(&mut self, key: &str, value: T, bytes: u64) {
-        if bytes > PARSED_BYTES || self.entries.iter().any(|(k, _, _)| k == key) {
+        tracing::debug!(
+            decoded_bytes = bytes,
+            capacity_bytes = self.capacity,
+            "parsed run cache admission"
+        );
+        if bytes > self.capacity
+            || self.capacity == 0
+            || self.max_runs == 0
+            || self.entries.iter().any(|(k, _, _)| k == key)
+        {
             return;
         }
         while !self.entries.is_empty()
-            && (self.entries.len() >= PARSED_RUNS || self.bytes + bytes > PARSED_BYTES)
+            && (self.entries.len() >= self.max_runs || self.bytes + bytes > self.capacity)
         {
             let (_, _, b) = self.entries.remove(0);
             self.bytes -= b;
@@ -362,6 +374,18 @@ impl BundleCache {
             loading: Mutex::new(HashMap::new()),
             fetching: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Sets the decoded section-byte budget; zero keeps single-flight decoding without retaining
+    /// a run after its readers finish. The local constructor's budget remains 64 MiB.
+    pub fn with_parsed_limits(mut self, capacity: u64, max_runs: usize) -> Self {
+        let parsed = self
+            .parsed
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        parsed.capacity = capacity;
+        parsed.max_runs = max_runs;
+        self
     }
 
     pub fn dir(&self) -> &Path {
@@ -794,6 +818,12 @@ impl OpenRun {
         self.read(|reader, path| reader.trailer(path)).await
     }
 
+    /// The verified trailer report as text, without allocating the complete report tree.
+    pub async fn analytics_json(&self) -> Result<Option<String>, ApiError> {
+        self.read(|reader, path| reader.trailer_analytics_json(path))
+            .await
+    }
+
     /// The verified trailer without the analytics report (manifest, metrics, engine check).
     pub async fn trailer_core(&self) -> Result<BundleTrailerCore, ApiError> {
         self.read(|reader, path| reader.trailer_core(path)).await
@@ -974,5 +1004,19 @@ mod parsed_tests {
         assert_eq!(Arc::strong_count(&a), 1);
         assert_eq!(Arc::strong_count(&b), 2);
         assert!(lru.get("b").is_some());
+    }
+
+    #[test]
+    fn parsed_run_capacity_can_be_reduced_or_disabled() {
+        let mut lru = ParsedLru::new();
+        lru.capacity = 4;
+        lru.insert("a", 1, 3);
+        lru.insert("b", 2, 2);
+        assert_eq!(lru.get("a"), None);
+        assert_eq!(lru.get("b"), Some(2));
+        let mut disabled = ParsedLru::new();
+        disabled.capacity = 0;
+        disabled.insert("empty", 1, 0);
+        assert!(disabled.entries.is_empty());
     }
 }

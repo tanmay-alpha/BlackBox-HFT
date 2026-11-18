@@ -13,7 +13,10 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use axum::Router;
 use bb_db::{BootstrapOutcome, Database};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{
+    Connection,
+    postgres::{PgConnectOptions, PgPoolOptions},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -86,7 +89,18 @@ pub async fn connect(cfg: &AppConfig, metrics: Arc<Metrics>) -> Result<Database>
                 Metrics::inc(&metrics.db_acquires_total);
                 Ok(true)
             })
+        });
+    let pool = if cfg.profile == Profile::Hosted {
+        // Large analytics rows grow SQLx's reusable receive/write buffers. A connection can be
+        // idle for four minutes; release that excess when the query/transaction is finished.
+        pool.after_release(|conn, _meta| {
+            conn.shrink_buffers();
+            Box::pin(async { Ok(true) })
         })
+    } else {
+        pool
+    };
+    let pool = pool
         .connect_with(options)
         .await
         .context("connecting to DATABASE_URL")?;
@@ -143,7 +157,8 @@ impl Runtime {
         };
         let cache = Arc::new(
             BundleCache::new(&cfg.data_dir, cfg.artifact_disk_cache_bytes)
-                .context("creating the bundle cache")?,
+                .context("creating the bundle cache")?
+                .with_parsed_limits(cfg.parsed_run_cache_bytes, cfg.parsed_run_cache_runs),
         );
         Ok(Self {
             registry: Arc::new(DatasetRegistry::new(&cfg.data_dir)),

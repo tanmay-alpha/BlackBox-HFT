@@ -311,6 +311,54 @@ fn page_and_whole_run_reads_skip_the_authenticated_analytics_report() {
     assert!(!reader.page(bundle.path(), 0).unwrap().is_empty());
 }
 
+#[test]
+fn trailer_report_text_is_borrowed_only_after_authentication_and_old_bundles_have_none() {
+    let directory = tempfile::tempdir().unwrap();
+    let run = common::run(1);
+    let analytics: serde_json::Value = serde_json::from_str(PINNED_ANALYTICS).unwrap();
+    let bundle = BundleWriter::new(BundleLimits::default())
+        .unwrap()
+        .with_analytics(TrailerAnalytics::from_json(PINNED_ANALYTICS).unwrap())
+        .write_run(directory.path(), &run)
+        .unwrap();
+    let reader = BundleReader::new(&bundle.trust, BundleLimits::default()).unwrap();
+    assert_eq!(
+        reader.trailer_analytics_json(bundle.path()).unwrap(),
+        Some(analytics.to_string())
+    );
+    let old = BundleWriter::new(BundleLimits::default())
+        .unwrap()
+        .write_run(directory.path(), &run)
+        .unwrap();
+    assert_eq!(
+        BundleReader::new(&old.trust, BundleLimits::default())
+            .unwrap()
+            .trailer_analytics_json(old.path())
+            .unwrap(),
+        None
+    );
+
+    // Same-size tampering of the compressed trailer must fail before report extraction.
+    let mut corrupt = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(bundle.path())
+        .unwrap();
+    corrupt
+        .seek(SeekFrom::Start(bundle.trust.trailer.offset + 10))
+        .unwrap();
+    let mut byte = [0];
+    corrupt.read_exact(&mut byte).unwrap();
+    corrupt.seek(SeekFrom::Current(-1)).unwrap();
+    byte[0] ^= 1;
+    corrupt.write_all(&byte).unwrap();
+    corrupt.flush().unwrap();
+    assert!(matches!(
+        reader.trailer_analytics_json(bundle.path()),
+        Err(ArtifactError::Integrity(_))
+    ));
+}
+
 /// Unsorted keys, nested objects, escapes, extreme and negative-zero floats, `u64`/`i64` bounds.
 const PINNED_ANALYTICS: &str = r#"{"zeta":{"b":[0.1,1e-7,-0.0,1.7976931348623157e308,5e-324,123456789.123456789],"a":null},"analytics_version":"execution-v3","Mixed":[{"y":"\u00e9\"\\\n\t","x":18446744073709551615,"w":-9223372036854775808},true,false,[]],"empty":{},"n":2.5e-3}"#;
 
