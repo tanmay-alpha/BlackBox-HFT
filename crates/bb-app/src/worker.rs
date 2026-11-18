@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bb_artifacts::{ArtifactError, BundleWriter};
+use bb_artifacts::{ArtifactError, BundleWriter, TrailerAnalytics};
 use bb_core::config::RunConfig;
 use bb_db::{Database, Job, Lease, NewArtifact, NewRun, WorkerHeartbeat};
 use bb_sim::{Progress, RunControl};
@@ -90,6 +90,10 @@ impl JobControl {
 
     pub fn request_cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    fn cancel_requested(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
     }
 
     pub fn progress(&self) -> Option<LiveProgress> {
@@ -546,6 +550,8 @@ enum Outcome {
     Completed,
     Failed(&'static str, &'static str, String),
     Released,
+    /// The job is `cancelling`: record `cancelled` now instead of leaving it to the reaper.
+    Cancelled,
     Expired,
     Abandoned,
 }
@@ -598,6 +604,7 @@ async fn process(ctx: &Arc<WorkerCtx>, job: Job) {
             .await
             .map(|_| ()),
         (Outcome::Released, None) => ctx.db.release(&lease).await.map(|_| ()),
+        (Outcome::Cancelled, None) => ctx.db.acknowledge_cancel(&lease).await.map(|_| ()),
         (Outcome::Expired, None) => ctx
             .db
             .expire_attempt(&lease, "exceeded the 600 s per-attempt deadline")
@@ -637,6 +644,13 @@ async fn process(ctx: &Arc<WorkerCtx>, job: Job) {
             reason = "released",
             elapsed_ms,
             "job released (cancelled or draining)"
+        ),
+        (Outcome::Cancelled, Ok(())) => tracing::info!(
+            job_id = %job_id,
+            component = "worker",
+            reason = "cancelled",
+            elapsed_ms,
+            "job cancelled; nothing stored"
         ),
         (Outcome::Expired, Ok(())) => tracing::warn!(
             job_id = %job_id,
@@ -812,12 +826,25 @@ async fn execute(
     if control.lost.load(Ordering::SeqCst) {
         return Outcome::Abandoned;
     }
+    // A cancel that arrived after the simulation's last checkpoint: store nothing.
+    if control.cancel_requested() {
+        return Outcome::Cancelled;
+    }
     if let Some(elapsed) = ctx.hub.drain_elapsed()
         && elapsed + COMMIT_GRACE > ctx.cfg.shutdown_grace
     {
         return Outcome::Released;
     }
-    persist(ctx, job, lease, &config_row.fingerprint, run, &dataset).await
+    persist(
+        ctx,
+        job,
+        lease,
+        control,
+        &config_row.fingerprint,
+        run,
+        &dataset,
+    )
+    .await
 }
 
 /// Persisted message of an engine error or panic (the detail is only in the redacted log).
@@ -832,8 +859,11 @@ fn failure(job: Uuid, control: &JobControl, err: AppError) -> Outcome {
                 Outcome::Abandoned
             } else if control.deadline_hit.load(Ordering::SeqCst) {
                 Outcome::Expired
+            } else if control.cancel_requested() {
+                Outcome::Cancelled
             } else {
-                // Drain (→ queued) or cancel (cancelling → cancelled): `release` does both.
+                // Drain (→ queued), or a cancel this process has not seen yet (→ cancelled):
+                // `release` does both.
                 Outcome::Released
             }
         }
@@ -901,6 +931,7 @@ async fn persist(
     ctx: &Arc<WorkerCtx>,
     job: &Job,
     lease: &Lease,
+    control: &JobControl,
     fingerprint: &[u8],
     run: bb_core::result::RunResult,
     dataset: &Arc<crate::datasets::DatasetCtx>,
@@ -937,16 +968,17 @@ async fn persist(
                 None
             }
         };
-    let encoded = match analytics.as_ref().map(analytics::encode).transpose() {
+    // Consumed: the typed report is dropped once encoded, not held through the bundle write.
+    let encoded = match analytics.map(|a| analytics::encode(&a)).transpose() {
         Ok(e) => e,
         Err(e) => {
             let message = generic(job.id, "json", "analytics_encoding_failed", &e);
             return Outcome::Failed("internal", "internal", message);
         }
     };
-    let analytics_value: Option<serde_json::Value> = encoded
+    let trailer_analytics = encoded
         .as_ref()
-        .and_then(|e| serde_json::from_str(&e.json).ok());
+        .and_then(|e| TrailerAnalytics::from_json(&e.json).ok());
 
     // 1-3: write to a temp file, hash, validate by re-reading (inside BundleWriter).
     let limits = bundle_limits(ctx.cfg.limits.max_output_bytes);
@@ -954,8 +986,8 @@ async fn persist(
     let for_writer = run.clone();
     let written = tokio::task::spawn_blocking(move || {
         let mut writer = BundleWriter::new(limits)?;
-        if let Some(value) = analytics_value {
-            writer = writer.with_analytics(value);
+        if let Some(trailer_analytics) = trailer_analytics {
+            writer = writer.with_analytics(trailer_analytics);
         }
         writer.write_run(&temp_dir, &for_writer)
     })
@@ -1003,6 +1035,10 @@ async fn persist(
         bb_core::platform::storage_segment(&job.platform),
         run_uuid
     );
+    // A cancel that arrived while analytics and the bundle were built: upload nothing.
+    if control.cancel_requested() {
+        return Outcome::Cancelled;
+    }
     // 4a: upload intent (own transaction) so an orphaned object is garbage collected.
     if let Err(e) = ctx.db.upload_intent(ctx.storage.backend, &key).await {
         let message = generic(job.id, "database", "upload_intent_failed", &e);
@@ -1190,7 +1226,10 @@ async fn persist(
             // The job was already failed inside the completion transaction.
             Outcome::Abandoned
         }
-        Err(bb_db::Error::LeaseLost) => Outcome::Abandoned,
+        // Refused because the job is `cancelling` (a cancel that raced the upload, possibly seen
+        // by no heartbeat yet): record `cancelled`. A truly lost lease fails that as well and is
+        // logged as `lease_lost`.
+        Err(bb_db::Error::LeaseLost) => Outcome::Cancelled,
         Err(e) => {
             let message = generic(job.id, "database", "completion_failed", &e);
             Outcome::Failed("internal", "internal", message)

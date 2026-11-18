@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 bb-core.workspace = true
 serde.workspace = true
-serde_json = { workspace = true, features = ["float_roundtrip"] }
+serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }
 thiserror.workspace = true
 sha2.workspace = true
 hex.workspace = true

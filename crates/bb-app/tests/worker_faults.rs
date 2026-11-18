@@ -580,7 +580,7 @@ async fn every_job_failure_class_persists_generic_state_and_stores_nothing() {
     assert_eq!(job.state, "cancelled", "{job:?}");
     assert!(job.error_code.is_none() && job.run_id.is_none(), "{job:?}");
     assert_eq!(stored(db, id).await, (0, 0));
-    assert_logged(id, "released");
+    assert_logged(id, "cancelled");
 
     // Lease expiration while running: the attempt is abandoned (no outcome written by the
     // stale worker), the job is re-queued once, and the retry stores exactly one run.

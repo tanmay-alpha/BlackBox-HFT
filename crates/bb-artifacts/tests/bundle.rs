@@ -268,7 +268,7 @@ fn page_and_whole_run_reads_skip_the_authenticated_analytics_report() {
     });
     let bundle = BundleWriter::new(BundleLimits::default())
         .unwrap()
-        .with_analytics(analytics.clone())
+        .with_analytics(TrailerAnalytics::from_json(&analytics.to_string()).unwrap())
         .write_run(directory.path(), &run)
         .unwrap();
     let reader = BundleReader::new(&bundle.trust, BundleLimits::default()).unwrap();
@@ -309,4 +309,69 @@ fn page_and_whole_run_reads_skip_the_authenticated_analytics_report() {
     assert_eq!(tape_rows, 5_001);
     same_as_full(&core);
     assert!(!reader.page(bundle.path(), 0).unwrap().is_empty());
+}
+
+/// Unsorted keys, nested objects, escapes, extreme and negative-zero floats, `u64`/`i64` bounds.
+const PINNED_ANALYTICS: &str = r#"{"zeta":{"b":[0.1,1e-7,-0.0,1.7976931348623157e308,5e-324,123456789.123456789],"a":null},"analytics_version":"execution-v3","Mixed":[{"y":"\u00e9\"\\\n\t","x":18446744073709551615,"w":-9223372036854775808},true,false,[]],"empty":{},"n":2.5e-3}"#;
+
+/// The bundle bytes are unchanged by writing the analytics report as stored text: the pins are the
+/// bundle SHA-256 and size written by the previous writer (report embedded as a
+/// `serde_json::Value`), and the trailer reads back the same report. The compressed bytes depend
+/// on flate2's backend, which feature unification picks: `miniz_oxide` when this crate builds
+/// alone, `zlib-rs` whenever `bb-data` (its `zip` dependency) is in the build, as in `blackbox`.
+/// Each backend has its own pin; a build matches exactly one.
+#[test]
+fn trailer_analytics_text_writes_the_same_bundle_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let run = common::run(5_001);
+    let pinned = |bundle: &VerifiedBundle, pins: [(&str, u64); 2]| {
+        let got = (bundle.trust.sha256.as_str(), bundle.trust.size_bytes);
+        assert!(
+            pins.contains(&got),
+            "{got:?} is neither previous-writer pin {pins:?}"
+        );
+    };
+    let bundle = BundleWriter::new(BundleLimits::default())
+        .unwrap()
+        .with_analytics(TrailerAnalytics::from_json(PINNED_ANALYTICS).unwrap())
+        .write_run(directory.path(), &run)
+        .unwrap();
+    pinned(
+        &bundle,
+        [
+            (
+                "ef946c69d66ad2937afd1dff1e3006176aa646d5020e8066759da0ff7a168b63",
+                43_746,
+            ),
+            (
+                "992eefd2af5429c7a13d8e1895e0a56e9f1874de0dce4b5818ead2a4c5660f64",
+                45_082,
+            ),
+        ],
+    );
+    let full = BundleReader::new(&bundle.trust, BundleLimits::default())
+        .unwrap()
+        .trailer(bundle.path())
+        .unwrap();
+    assert_eq!(
+        full.analytics,
+        Some(serde_json::from_str::<serde_json::Value>(PINNED_ANALYTICS).unwrap())
+    );
+    let none = BundleWriter::new(BundleLimits::default())
+        .unwrap()
+        .write_run(directory.path(), &run)
+        .unwrap();
+    pinned(
+        &none,
+        [
+            (
+                "ac727da75b91eb2fd87d55d1c476d44e5ac901f12291bbba5c80e87c2dc31262",
+                43_587,
+            ),
+            (
+                "3da6804003b1bb5aa214213d8ef3d560be4408ed68ab50db01a61fca60d6c054",
+                44_920,
+            ),
+        ],
+    );
 }

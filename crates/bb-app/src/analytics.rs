@@ -186,12 +186,11 @@ pub fn run_analytics(run: &RunResult, ctx: &DatasetCtx) -> Result<RunAnalytics, 
         &RiskConfig::default(),
     );
     let (execution, execution_unavailable) =
-        match bb_analytics::execution::compute_execution_streaming(
+        match bb_analytics::execution::compute_execution_summary(
             run,
             &ctx.bbo,
             instrument,
             &ExecutionConfig::default(),
-            |_order| {},
         ) {
             Ok(report) => (report, None),
             Err(e) => {
@@ -203,12 +202,11 @@ pub fn run_analytics(run: &RunResult, ctx: &DatasetCtx) -> Result<RunAnalytics, 
                     tape: Vec::new(),
                     ..run.clone()
                 };
-                let report = bb_analytics::execution::compute_execution_streaming(
+                let report = bb_analytics::execution::compute_execution_summary(
                     &empty,
                     &ctx.bbo,
                     instrument,
                     &ExecutionConfig::default(),
-                    |_order| {},
                 )
                 .map_err(|e2| AppError::Internal(format!("execution analytics: {e}; {e2}")))?;
                 (report, Some(e.to_string()))
