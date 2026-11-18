@@ -199,22 +199,10 @@ impl Database {
         Ok(MintedKey { plaintext, key })
     }
     pub async fn authenticate(&self, plaintext: &str) -> Result<Option<ApiKey>> {
-        if plaintext.len() != 47
-            || !plaintext.starts_with("bbk_")
-            || !plaintext[4..]
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
-        {
-            return Ok(None);
-        }
-        let digest = Sha256::digest(plaintext.as_bytes()).to_vec();
-        let key: Option<ApiKey> = sqlx::query_as("SELECT * FROM bb.api_keys WHERE key_sha256=$1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())")
-            .bind(digest).fetch_optional(&self.pool).await?;
-        if let Some(key) = &key {
-            sqlx::query("UPDATE bb.api_keys SET last_used_at=now() WHERE id=$1 AND (last_used_at IS NULL OR last_used_at<now()-interval '1 hour')")
-                .bind(key.id).execute(&self.pool).await?;
-        }
-        Ok(key)
+        Ok(match self.lookup_key(plaintext).await? {
+            KeyLookup::Active(key) => Some(key),
+            KeyLookup::Inactive { .. } | KeyLookup::Unknown => None,
+        })
     }
     pub async fn revoke_key(&self, workspace: Uuid, id: Uuid) -> Result<ApiKey> {
         sqlx::query_as("UPDATE bb.api_keys SET revoked_at=coalesce(revoked_at,now()) WHERE id=$1 AND workspace_id=$2 RETURNING *")
@@ -323,39 +311,53 @@ impl Database {
             .bind(workspace).bind(after).bind(limit(count)?).fetch_all(&self.pool).await?)
     }
     pub async fn register_version(&self, v: &NewDatasetVersion) -> Result<DatasetVersion> {
-        hash(&v.events_sha256)?;
-        sqlx::query("INSERT INTO bb.dataset_versions (dataset_id,version_no,events_sha256,normalization_version,contract_version,tick_size,lot_size,contract_size,origin_ns,start_rel_ns,end_rel_ns,timestamp_unit,row_count,events_bytes,storage,storage_key,manifest) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (dataset_id,events_sha256) DO NOTHING")
-            .bind(&v.dataset_id).bind(v.version_no).bind(&v.events_sha256).bind(v.normalization_version).bind(v.contract_version).bind(v.tick_size).bind(v.lot_size).bind(v.contract_size).bind(v.origin_ns).bind(v.start_rel_ns).bind(v.end_rel_ns).bind(&v.timestamp_unit).bind(v.row_count).bind(v.events_bytes).bind(&v.storage).bind(&v.storage_key).bind(&v.manifest).execute(&self.pool).await?;
-        let row: DatasetVersion = sqlx::query_as(
-            "SELECT * FROM bb.dataset_versions WHERE dataset_id=$1 AND events_sha256=$2",
-        )
-        .bind(&v.dataset_id)
-        .bind(&v.events_sha256)
-        .fetch_one(&self.pool)
-        .await?;
-        if row.version_no != v.version_no
-            || row.normalization_version != v.normalization_version
-            || row.contract_version != v.contract_version
-            || row.tick_size != v.tick_size
-            || row.lot_size != v.lot_size
-            || row.contract_size != v.contract_size
-            || row.origin_ns != v.origin_ns
-            || row.start_rel_ns != v.start_rel_ns
-            || row.end_rel_ns != v.end_rel_ns
-            || row.timestamp_unit != v.timestamp_unit
-            || row.row_count != v.row_count
-            || row.events_bytes != v.events_bytes
-            || row.storage != v.storage
-            || row.storage_key != v.storage_key
-            || row.manifest != v.manifest
-        {
-            return Err(Error::Conflict);
-        }
-        Ok(row)
+        let mut conn = self.pool.acquire().await?;
+        Ok(insert_version(&mut conn, v).await?.0)
     }
     pub async fn current_version(&self, dataset: &str) -> Result<DatasetVersion> {
         sqlx::query_as("SELECT * FROM bb.dataset_versions WHERE dataset_id=$1 AND retired_at IS NULL ORDER BY version_no DESC LIMIT 1").bind(dataset).fetch_optional(&self.pool).await?.ok_or(Error::NotFound)
     }
+}
+
+/// Inserts a dataset version (idempotent by dataset and events digest) on `conn` and returns the
+/// stored row and whether this call inserted it; an existing row that differs is a conflict.
+pub(crate) async fn insert_version(
+    conn: &mut sqlx::PgConnection,
+    v: &NewDatasetVersion,
+) -> Result<(DatasetVersion, bool)> {
+    hash(&v.events_sha256)?;
+    let inserted = sqlx::query("INSERT INTO bb.dataset_versions (dataset_id,version_no,events_sha256,normalization_version,contract_version,tick_size,lot_size,contract_size,origin_ns,start_rel_ns,end_rel_ns,timestamp_unit,row_count,events_bytes,storage,storage_key,manifest) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (dataset_id,events_sha256) DO NOTHING")
+        .bind(&v.dataset_id).bind(v.version_no).bind(&v.events_sha256).bind(v.normalization_version).bind(v.contract_version).bind(v.tick_size).bind(v.lot_size).bind(v.contract_size).bind(v.origin_ns).bind(v.start_rel_ns).bind(v.end_rel_ns).bind(&v.timestamp_unit).bind(v.row_count).bind(v.events_bytes).bind(&v.storage).bind(&v.storage_key).bind(&v.manifest).execute(&mut *conn).await?
+        .rows_affected() == 1;
+    let row: DatasetVersion = sqlx::query_as(
+        "SELECT * FROM bb.dataset_versions WHERE dataset_id=$1 AND events_sha256=$2",
+    )
+    .bind(&v.dataset_id)
+    .bind(&v.events_sha256)
+    .fetch_one(&mut *conn)
+    .await?;
+    if row.version_no != v.version_no
+        || row.normalization_version != v.normalization_version
+        || row.contract_version != v.contract_version
+        || row.tick_size != v.tick_size
+        || row.lot_size != v.lot_size
+        || row.contract_size != v.contract_size
+        || row.origin_ns != v.origin_ns
+        || row.start_rel_ns != v.start_rel_ns
+        || row.end_rel_ns != v.end_rel_ns
+        || row.timestamp_unit != v.timestamp_unit
+        || row.row_count != v.row_count
+        || row.events_bytes != v.events_bytes
+        || row.storage != v.storage
+        || row.storage_key != v.storage_key
+        || row.manifest != v.manifest
+    {
+        return Err(Error::Conflict);
+    }
+    Ok((row, inserted))
+}
+
+impl Database {
     pub async fn dataset_version(&self, dataset: &str, version: i32) -> Result<DatasetVersion> {
         sqlx::query_as("SELECT * FROM bb.dataset_versions WHERE dataset_id=$1 AND version_no=$2")
             .bind(dataset)

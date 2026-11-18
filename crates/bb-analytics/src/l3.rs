@@ -1,6 +1,7 @@
 //! Source-order L3 observations alongside the existing completed-batch L2 analytics.
 //! Native summaries use every observation; display reduction never feeds a summary.
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, VecDeque};
 
 use bb_core::dataset::InstrumentMeta;
 use bb_data::l3workbench::{EventRecord, Observation, Workbench};
@@ -476,6 +477,969 @@ pub fn aggregate(
             l2: l2_report,
         },
     })
+}
+
+// ---- Touch metrics from an L3 (ITCH) book --------------------------------------------------
+//
+// Metrics that need the order-by-order book: the exact touch before and after every book
+// message, the message kind and the executed resting side. Prices stay ITCH Price(4) integers
+// (1/10,000 USD; the Nasdaq tick of $0.01 is 100 units) and timestamps are exchange-clock
+// nanoseconds (ITCH: since midnight Eastern) as i64. Ratios are computed from exact integers and
+// only then converted to f64. docs/research/ITCH_VALIDATION_PIPELINE.md gives the formulas.
+
+const TOUCH_BASIS: &str = "One symbol's reconstructed L3 book, touch before and after each accepted book message (A, F, E, C, X, D, U) in source order; ITCH exchange clock; Price(4) integers";
+
+/// Best displayed price (ITCH Price(4) integer) and the shares displayed at it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Quote {
+    pub price4: u32,
+    pub shares: u64,
+}
+
+/// Best bid and ask of one book; a side is `None` when empty.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Touch {
+    pub bid: Option<Quote>,
+    pub ask: Option<Quote>,
+}
+
+impl Touch {
+    /// Both sides, only when the book is two-sided and neither locked nor crossed (bid < ask).
+    pub fn uncrossed(&self) -> Option<(Quote, Quote)> {
+        let (bid, ask) = (self.bid?, self.ask?);
+        (bid.price4 < ask.price4).then_some((bid, ask))
+    }
+
+    /// Twice the midprice, `bid + ask`, in Price(4) units: exact for any pair of prices.
+    pub fn mid2(&self) -> Option<i64> {
+        self.uncrossed()
+            .map(|(b, a)| i64::from(b.price4) + i64::from(a.price4))
+    }
+
+    /// Quoted spread `ask - bid` in Price(4) units.
+    pub fn spread_price4(&self) -> Option<u32> {
+        self.uncrossed().map(|(b, a)| a.price4 - b.price4)
+    }
+
+    /// Relative spread `(ask - bid) / mid` in basis points: `20,000 (a - b) / (a + b)`.
+    pub fn relative_spread_bps(&self) -> Option<f64> {
+        self.uncrossed().map(|(b, a)| {
+            20_000.0 * f64::from(a.price4 - b.price4) / (f64::from(b.price4) + f64::from(a.price4))
+        })
+    }
+
+    /// Microprice `(b Qa + a Qb) / (Qa + Qb)` as an exact fraction (numerator, denominator) in
+    /// Price(4) units. Levels in a book always hold shares, so the denominator is positive.
+    pub fn microprice(&self) -> Option<(u128, u128)> {
+        let (b, a) = self.uncrossed()?;
+        let den = u128::from(b.shares) + u128::from(a.shares);
+        (den > 0).then(|| {
+            (
+                u128::from(b.price4) * u128::from(a.shares)
+                    + u128::from(a.price4) * u128::from(b.shares),
+                den,
+            )
+        })
+    }
+
+    /// Microprice minus midprice in Price(4) units: `(a - b)(Qb - Qa) / (2 (Qa + Qb))`.
+    pub fn microprice_offset_price4(&self) -> Option<f64> {
+        let (b, a) = self.uncrossed()?;
+        let den = 2 * (i128::from(b.shares) + i128::from(a.shares));
+        (den > 0).then(|| {
+            (i128::from(a.price4 - b.price4) * (i128::from(b.shares) - i128::from(a.shares))) as f64
+                / den as f64
+        })
+    }
+}
+
+/// Order-flow imbalance contribution of one touch change (Cont, Kukanov and Stoikov 2014,
+/// "The price impact of order book events", eq. 2), in shares:
+/// `e = 1{Pb' >= Pb} qb' - 1{Pb' <= Pb} qb - 1{Pa' <= Pa} qa' + 1{Pa' >= Pa} qa`,
+/// unprimed before and primed after. `None` unless both states are uncrossed.
+pub fn order_flow_imbalance(before: &Touch, after: &Touch) -> Option<i64> {
+    let (b0, a0) = before.uncrossed()?;
+    let (b1, a1) = after.uncrossed()?;
+    let q = |x: u64| i64::try_from(x).unwrap_or(i64::MAX);
+    let mut e = 0i64;
+    if b1.price4 >= b0.price4 {
+        e += q(b1.shares);
+    }
+    if b1.price4 <= b0.price4 {
+        e -= q(b0.shares);
+    }
+    if a1.price4 <= a0.price4 {
+        e -= q(a1.shares);
+    }
+    if a1.price4 >= a0.price4 {
+        e += q(a0.shares);
+    }
+    Some(e)
+}
+
+/// The kind of an accepted book message.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TouchEventKind {
+    /// A or F.
+    Add,
+    /// E or C (printable or not: both remove displayed shares).
+    Execute,
+    /// X.
+    PartialCancel,
+    /// D.
+    Delete,
+    /// U.
+    Replace,
+}
+
+impl TouchEventKind {
+    const ALL: [TouchEventKind; 5] = [
+        TouchEventKind::Add,
+        TouchEventKind::Execute,
+        TouchEventKind::PartialCancel,
+        TouchEventKind::Delete,
+        TouchEventKind::Replace,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            TouchEventKind::Add => "add",
+            TouchEventKind::Execute => "execute",
+            TouchEventKind::PartialCancel => "partial_cancel",
+            TouchEventKind::Delete => "delete",
+            TouchEventKind::Replace => "replace",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// One accepted book message of the measured symbol.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TouchEvent {
+    /// Exchange timestamp, nanoseconds.
+    pub ts_ns: i64,
+    pub kind: TouchEventKind,
+    /// Side of the resting order an execution hit; the aggressor is the other side.
+    pub resting_side: Option<bb_data::itch::decode::Side>,
+    /// Shares executed (Execute), cancelled (PartialCancel) or deleted (Delete); new shares for
+    /// Add and Replace.
+    pub shares: u64,
+    pub before: Touch,
+    pub after: Touch,
+    /// Displayed shares left after the message at the pre-message best bid price (0 if that
+    /// level is gone); equals the pre-message touch shares when the level was not touched.
+    pub bid_after_at_before_price: u64,
+    pub ask_after_at_before_price: u64,
+}
+
+/// What is measured and over which exchange-time window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TouchMetricsConfig {
+    /// `[start, end)` in exchange nanoseconds; only messages inside it are measured.
+    pub window_start_ns: i64,
+    pub window_end_ns: i64,
+    /// Markout horizons after each execution, exchange nanoseconds.
+    pub markout_horizons_ns: Vec<i64>,
+    /// Bucket length of the order-flow-imbalance regression.
+    pub ofi_bucket_ns: i64,
+}
+
+impl TouchMetricsConfig {
+    /// 100 ms, 1 s and 5 s markouts; 1 s OFI buckets.
+    pub fn new(window_start_ns: i64, window_end_ns: i64) -> Self {
+        Self {
+            window_start_ns,
+            window_end_ns,
+            markout_horizons_ns: vec![100_000_000, 1_000_000_000, 5_000_000_000],
+            ofi_bucket_ns: 1_000_000_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ActivityRates {
+    /// Accepted messages per kind inside the window.
+    pub messages: BTreeMap<String, u64>,
+    /// Shares per kind (executed, cancelled, deleted; added and replaced count new shares).
+    pub shares: BTreeMap<String, u64>,
+    /// `messages / (span_ns / 1e9)`; null when the span is not positive.
+    pub messages_per_second: BTreeMap<String, Option<f64>>,
+    /// `(partial_cancel + delete) / execute` messages; null without executions.
+    pub cancel_to_execution_ratio: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SpreadStats {
+    /// Post-message states with an uncrossed two-sided touch.
+    pub n: u64,
+    pub one_sided: u64,
+    pub locked_or_crossed: u64,
+    pub event_mean: Option<f64>,
+    /// Weighted by exchange time each state lasted inside the window.
+    pub time_weighted_mean: Option<f64>,
+    /// Exchange time inside the window with no uncrossed two-sided touch.
+    pub undefined_ns: i64,
+    pub p10: Option<f64>,
+    pub p50: Option<f64>,
+    pub p90: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct QuotedSpread {
+    pub n: u64,
+    pub mean_price4: Option<f64>,
+    pub p10_price4: Option<u32>,
+    pub p50_price4: Option<u32>,
+    pub p90_price4: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MicropriceStats {
+    pub n: u64,
+    /// Mean of microprice minus midprice, Price(4) units.
+    pub mean_offset_price4: Option<f64>,
+    pub mean_abs_offset_price4: Option<f64>,
+    /// States with the microprice above, at and below the midprice.
+    pub above_mid: u64,
+    pub at_mid: u64,
+    pub below_mid: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct OfiStats {
+    pub events_used: u64,
+    /// Messages where the touch before or after was one-sided, locked or crossed.
+    pub events_skipped: u64,
+    pub total_shares: i64,
+    pub bucket_ns: i64,
+    /// Buckets holding at least one used message.
+    pub buckets: u64,
+    /// OLS of the bucket's summed midprice change (Price(4)) on its OFI (shares), with
+    /// intercept: slope and Pearson correlation. Null with fewer than two buckets or no OFI
+    /// variance.
+    pub slope_price4_per_share: Option<f64>,
+    pub intercept_price4: Option<f64>,
+    pub correlation: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TouchFlows {
+    /// Shares leaving the pre-message best level, by message kind.
+    pub depleted_shares: BTreeMap<String, u64>,
+    pub depleted_total: u64,
+    /// Shares joining the pre-message best level (a new better level is not replenishment).
+    pub replenished_shares: BTreeMap<String, u64>,
+    pub replenished_total: u64,
+    /// Messages that removed shares from the touch, by kind.
+    pub depleting_messages: BTreeMap<String, u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MarkoutStats {
+    pub horizon_ns: i64,
+    /// Executions with a defined midprice before the execution and at the horizon.
+    pub n: u64,
+    /// Mean of `s (mid(t+h) - mid(t-))`, s = +1 when the aggressor bought (resting sell).
+    pub mean_price4: Option<f64>,
+    /// Same, divided by `mid(t-)`, basis points.
+    pub mean_bps: Option<f64>,
+    /// Weighted by executed shares.
+    pub share_weighted_mean_price4: Option<f64>,
+    pub positive: u64,
+    pub zero: u64,
+    pub negative: u64,
+    pub undefined_at_execution: u64,
+    pub undefined_at_horizon: u64,
+    /// `t + h` beyond the last observed exchange time.
+    pub censored: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TouchMetricsReport {
+    pub basis: String,
+    pub definitions: BTreeMap<String, String>,
+    pub window_ns: [i64; 2],
+    pub observed_until_ns: i64,
+    /// `min(window_end, observed_until) - window_start`.
+    pub span_ns: i64,
+    pub events_in_window: u64,
+    pub activity: ActivityRates,
+    pub relative_spread_bps: SpreadStats,
+    pub quoted_spread: QuotedSpread,
+    pub microprice: MicropriceStats,
+    pub order_flow_imbalance: OfiStats,
+    pub touch_flows: TouchFlows,
+    pub markouts: Vec<MarkoutStats>,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct PendingMarkout {
+    deadline: i64,
+    sign: i64,
+    mid2: i64,
+    shares: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MarkoutSums {
+    n: u64,
+    sum_half: i128,
+    sum_bps: f64,
+    sum_share_half: i128,
+    shares: u128,
+    positive: u64,
+    zero: u64,
+    negative: u64,
+    undefined_at_execution: u64,
+    undefined_at_horizon: u64,
+    censored: u64,
+}
+
+/// Streaming accumulator of [`TouchMetricsReport`]. Push every accepted book message of the
+/// symbol in source order (including those before the window, so the touch is right when it
+/// opens, and after it, so markouts can resolve), then [`finish`](Self::finish).
+#[derive(Clone, Debug)]
+pub struct TouchMetrics {
+    config: TouchMetricsConfig,
+    current: Touch,
+    current_since: Option<i64>,
+    events_in_window: u64,
+    messages: [u64; 5],
+    shares: [u64; 5],
+    rel_spreads: Vec<f64>,
+    spreads: Vec<u32>,
+    one_sided: u64,
+    locked_or_crossed: u64,
+    tw_sum: f64,
+    tw_ns: i64,
+    tw_undefined_ns: i64,
+    micro_n: u64,
+    micro_sum: f64,
+    micro_abs: f64,
+    micro_sign: [u64; 3],
+    ofi_used: u64,
+    ofi_skipped: u64,
+    ofi_total: i64,
+    ofi_buckets: BTreeMap<i64, (i64, i64)>,
+    depleted: [u64; 5],
+    replenished: [u64; 5],
+    depleting: [u64; 5],
+    pending: Vec<VecDeque<PendingMarkout>>,
+    markouts: Vec<MarkoutSums>,
+}
+
+impl TouchMetrics {
+    pub fn new(config: TouchMetricsConfig) -> Self {
+        let horizons = config.markout_horizons_ns.len();
+        Self {
+            config,
+            current: Touch::default(),
+            current_since: None,
+            events_in_window: 0,
+            messages: [0; 5],
+            shares: [0; 5],
+            rel_spreads: Vec::new(),
+            spreads: Vec::new(),
+            one_sided: 0,
+            locked_or_crossed: 0,
+            tw_sum: 0.0,
+            tw_ns: 0,
+            tw_undefined_ns: 0,
+            micro_n: 0,
+            micro_sum: 0.0,
+            micro_abs: 0.0,
+            micro_sign: [0; 3],
+            ofi_used: 0,
+            ofi_skipped: 0,
+            ofi_total: 0,
+            ofi_buckets: BTreeMap::new(),
+            depleted: [0; 5],
+            replenished: [0; 5],
+            depleting: [0; 5],
+            pending: vec![VecDeque::new(); horizons],
+            markouts: vec![MarkoutSums::default(); horizons],
+        }
+    }
+
+    fn in_window(&self, ts: i64) -> bool {
+        (self.config.window_start_ns..self.config.window_end_ns).contains(&ts)
+    }
+
+    /// Weights the current state over `[current_since, until)` clipped to the window.
+    fn weigh_until(&mut self, until: i64) {
+        // Before the first symbol event the book is empty, not outside the observed window.
+        let since = self.current_since.unwrap_or(self.config.window_start_ns);
+        let from = since.max(self.config.window_start_ns);
+        let to = until.min(self.config.window_end_ns);
+        if to <= from {
+            return;
+        }
+        let dt = to - from;
+        match self.current.relative_spread_bps() {
+            Some(bps) => {
+                self.tw_sum += bps * dt as f64;
+                self.tw_ns += dt;
+            }
+            None => self.tw_undefined_ns += dt,
+        }
+    }
+
+    /// Resolves markouts whose horizon `t + h` lies before `ts` (or at it, when `inclusive`):
+    /// the current state is then the book after every message stamped at most `t + h`.
+    fn resolve(&mut self, ts: i64, inclusive: bool) {
+        let mid2 = self.current.mid2();
+        for (queue, sums) in self.pending.iter_mut().zip(&mut self.markouts) {
+            while let Some(p) = queue.front().copied() {
+                if p.deadline > ts || (p.deadline == ts && !inclusive) {
+                    break;
+                }
+                queue.pop_front();
+                let Some(m2) = mid2 else {
+                    sums.undefined_at_horizon += 1;
+                    continue;
+                };
+                let half = p.sign * (m2 - p.mid2);
+                sums.n += 1;
+                sums.sum_half += i128::from(half);
+                sums.sum_bps += 10_000.0 * half as f64 / p.mid2 as f64;
+                sums.sum_share_half += i128::from(half) * i128::from(p.shares);
+                sums.shares += u128::from(p.shares);
+                match half.signum() {
+                    1 => sums.positive += 1,
+                    0 => sums.zero += 1,
+                    _ => sums.negative += 1,
+                }
+            }
+        }
+    }
+
+    pub fn push(&mut self, e: &TouchEvent) {
+        self.resolve(e.ts_ns, false);
+        self.weigh_until(e.ts_ns);
+        if self.in_window(e.ts_ns) {
+            self.measure(e);
+        }
+        self.current = e.after;
+        self.current_since = Some(e.ts_ns);
+    }
+
+    fn measure(&mut self, e: &TouchEvent) {
+        let k = e.kind.index();
+        self.events_in_window += 1;
+        self.messages[k] += 1;
+        self.shares[k] += e.shares;
+
+        if e.after.bid.is_none() || e.after.ask.is_none() {
+            self.one_sided += 1;
+        } else if let Some((b, a)) = e.after.uncrossed() {
+            self.spreads.push(a.price4 - b.price4);
+            self.rel_spreads.extend(e.after.relative_spread_bps());
+            if let Some(offset) = e.after.microprice_offset_price4() {
+                self.micro_n += 1;
+                self.micro_sum += offset;
+                self.micro_abs += offset.abs();
+                self.micro_sign[match b.shares.cmp(&a.shares) {
+                    Ordering::Greater => 0,
+                    Ordering::Equal => 1,
+                    Ordering::Less => 2,
+                }] += 1;
+            }
+        } else {
+            self.locked_or_crossed += 1;
+        }
+
+        match (
+            order_flow_imbalance(&e.before, &e.after),
+            e.before.mid2(),
+            e.after.mid2(),
+        ) {
+            (Some(ofi), Some(m0), Some(m1)) => {
+                self.ofi_used += 1;
+                self.ofi_total += ofi;
+                let bucket = self
+                    .ofi_buckets
+                    .entry(e.ts_ns.div_euclid(self.config.ofi_bucket_ns))
+                    .or_default();
+                bucket.0 += ofi;
+                bucket.1 += m1 - m0;
+            }
+            _ => self.ofi_skipped += 1,
+        }
+
+        let mut depleted = false;
+        for (quote, left) in [
+            (e.before.bid, e.bid_after_at_before_price),
+            (e.before.ask, e.ask_after_at_before_price),
+        ] {
+            if let Some(q) = quote {
+                if left < q.shares {
+                    self.depleted[k] += q.shares - left;
+                    depleted = true;
+                } else {
+                    self.replenished[k] += left - q.shares;
+                }
+            }
+        }
+        self.depleting[k] += u64::from(depleted);
+
+        if e.kind == TouchEventKind::Execute
+            && let Some(resting) = e.resting_side
+        {
+            let sign = match resting {
+                bb_data::itch::decode::Side::Sell => 1,
+                bb_data::itch::decode::Side::Buy => -1,
+            };
+            let mid2 = e.before.mid2();
+            for (i, &h) in self.config.markout_horizons_ns.iter().enumerate() {
+                match mid2 {
+                    Some(mid2) => self.pending[i].push_back(PendingMarkout {
+                        deadline: e.ts_ns.saturating_add(h),
+                        sign,
+                        mid2,
+                        shares: e.shares,
+                    }),
+                    None => self.markouts[i].undefined_at_execution += 1,
+                }
+            }
+        }
+    }
+
+    /// `observed_until_ns`: the last exchange time the input covers (for a whole feed, the
+    /// last message of any stock); the symbol's book is known up to it. Later horizons are
+    /// censored.
+    pub fn finish(mut self, observed_until_ns: i64) -> TouchMetricsReport {
+        let until = observed_until_ns.max(self.current_since.unwrap_or(observed_until_ns));
+        self.resolve(until, true);
+        self.weigh_until(until);
+        for (queue, sums) in self.pending.iter().zip(&mut self.markouts) {
+            sums.censored += queue.len() as u64;
+        }
+        let c = &self.config;
+        let span_ns = until.min(c.window_end_ns) - c.window_start_ns;
+        let seconds = (span_ns > 0).then(|| span_ns as f64 / 1e9);
+        let mean = |sum: f64, n: u64| (n > 0).then(|| sum / n as f64);
+        let keyed = |a: &[u64; 5]| -> BTreeMap<String, u64> {
+            TouchEventKind::ALL
+                .iter()
+                .map(|k| (k.key().to_string(), a[k.index()]))
+                .collect()
+        };
+
+        let m = &self.messages;
+        let executions = m[TouchEventKind::Execute.index()];
+        let cancels = m[TouchEventKind::PartialCancel.index()] + m[TouchEventKind::Delete.index()];
+        let activity = ActivityRates {
+            messages: keyed(m),
+            shares: keyed(&self.shares),
+            messages_per_second: TouchEventKind::ALL
+                .iter()
+                .map(|k| {
+                    (
+                        k.key().to_string(),
+                        seconds.map(|s| m[k.index()] as f64 / s),
+                    )
+                })
+                .collect(),
+            cancel_to_execution_ratio: (executions > 0).then(|| cancels as f64 / executions as f64),
+        };
+
+        let mut rel = std::mem::take(&mut self.rel_spreads);
+        rel.sort_by(f64::total_cmp);
+        let relative_spread_bps = SpreadStats {
+            n: rel.len() as u64,
+            one_sided: self.one_sided,
+            locked_or_crossed: self.locked_or_crossed,
+            event_mean: mean(rel.iter().sum(), rel.len() as u64),
+            time_weighted_mean: (self.tw_ns > 0).then(|| self.tw_sum / self.tw_ns as f64),
+            undefined_ns: self.tw_undefined_ns,
+            p10: nearest_rank(&rel, 10),
+            p50: nearest_rank(&rel, 50),
+            p90: nearest_rank(&rel, 90),
+        };
+        let mut spreads = std::mem::take(&mut self.spreads);
+        spreads.sort_unstable();
+        let quoted_spread = QuotedSpread {
+            n: spreads.len() as u64,
+            mean_price4: mean(
+                spreads.iter().map(|&s| f64::from(s)).sum(),
+                spreads.len() as u64,
+            ),
+            p10_price4: nearest_rank(&spreads, 10),
+            p50_price4: nearest_rank(&spreads, 50),
+            p90_price4: nearest_rank(&spreads, 90),
+        };
+        let microprice = MicropriceStats {
+            n: self.micro_n,
+            mean_offset_price4: mean(self.micro_sum, self.micro_n),
+            mean_abs_offset_price4: mean(self.micro_abs, self.micro_n),
+            above_mid: self.micro_sign[0],
+            at_mid: self.micro_sign[1],
+            below_mid: self.micro_sign[2],
+        };
+
+        let points: Vec<(f64, f64)> = self
+            .ofi_buckets
+            .values()
+            .map(|&(ofi, dmid2)| (ofi as f64, dmid2 as f64 / 2.0))
+            .collect();
+        let (slope, intercept, correlation) = ols(&points);
+        let order_flow_imbalance = OfiStats {
+            events_used: self.ofi_used,
+            events_skipped: self.ofi_skipped,
+            total_shares: self.ofi_total,
+            bucket_ns: c.ofi_bucket_ns,
+            buckets: points.len() as u64,
+            slope_price4_per_share: slope,
+            intercept_price4: intercept,
+            correlation,
+        };
+        let touch_flows = TouchFlows {
+            depleted_shares: keyed(&self.depleted),
+            depleted_total: self.depleted.iter().sum(),
+            replenished_shares: keyed(&self.replenished),
+            replenished_total: self.replenished.iter().sum(),
+            depleting_messages: keyed(&self.depleting),
+        };
+        let markouts = c
+            .markout_horizons_ns
+            .iter()
+            .zip(&self.markouts)
+            .map(|(&horizon_ns, s)| MarkoutStats {
+                horizon_ns,
+                n: s.n,
+                mean_price4: (s.n > 0).then(|| s.sum_half as f64 / (2.0 * s.n as f64)),
+                mean_bps: mean(s.sum_bps, s.n),
+                share_weighted_mean_price4: (s.shares > 0)
+                    .then(|| s.sum_share_half as f64 / (2.0 * s.shares as f64)),
+                positive: s.positive,
+                zero: s.zero,
+                negative: s.negative,
+                undefined_at_execution: s.undefined_at_execution,
+                undefined_at_horizon: s.undefined_at_horizon,
+                censored: s.censored,
+            })
+            .collect();
+
+        TouchMetricsReport {
+            basis: TOUCH_BASIS.into(),
+            definitions: definitions(&[
+                (
+                    "relative_spread_bps",
+                    "20000 (ask - bid) / (ask + bid) after each in-window message with an uncrossed two-sided touch; event mean, nearest-rank percentiles, and the time-weighted mean over exchange time inside [window_start, min(window_end, observed_until)).",
+                ),
+                (
+                    "quoted_spread",
+                    "ask - bid in Price(4) units (100 = $0.01) after each in-window message with an uncrossed touch.",
+                ),
+                (
+                    "microprice",
+                    "(bid Qask + ask Qbid)/(Qbid + Qask); reported as its offset from the midprice, (ask - bid)(Qbid - Qask)/(2(Qbid + Qask)), Price(4) units, after each in-window message with an uncrossed touch.",
+                ),
+                (
+                    "order_flow_imbalance",
+                    "Cont-Kukanov-Stoikov e = 1{Pb'>=Pb}qb' - 1{Pb'<=Pb}qb - 1{Pa'<=Pa}qa' + 1{Pa'>=Pa}qa per message, shares, when the touch before and after is uncrossed; summed per bucket_ns exchange-time bucket and regressed (OLS with intercept) against the bucket's summed midprice change in Price(4).",
+                ),
+                (
+                    "activity",
+                    "Accepted book messages and shares per kind inside the window; per-second rates divide by span_ns/1e9.",
+                ),
+                (
+                    "touch_flows",
+                    "Per message, shares lost (depleted) or gained (replenished) at the pre-message best bid and ask prices, attributed to the message kind; a better new level is not replenishment of the old one.",
+                ),
+                (
+                    "markouts",
+                    "Per in-window execution (E or C) with an uncrossed touch just before it: s (mid(t+h) - mid(t-)), s = +1 when the resting order was a sell (aggressor bought), -1 otherwise; mid(t+h) is the touch after every message stamped at most t+h. Undefined midprices are counted, not filled; horizons beyond observed_until are censored.",
+                ),
+            ]),
+            window_ns: [c.window_start_ns, c.window_end_ns],
+            observed_until_ns: until,
+            span_ns,
+            events_in_window: self.events_in_window,
+            activity,
+            relative_spread_bps,
+            quoted_spread,
+            microprice,
+            order_flow_imbalance,
+            touch_flows,
+            markouts,
+        }
+    }
+}
+
+/// OLS of y on x with intercept: (slope, intercept, Pearson correlation). Null with fewer than
+/// two points or no variance in x; correlation null without variance in y.
+fn ols(points: &[(f64, f64)]) -> (Option<f64>, Option<f64>, Option<f64>) {
+    if points.len() < 2 {
+        return (None, None, None);
+    }
+    let n = points.len() as f64;
+    let mx = points.iter().map(|p| p.0).sum::<f64>() / n;
+    let my = points.iter().map(|p| p.1).sum::<f64>() / n;
+    let (mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0);
+    for &(x, y) in points {
+        sxx += (x - mx) * (x - mx);
+        syy += (y - my) * (y - my);
+        sxy += (x - mx) * (y - my);
+    }
+    if sxx == 0.0 {
+        return (None, None, None);
+    }
+    let slope = sxy / sxx;
+    let r = (syy > 0.0).then(|| sxy / (sxx * syy).sqrt());
+    (Some(slope), Some(my - slope * mx), r)
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+    use bb_data::itch::decode::Side;
+
+    fn touch(bid: Option<(u32, u64)>, ask: Option<(u32, u64)>) -> Touch {
+        let q = |(price4, shares)| Quote { price4, shares };
+        Touch {
+            bid: bid.map(q),
+            ask: ask.map(q),
+        }
+    }
+
+    fn event(ts_ns: i64, kind: TouchEventKind, before: Touch, after: Touch) -> TouchEvent {
+        TouchEvent {
+            ts_ns,
+            kind,
+            resting_side: None,
+            shares: 0,
+            before,
+            after,
+            bid_after_at_before_price: before.bid.map_or(0, |q| q.shares),
+            ask_after_at_before_price: before.ask.map_or(0, |q| q.shares),
+        }
+    }
+
+    #[test]
+    fn touch_values_are_exact_and_undefined_when_one_sided_locked_or_crossed() {
+        // $10.00 x $10.02, 300 x 100 shares.
+        let t = touch(Some((100_000, 300)), Some((100_200, 100)));
+        assert_eq!(t.mid2(), Some(200_200));
+        assert_eq!(t.spread_price4(), Some(200));
+        // 20000 * 200 / 200200 = 19.98001998... bps
+        assert!((t.relative_spread_bps().unwrap() - 4_000_000.0 / 200_200.0).abs() < 1e-12);
+        // (100000*100 + 100200*300) / 400 = 100150 exactly.
+        assert_eq!(t.microprice(), Some((40_060_000, 400)));
+        // (200)(300-100)/(2*400) = 50 = 100150 - 100100.
+        assert_eq!(t.microprice_offset_price4(), Some(50.0));
+        for undefined in [
+            touch(Some((100_000, 1)), None),
+            touch(None, Some((100_000, 1))),
+            touch(None, None),
+            touch(Some((100_000, 1)), Some((100_000, 1))),
+            touch(Some((100_100, 1)), Some((100_000, 1))),
+        ] {
+            assert_eq!(undefined.mid2(), None);
+            assert_eq!(undefined.relative_spread_bps(), None);
+            assert_eq!(undefined.microprice(), None);
+            assert_eq!(undefined.microprice_offset_price4(), None);
+        }
+    }
+
+    #[test]
+    fn order_flow_imbalance_follows_cont_kukanov_stoikov() {
+        let base = touch(Some((100, 10)), Some((102, 20)));
+        // Bid size up 10 -> 15: +15 - 10 = +5; ask unchanged: -20 + 20 = 0.
+        assert_eq!(
+            order_flow_imbalance(&base, &touch(Some((100, 15)), Some((102, 20)))),
+            Some(5)
+        );
+        // Bid improves to 101 x 7: +7 only. Ask unchanged: 0.
+        assert_eq!(
+            order_flow_imbalance(&base, &touch(Some((101, 7)), Some((102, 20)))),
+            Some(7)
+        );
+        // Bid level gone, new best 99 x 50: -10. Ask improves to 101 x 4: -4.
+        assert_eq!(
+            order_flow_imbalance(&base, &touch(Some((99, 50)), Some((101, 4)))),
+            Some(-14)
+        );
+        // Ask depleted 20 -> 5 by an execution: -5 + 20 = +15.
+        assert_eq!(
+            order_flow_imbalance(&base, &touch(Some((100, 10)), Some((102, 5)))),
+            Some(15)
+        );
+        // Ask level gone, new best 103 x 9: +20.
+        assert_eq!(
+            order_flow_imbalance(&base, &touch(Some((100, 10)), Some((103, 9)))),
+            Some(20)
+        );
+        assert_eq!(
+            order_flow_imbalance(&base, &touch(Some((100, 10)), None)),
+            None
+        );
+    }
+
+    #[test]
+    fn coverage_includes_the_initial_empty_book_and_clips_to_observation() {
+        for (start, end, observed, expected) in [
+            (0, 200, 200, 200),
+            (100, 300, 250, 150),
+            (100, 300, 400, 200),
+            (100, 300, 50, 0),
+        ] {
+            let r = TouchMetrics::new(TouchMetricsConfig::new(start, end)).finish(observed);
+            assert_eq!(r.relative_spread_bps.undefined_ns, expected);
+            assert_eq!(r.relative_spread_bps.time_weighted_mean, None);
+            assert_eq!(r.events_in_window, 0);
+        }
+    }
+
+    #[test]
+    fn first_event_inside_or_after_window_preserves_all_time_weights() {
+        let a = touch(Some((100, 10)), Some((102, 20)));
+        let b = touch(Some((100, 10)), Some((104, 20)));
+        let mut m = TouchMetrics::new(TouchMetricsConfig::new(0, 200));
+        m.push(&event(50, TouchEventKind::Add, Touch::default(), a));
+        m.push(&event(100, TouchEventKind::Add, a, b));
+        let r = m.finish(200);
+        assert_eq!(r.span_ns, 200);
+        assert_eq!(r.relative_spread_bps.undefined_ns, 50);
+        let expected = (a.relative_spread_bps().unwrap() * 50.0
+            + b.relative_spread_bps().unwrap() * 100.0)
+            / 150.0;
+        assert!((r.relative_spread_bps.time_weighted_mean.unwrap() - expected).abs() < 1e-12);
+        assert_eq!(r.activity.messages_per_second["add"], Some(10_000_000.0));
+        assert_eq!(r.relative_spread_bps.n, 2);
+
+        let mut m = TouchMetrics::new(TouchMetricsConfig::new(0, 200));
+        m.push(&event(300, TouchEventKind::Add, Touch::default(), a));
+        let r = m.finish(400);
+        assert_eq!(r.relative_spread_bps.undefined_ns, 200);
+        assert_eq!(r.relative_spread_bps.time_weighted_mean, None);
+        assert_eq!(r.events_in_window, 0);
+    }
+
+    #[test]
+    fn accumulator_hand_computed_window() {
+        let a = touch(Some((100_000, 300)), Some((100_200, 100)));
+        let b = touch(Some((100_000, 300)), Some((100_100, 50)));
+        let c = touch(Some((100_000, 300)), Some((100_200, 100)));
+        let mut config = TouchMetricsConfig::new(1_000, 3_000);
+        config.markout_horizons_ns = vec![500, 5_000];
+        let mut m = TouchMetrics::new(config);
+        // Before the window: sets the touch, not measured.
+        m.push(&event(500, TouchEventKind::Add, Touch::default(), a));
+        // t=1000: add improves the ask to 100100 x 50.
+        let mut add = event(1_000, TouchEventKind::Add, a, b);
+        add.shares = 50;
+        m.push(&add);
+        // t=2000: buyer lifts the 50 at 100100; ask back to 100200 x 100.
+        m.push(&TouchEvent {
+            resting_side: Some(Side::Sell),
+            shares: 50,
+            ask_after_at_before_price: 0,
+            ..event(2_000, TouchEventKind::Execute, b, c)
+        });
+        // t=2200: one-sided (bid deleted).
+        let gone = touch(None, Some((100_200, 100)));
+        m.push(&TouchEvent {
+            shares: 300,
+            bid_after_at_before_price: 0,
+            ..event(2_200, TouchEventKind::Delete, c, gone)
+        });
+        // t=2400: bid back.
+        m.push(&event(2_400, TouchEventKind::Add, gone, c));
+        let r = m.finish(4_000);
+
+        assert_eq!(r.events_in_window, 4);
+        assert_eq!(r.span_ns, 2_000);
+        assert_eq!(r.activity.messages["add"], 2);
+        assert_eq!(r.activity.messages["execute"], 1);
+        assert_eq!(r.activity.messages_per_second["add"], Some(1e6));
+        assert_eq!(r.activity.cancel_to_execution_ratio, Some(1.0));
+
+        // Spreads after t=1000 (100), 2000 (200), 2400 (200); 2200 one-sided.
+        assert_eq!(r.quoted_spread.n, 3);
+        assert_eq!(r.quoted_spread.p50_price4, Some(200));
+        assert_eq!(r.relative_spread_bps.one_sided, 1);
+        let s100 = 20_000.0 * 100.0 / 200_100.0;
+        let s200 = 20_000.0 * 200.0 / 200_200.0;
+        let em = r.relative_spread_bps.event_mean.unwrap();
+        assert!((em - (s100 + 2.0 * s200) / 3.0).abs() < 1e-12);
+        // Time weights in [1000, 3000): s100 for 1000 ns, s200 for 200 + 600 ns, 200 undefined.
+        let tw = r.relative_spread_bps.time_weighted_mean.unwrap();
+        assert!((tw - (s100 * 1_000.0 + s200 * 800.0) / 1_800.0).abs() < 1e-9);
+        assert_eq!(r.relative_spread_bps.undefined_ns, 200);
+
+        // Microprice offsets: b: 100*(300-50)/(2*350) = 35.714...; c twice: 50.
+        assert_eq!(r.microprice.n, 3);
+        let mo = r.microprice.mean_offset_price4.unwrap();
+        assert!((mo - (25_000.0 / 700.0 + 100.0) / 3.0).abs() < 1e-9);
+        assert_eq!(r.microprice.above_mid, 3);
+
+        // OFI: add a->b: bid 300-300 = 0; ask improves: -50 => -50, dmid2 -100.
+        // exec b->c: bid 0; ask worsens: +50 => +50, dmid2 +100. Delete and re-add skipped.
+        assert_eq!(r.order_flow_imbalance.events_used, 2);
+        assert_eq!(r.order_flow_imbalance.events_skipped, 2);
+        assert_eq!(r.order_flow_imbalance.total_shares, 0);
+        assert_eq!(r.order_flow_imbalance.buckets, 1, "one 1 s bucket");
+
+        // Depletion: ask 50 by the execution, bid 300 by the delete. Replenishment: the add
+        // at 2400 has no pre-message bid; the add at 1000 left the old ask level untouched.
+        assert_eq!(r.touch_flows.depleted_shares["execute"], 50);
+        assert_eq!(r.touch_flows.depleted_shares["delete"], 300);
+        assert_eq!(r.touch_flows.depleted_total, 350);
+        assert_eq!(r.touch_flows.depleting_messages["execute"], 1);
+
+        // Markout of the buy at t=2000, mid2 before = 200100.
+        // h=500: at 2500 the touch is c, mid2 200200: +100/2 = +50 price4.
+        let h500 = &r.markouts[0];
+        assert_eq!((h500.n, h500.positive), (1, 1));
+        assert_eq!(h500.mean_price4, Some(50.0));
+        assert!((h500.mean_bps.unwrap() - 10_000.0 * 100.0 / 200_100.0).abs() < 1e-12);
+        assert_eq!(h500.share_weighted_mean_price4, Some(50.0));
+        // h=5000: 7000 is beyond observed_until 4000: censored.
+        assert_eq!((r.markouts[1].n, r.markouts[1].censored), (0, 1));
+    }
+
+    #[test]
+    fn markout_at_horizon_includes_messages_stamped_exactly_then_and_counts_undefined() {
+        let a = touch(Some((100, 10)), Some((102, 10)));
+        let up = touch(Some((102, 10)), Some((104, 10)));
+        let mut config = TouchMetricsConfig::new(0, 10_000);
+        config.markout_horizons_ns = vec![100];
+        let mut m = TouchMetrics::new(config);
+        m.push(&event(0, TouchEventKind::Add, Touch::default(), a));
+        // Seller hits the bid at t=10: s = -1.
+        m.push(&TouchEvent {
+            resting_side: Some(Side::Buy),
+            shares: 5,
+            ..event(10, TouchEventKind::Execute, a, a)
+        });
+        // Exactly at t+h = 110 the book moves up by 2: markout = -1 * (206 - 202)/2 = -2.
+        m.push(&event(110, TouchEventKind::Add, a, up));
+        // An execution with a crossed book before it is undefined at execution.
+        let crossed = touch(Some((105, 1)), Some((104, 1)));
+        m.push(&event(200, TouchEventKind::Add, up, crossed));
+        m.push(&TouchEvent {
+            resting_side: Some(Side::Sell),
+            shares: 1,
+            ..event(300, TouchEventKind::Execute, crossed, crossed)
+        });
+        let r = m.finish(1_000);
+        let h = &r.markouts[0];
+        assert_eq!((h.n, h.negative, h.undefined_at_execution), (1, 1, 1));
+        assert_eq!(h.mean_price4, Some(-2.0));
+        assert_eq!(r.relative_spread_bps.locked_or_crossed, 2);
+    }
+
+    #[test]
+    fn ols_recovers_an_exact_line() {
+        let (slope, intercept, r) = ols(&[(0.0, 1.0), (1.0, 3.0), (2.0, 5.0)]);
+        assert_eq!((slope, intercept, r), (Some(2.0), Some(1.0), Some(1.0)));
+        assert_eq!(ols(&[(1.0, 1.0)]), (None, None, None));
+        assert_eq!(ols(&[(1.0, 1.0), (1.0, 2.0)]), (None, None, None));
+    }
 }
 
 #[cfg(test)]

@@ -308,7 +308,8 @@ async fn curate(
                 }),
                 None => {
                     let snapshot =
-                        reports::comparison_snapshot(workspace, &row, report_title.clone())
+                        reports::comparison_snapshot(&state, workspace, &row, report_title.clone())
+                            .await
                             .map_err(|e| anyhow!("{report_title}: {}", e.message))?;
                     let r = reports::store(&state, snapshot, &audit)
                         .await

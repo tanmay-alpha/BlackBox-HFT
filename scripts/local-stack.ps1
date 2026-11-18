@@ -4,6 +4,11 @@
 # computed in this process, curated comparisons and saved reports; idempotent) and serves the
 # console and /api/v1 on http://127.0.0.1:8787. The database must exist; it is not created here.
 # DATA_DIR (default `data`) holds the datasets and run artefacts.
+#
+# Credential isolation (docs/OPERATOR_PRODUCTION.md): production cloud credentials present in this
+# session are hidden from every step and restored afterwards, the profile is forced to `local`,
+# and the server itself refuses a non-local DATABASE_URL. Production maintenance goes through
+# scripts/ops/prod-run.sh instead.
 $ErrorActionPreference = 'Stop'
 
 if (-not $env:DATABASE_URL) {
@@ -19,14 +24,29 @@ function Invoke-Step {
     if ($LASTEXITCODE -ne 0) { throw "$File $($Arguments -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
-Invoke-Step cargo @('build', '--release', '--locked', '-p', 'bb-app', '--bin', 'blackbox')
-Push-Location web
-try {
-    Invoke-Step npm @('ci')
-    Invoke-Step npm @('run', 'build')
-} finally {
-    Pop-Location
+# Environment variables are process-wide in PowerShell: hide the cloud credentials for the child
+# processes and put the caller's values back when the script ends.
+$isolated = @('BLOB_READ_WRITE_TOKEN', 'DATABASE_URL_UNPOOLED', 'BB_API_KEY_PEPPER', 'BB_ALLOW_CLOUD_CREDENTIALS', 'BB_PROFILE')
+$saved = @{}
+foreach ($name in $isolated) {
+    $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
 }
-Invoke-Step $bin @('--data-dir', $data, 'migrate')
-Invoke-Step $bin @('--data-dir', $data, 'demo', 'seed', '--wait')
-Invoke-Step $bin @('--data-dir', $data, 'serve', '--web-dir', 'web/dist')
+$env:BB_PROFILE = 'local'
+try {
+    Invoke-Step cargo @('build', '--release', '--locked', '-p', 'bb-app', '--bin', 'blackbox')
+    Push-Location web
+    try {
+        Invoke-Step npm @('ci')
+        Invoke-Step npm @('run', 'build')
+    } finally {
+        Pop-Location
+    }
+    Invoke-Step $bin @('--data-dir', $data, 'migrate')
+    Invoke-Step $bin @('--data-dir', $data, 'demo', 'seed', '--wait')
+    Invoke-Step $bin @('--data-dir', $data, 'serve', '--web-dir', 'web/dist')
+} finally {
+    foreach ($name in $isolated) {
+        [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
+    }
+}

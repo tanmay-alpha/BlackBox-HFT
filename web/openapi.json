@@ -2064,6 +2064,133 @@
         ]
       }
     },
+    "/api/v1/market/datasets/{dataset_id}/events/{event_index}": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "operationId": "market_event_detail",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "levels",
+            "in": "query",
+            "description": "Depth levels per side, default 5; 1..10.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "orders_per_level",
+            "in": "query",
+            "description": "Listed orders per level, default 50; 1..100. Selected orders are always listed.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketEventDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/market/datasets/{dataset_id}/examples": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "operationId": "market_examples",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketExamples"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/market/datasets/{dataset_id}/metrics": {
       "get": {
         "tags": [
@@ -8942,6 +9069,37 @@
         },
         "additionalProperties": false
       },
+      "MarketAffectedLevel": {
+        "type": "object",
+        "description": "A price level the event changed, complete before and after it.",
+        "required": [
+          "side",
+          "price4",
+          "role",
+          "before",
+          "after"
+        ],
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/MarketLevel"
+          },
+          "before": {
+            "$ref": "#/components/schemas/MarketLevel"
+          },
+          "price4": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "role": {
+            "type": "string",
+            "description": "`order`, or for a replace `replaced` (same price), `replaced_from`, `replaced_to`."
+          },
+          "side": {
+            "type": "string"
+          }
+        }
+      },
       "MarketBook": {
         "type": "object",
         "required": [
@@ -8977,6 +9135,64 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "MarketDepth": {
+        "type": "object",
+        "required": [
+          "bids",
+          "asks"
+        ],
+        "properties": {
+          "asks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketDepthLevel"
+            }
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketDepthLevel"
+            }
+          }
+        }
+      },
+      "MarketDepthLevel": {
+        "type": "object",
+        "required": [
+          "price4",
+          "shares",
+          "order_count",
+          "orders",
+          "orders_truncated"
+        ],
+        "properties": {
+          "order_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "orders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketQueueSlot"
+            }
+          },
+          "orders_truncated": {
+            "type": "boolean"
+          },
+          "price4": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "shares": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total of all resting orders at the price (the L2 aggregate).",
+            "minimum": 0
           }
         }
       },
@@ -9057,6 +9273,122 @@
           }
         }
       },
+      "MarketEventDetail": {
+        "type": "object",
+        "description": "The book immediately before and after one event, from source frames up to that event only.",
+        "required": [
+          "event",
+          "levels",
+          "orders_per_level",
+          "before",
+          "after",
+          "affected",
+          "same_timestamp"
+        ],
+        "properties": {
+          "affected": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketAffectedLevel"
+            }
+          },
+          "after": {
+            "$ref": "#/components/schemas/MarketDepth"
+          },
+          "before": {
+            "$ref": "#/components/schemas/MarketDepth"
+          },
+          "before_event_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "event": {
+            "$ref": "#/components/schemas/MarketEvent"
+          },
+          "levels": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lifetime_ns": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Completed lifetime when this event removed or replaced the referenced order."
+          },
+          "order_after": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MarketOrderPosition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "order_before": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MarketOrderPosition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "orders_per_level": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "same_timestamp": {
+            "$ref": "#/components/schemas/MarketSameTimestamp"
+          }
+        }
+      },
+      "MarketExample": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "event_index",
+          "rule"
+        ],
+        "properties": {
+          "event_index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string",
+            "description": "The deterministic selection rule the event satisfies."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "MarketExamples": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketExample"
+            }
+          }
+        }
+      },
       "MarketLevel": {
         "type": "object",
         "required": [
@@ -9090,6 +9422,47 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "MarketLevelChange": {
+        "type": "object",
+        "required": [
+          "side",
+          "price4",
+          "before_shares",
+          "after_shares",
+          "before_orders",
+          "after_orders"
+        ],
+        "properties": {
+          "after_orders": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "after_shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "before_orders": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "before_shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "price4": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "side": {
+            "type": "string"
           }
         }
       },
@@ -9134,6 +9507,78 @@
           }
         }
       },
+      "MarketOrderPosition": {
+        "type": "object",
+        "required": [
+          "order_ref",
+          "side",
+          "price4",
+          "shares",
+          "queue_position",
+          "level_orders",
+          "shares_ahead",
+          "level_shares",
+          "entered_event_index"
+        ],
+        "properties": {
+          "age_ns": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Event timestamp minus the accepted add/replace timestamp, decimal nanoseconds."
+          },
+          "entered_event_index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "entered_ns": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level_orders": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "level_shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "order_ref": {
+            "type": "string"
+          },
+          "price4": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "queue_position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One-based FIFO position at its price.",
+            "minimum": 0
+          },
+          "shares": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "shares_ahead": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Shares of the orders ahead of it at its price, excluding itself.",
+            "minimum": 0
+          },
+          "side": {
+            "type": "string"
+          }
+        }
+      },
       "MarketPoint": {
         "type": "object",
         "required": [
@@ -9168,6 +9613,24 @@
             "type": "boolean"
           },
           "quarantined_total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "MarketQueueSlot": {
+        "type": "object",
+        "description": "One resting order in FIFO order; its queue position is its array index + 1.",
+        "required": [
+          "order_ref",
+          "shares"
+        ],
+        "properties": {
+          "order_ref": {
+            "type": "string"
+          },
+          "shares": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
@@ -9293,6 +9756,71 @@
               "$ref": "#/components/schemas/TradeFlowInterval"
             },
             "description": "Same bounded interval-view policy as ofi_intervals."
+          }
+        }
+      },
+      "MarketSameTimestamp": {
+        "type": "object",
+        "description": "Events up to and including the selected one that share its source timestamp.",
+        "required": [
+          "position",
+          "first_event_index",
+          "events",
+          "events_truncated"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketSameTimestampEvent"
+            }
+          },
+          "events_truncated": {
+            "type": "boolean"
+          },
+          "first_event_index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "ts_ns": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MarketSameTimestampEvent": {
+        "type": "object",
+        "required": [
+          "event_index",
+          "message_type",
+          "applied",
+          "level_changes"
+        ],
+        "properties": {
+          "applied": {
+            "type": "string"
+          },
+          "event_index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "level_changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketLevelChange"
+            }
+          },
+          "message_type": {
+            "type": "string"
           }
         }
       },

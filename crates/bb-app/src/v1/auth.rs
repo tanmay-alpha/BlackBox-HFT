@@ -5,8 +5,13 @@
 //! any database access (SEC-31). No header = anonymous = the public demo workspace, read-only;
 //! an anonymous mutation is answered 401 before its body is read (SEC-1). Keys in the query
 //! string are ignored.
+//!
+//! A refused key that resolves to a workspace (revoked, expired, or lacking the route's scope)
+//! writes one `auth.denied` audit row, at most one per key per minute (SECURITY_REVIEW §15,
+//! SEC-25). Anonymous and forged-key traffic never writes audit rows.
 
 use std::{
+    cell::Cell,
     collections::HashMap,
     net::{IpAddr, SocketAddr},
     num::NonZeroU32,
@@ -19,11 +24,11 @@ use std::{
 
 use axum::{
     extract::{ConnectInfo, FromRequestParts, Request, State},
-    http::{HeaderMap, Method, request::Parts},
+    http::{HeaderMap, Method, StatusCode, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use bb_db::{ApiKey, Scope, Workspace};
+use bb_db::{ApiKey, KeyLookup, ReadClass, Scope, Workspace};
 use governor::{
     DefaultDirectRateLimiter, DefaultKeyedRateLimiter, Quota, RateLimiter, clock::Clock,
 };
@@ -31,6 +36,47 @@ use uuid::Uuid;
 
 use super::{Shared, error::ApiError};
 use crate::config::AppConfig;
+
+/// The caller of the request being handled, visible below the handlers (dataset registration
+/// attribution, the Blob read class) and collecting a scope refusal for its audit row.
+struct RequestScope {
+    key: Option<Uuid>,
+    workspace: Uuid,
+    denied_scope: Cell<Option<&'static str>>,
+}
+
+tokio::task_local! {
+    static REQUEST: RequestScope;
+}
+
+/// Who issued the request being handled.
+#[derive(Clone, Copy, Debug)]
+pub struct RequestActor {
+    /// `None` for an anonymous request.
+    pub key: Option<Uuid>,
+    /// The key's workspace, or the demo workspace for anonymous requests.
+    pub workspace: Uuid,
+}
+
+/// The caller of the current request, or `None` outside a request (CLI, worker, seeding).
+pub fn request_actor() -> Option<RequestActor> {
+    REQUEST
+        .try_with(|r| RequestActor {
+            key: r.key,
+            workspace: r.workspace,
+        })
+        .ok()
+}
+
+/// The Blob read class of the current task (SECURITY_REVIEW §6.3): anonymous or keyed inside a
+/// request, `System` outside one (the worker).
+pub fn read_class() -> ReadClass {
+    match REQUEST.try_with(|r| r.key.is_some()) {
+        Ok(true) => ReadClass::Keyed,
+        Ok(false) => ReadClass::Anonymous,
+        Err(_) => ReadClass::System,
+    }
+}
 
 /// The authenticated (or anonymous) caller of one request.
 #[derive(Clone, Debug)]
@@ -59,11 +105,14 @@ impl Caller {
         }
     }
 
-    /// 401 without a key, 403 when the key lacks `scope`.
+    /// 401 without a key, 403 when the key lacks `scope` (recorded for the `auth.denied` row).
     pub fn require(&self, scope: Scope) -> Result<&ApiKey, ApiError> {
         match &self.key {
             None => Err(ApiError::unauthorized(false)),
-            Some(key) if !key.permits(scope) => Err(ApiError::missing_scope(scope.as_str())),
+            Some(key) if !key.permits(scope) => {
+                let _ = REQUEST.try_with(|r| r.denied_scope.set(Some(scope.as_str())));
+                Err(ApiError::missing_scope(scope.as_str()))
+            }
             Some(key) => Ok(key),
         }
     }
@@ -157,6 +206,7 @@ pub struct Limiters {
     anonymous_limit: u32,
     keyed_limit: u32,
     calls: AtomicU64,
+    denials: DenialThrottle,
 }
 
 fn quota(per_min: u32, burst: u32) -> Quota {
@@ -178,6 +228,7 @@ impl Limiters {
             anonymous_limit: r.anonymous_per_min,
             keyed_limit: r.keyed_per_min,
             calls: AtomicU64::new(0),
+            denials: DenialThrottle::default(),
         }
     }
 
@@ -220,6 +271,111 @@ impl Limiters {
     }
 }
 
+/// Window of the `auth.denied` throttle: at most one row per key per window.
+const DENIAL_WINDOW: Duration = Duration::from_secs(60);
+/// Keys the throttle remembers at once. Only real keys (valid tag, existing row) reach it.
+const DENIAL_KEYS: usize = 4096;
+
+/// In-process `auth.denied` throttle (SEC-25): the last row time per key, bounded in memory.
+#[derive(Default)]
+struct DenialThrottle {
+    last: Mutex<HashMap<Uuid, Instant>>,
+}
+
+impl DenialThrottle {
+    /// Claims the row of `key` at `now`: `false` when the key already has one in the window, or
+    /// when the map is full of keys still inside their windows (the row is then skipped rather
+    /// than letting memory or the write rate grow).
+    fn claim(&self, key: Uuid, now: Instant) -> bool {
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = last.get(&key) {
+            if now.saturating_duration_since(*at) < DENIAL_WINDOW {
+                return false;
+            }
+        } else if last.len() >= DENIAL_KEYS {
+            last.retain(|_, at| now.saturating_duration_since(*at) < DENIAL_WINDOW);
+            if last.len() >= DENIAL_KEYS {
+                return false;
+            }
+        }
+        last.insert(key, now);
+        true
+    }
+
+    /// Gives back a claim whose row could not be written.
+    fn release(&self, key: Uuid, claimed: Instant) {
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        if last.get(&key) == Some(&claimed) {
+            last.remove(&key);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
+/// Why a key that resolved to a workspace was refused.
+#[derive(Clone, Copy)]
+enum Denial {
+    Inactive(&'static str),
+    Scope(&'static str),
+}
+
+/// Writes the throttled `auth.denied` row of `key` (SECURITY_REVIEW §15): its workspace, key id,
+/// request id, client address and safe metadata (reason, required scope, method, path; never the
+/// key). A failed write is returned, like the admission denial rows.
+async fn audit_denied(
+    state: &Shared,
+    key: &ApiKey,
+    denial: Denial,
+    method: &Method,
+    path: &str,
+    ip: IpAddr,
+) -> Result<(), ApiError> {
+    let now = Instant::now();
+    if !state.limiters.denials.claim(key.id, now) {
+        return Ok(());
+    }
+    let mut detail = serde_json::json!({
+        "method": method.as_str(),
+        "path": path.chars().take(200).collect::<String>(),
+    });
+    match denial {
+        Denial::Inactive(reason) => detail["reason"] = reason.into(),
+        Denial::Scope(scope) => {
+            detail["reason"] = "scope".into();
+            detail["required_scope"] = scope.into();
+        }
+    }
+    let request_id = super::error::request_id();
+    let ip = ip.to_string();
+    let target = key.id.to_string();
+    let written = state
+        .db
+        .audit(bb_db::NewAuditEvent {
+            workspace: Some(key.workspace_id),
+            key: Some(key.id),
+            action: "auth.denied",
+            outcome: "denied",
+            target_type: Some("api_key"),
+            target_id: Some(&target),
+            request_id: Some(&request_id),
+            client_ip: Some(&ip),
+            detail: &detail,
+        })
+        .await;
+    if let Err(e) = written {
+        state.limiters.denials.release(key.id, now);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 /// The client address: the **last** `X-Forwarded-For` entry, i.e. the one appended by the
 /// nearest proxy (Render's edge); entries further left are client-supplied and ignored. Without
 /// the header, the socket peer.
@@ -256,23 +412,14 @@ pub fn bearer(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
     Ok(Some(key))
 }
 
-/// Resolves a presented key (tag check, then one digest lookup).
-pub async fn resolve_key(state: &Shared, key: &str) -> Result<ApiKey, ApiError> {
-    if !bb_db::key_tag_valid(key, state.cfg.api_key_pepper.expose().as_bytes()) {
-        return Err(ApiError::unauthorized(true));
-    }
-    match state.db.authenticate(key).await? {
-        Some(key) => Ok(key),
-        None => Err(ApiError::unauthorized(true)),
-    }
-}
-
 fn is_mutation(method: &Method) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
 /// Resolves the caller, applies rate limits and the anonymous-mutation rule, and stores the
-/// [`Caller`] for the handlers. `/healthz` is not subject to it.
+/// [`Caller`] for the handlers. `/healthz` is not subject to it. The handlers run inside the
+/// request scope ([`request_actor`], [`read_class`]); a keyed request a handler refused for a
+/// missing scope writes its throttled `auth.denied` row here.
 pub async fn authenticate(
     State(state): State<Shared>,
     mut request: Request,
@@ -283,14 +430,34 @@ pub async fn authenticate(
     }
     let headers = request.headers().clone();
     let method = request.method().clone();
+    let path = request.uri().path().to_string();
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0);
-    match resolve(&state, &headers, method, peer).await {
+    let ip = client_ip(&headers, peer);
+    match resolve(&state, &headers, &method, &path, ip).await {
         Ok((caller, limit)) => {
+            let key = caller.key.clone();
+            let scope = RequestScope {
+                key: caller.key_id(),
+                workspace: caller.workspace.id,
+                denied_scope: Cell::new(None),
+            };
             request.extensions_mut().insert(caller);
-            let mut response = next.run(request).await;
+            let (mut response, denied) = REQUEST
+                .scope(scope, async move {
+                    let response = next.run(request).await;
+                    (response, REQUEST.with(|r| r.denied_scope.get()))
+                })
+                .await;
+            if let (Some(key), Some(scope)) = (key, denied)
+                && response.status() == StatusCode::FORBIDDEN
+                && let Err(e) =
+                    audit_denied(&state, &key, Denial::Scope(scope), &method, &path, ip).await
+            {
+                return e.into_response();
+            }
             if let Ok(v) = limit.to_string().parse() {
                 response.headers_mut().insert("x-ratelimit-limit", v);
             }
@@ -303,14 +470,15 @@ pub async fn authenticate(
 async fn resolve(
     state: &Shared,
     headers: &HeaderMap,
-    method: Method,
-    peer: Option<SocketAddr>,
+    method: &Method,
+    path: &str,
+    ip: IpAddr,
 ) -> Result<(Caller, u32), ApiError> {
     let demo = state.workspaces.demo(state).await?;
     match bearer(headers)? {
         None => {
-            let (limit, _) = state.limiters.check_anonymous(client_ip(headers, peer))?;
-            if is_mutation(&method) {
+            let (limit, _) = state.limiters.check_anonymous(ip)?;
+            if is_mutation(method) {
                 return Err(ApiError::unauthorized(false));
             }
             Ok((
@@ -323,15 +491,24 @@ async fn resolve(
             ))
         }
         Some(presented) => {
-            // Forged keys are rate limited per IP like anonymous traffic before the tag check.
+            // Forged keys are rate limited per IP like anonymous traffic before the tag check,
+            // and refused without any database access or audit row.
             if !bb_db::key_tag_valid(presented, state.cfg.api_key_pepper.expose().as_bytes()) {
-                state.limiters.check_anonymous(client_ip(headers, peer))?;
+                state.limiters.check_anonymous(ip)?;
                 return Err(ApiError::unauthorized(true));
             }
-            let key = resolve_key(state, presented).await?;
+            let key = match state.db.lookup_key(presented).await? {
+                KeyLookup::Active(key) => key,
+                KeyLookup::Inactive { key, reason } => {
+                    audit_denied(state, &key, Denial::Inactive(reason), method, path, ip).await?;
+                    return Err(ApiError::unauthorized(true));
+                }
+                KeyLookup::Unknown => return Err(ApiError::unauthorized(true)),
+            };
             let (limit, _) = state.limiters.check_keyed(key.id)?;
             // Every mutation needs at least `run`; refuse before any body is read (SEC-1).
-            if is_mutation(&method) && !key.permits(Scope::Run) {
+            if is_mutation(method) && !key.permits(Scope::Run) {
+                audit_denied(state, &key, Denial::Scope("run"), method, path, ip).await?;
                 return Err(ApiError::missing_scope("run"));
             }
             let workspace = state.workspaces.by_id(state, key.workspace_id).await?;
@@ -381,5 +558,32 @@ mod tests {
             }
         }
         assert!(denied >= 690, "the global burst is 300, denied {denied}");
+    }
+
+    #[test]
+    fn denial_throttle_admits_one_row_per_key_per_minute_in_bounded_memory() {
+        let throttle = DenialThrottle::default();
+        let start = Instant::now();
+        let key = Uuid::new_v4();
+        assert!(throttle.claim(key, start));
+        assert!(!throttle.claim(key, start + Duration::from_secs(59)));
+        assert!(throttle.claim(key, start + DENIAL_WINDOW));
+        // A failed write gives its claim back; a stale release does not undo a newer claim.
+        let later = start + DENIAL_WINDOW;
+        throttle.release(key, later);
+        assert!(throttle.claim(key, later));
+        throttle.release(key, start);
+        assert!(!throttle.claim(key, later));
+
+        // Full of keys inside their window: new keys are refused, the map does not grow.
+        let throttle = DenialThrottle::default();
+        for _ in 0..DENIAL_KEYS {
+            assert!(throttle.claim(Uuid::new_v4(), start));
+        }
+        assert!(!throttle.claim(Uuid::new_v4(), start + Duration::from_secs(30)));
+        assert_eq!(throttle.len(), DENIAL_KEYS);
+        // Once their windows pass, expired entries are dropped to admit a new key.
+        assert!(throttle.claim(Uuid::new_v4(), start + DENIAL_WINDOW));
+        assert_eq!(throttle.len(), 1);
     }
 }

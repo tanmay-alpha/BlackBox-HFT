@@ -441,6 +441,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/market/datasets/{dataset_id}/events/{event_index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["market_event_detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/market/datasets/{dataset_id}/examples": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["market_examples"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/market/datasets/{dataset_id}/metrics": {
         parameters: {
             query?: never;
@@ -2585,6 +2617,16 @@ export interface components {
              */
             sigma: number;
         };
+        /** @description A price level the event changed, complete before and after it. */
+        MarketAffectedLevel: {
+            after: components["schemas"]["MarketLevel"];
+            before: components["schemas"]["MarketLevel"];
+            /** Format: int32 */
+            price4: number;
+            /** @description `order`, or for a replace `replaced` (same price), `replaced_from`, `replaced_to`. */
+            role: string;
+            side: string;
+        };
         MarketBook: {
             asks: components["schemas"]["MarketLevel"][];
             bids: components["schemas"]["MarketLevel"][];
@@ -2592,6 +2634,23 @@ export interface components {
             event_index: number;
             levels: number;
             ts_ns?: string | null;
+        };
+        MarketDepth: {
+            asks: components["schemas"]["MarketDepthLevel"][];
+            bids: components["schemas"]["MarketDepthLevel"][];
+        };
+        MarketDepthLevel: {
+            /** Format: int32 */
+            order_count: number;
+            orders: components["schemas"]["MarketQueueSlot"][];
+            orders_truncated: boolean;
+            /** Format: int32 */
+            price4: number;
+            /**
+             * Format: int64
+             * @description Total of all resting orders at the price (the L2 aggregate).
+             */
+            shares: number;
         };
         MarketEvent: {
             applied: string;
@@ -2611,6 +2670,33 @@ export interface components {
             side?: string | null;
             ts_ns?: string | null;
         };
+        /** @description The book immediately before and after one event, from source frames up to that event only. */
+        MarketEventDetail: {
+            affected: components["schemas"]["MarketAffectedLevel"][];
+            after: components["schemas"]["MarketDepth"];
+            before: components["schemas"]["MarketDepth"];
+            /** Format: int64 */
+            before_event_index?: number | null;
+            event: components["schemas"]["MarketEvent"];
+            levels: number;
+            /** @description Completed lifetime when this event removed or replaced the referenced order. */
+            lifetime_ns?: string | null;
+            order_after?: components["schemas"]["MarketOrderPosition"] | null;
+            order_before?: components["schemas"]["MarketOrderPosition"] | null;
+            orders_per_level: number;
+            same_timestamp: components["schemas"]["MarketSameTimestamp"];
+        };
+        MarketExample: {
+            /** Format: int64 */
+            event_index: number;
+            id: string;
+            /** @description The deterministic selection rule the event satisfies. */
+            rule: string;
+            title: string;
+        };
+        MarketExamples: {
+            items: components["schemas"]["MarketExample"][];
+        };
         MarketLevel: {
             /** Format: int32 */
             order_count: number;
@@ -2620,6 +2706,19 @@ export interface components {
             price4: number;
             /** Format: int64 */
             shares: number;
+        };
+        MarketLevelChange: {
+            /** Format: int32 */
+            after_orders: number;
+            /** Format: int64 */
+            after_shares: number;
+            /** Format: int32 */
+            before_orders: number;
+            /** Format: int64 */
+            before_shares: number;
+            /** Format: int32 */
+            price4: number;
+            side: string;
         };
         MarketOrder: {
             /** Format: int64 */
@@ -2633,6 +2732,33 @@ export interface components {
             /** Format: int64 */
             shares_ahead: number;
         };
+        MarketOrderPosition: {
+            /** @description Event timestamp minus the accepted add/replace timestamp, decimal nanoseconds. */
+            age_ns?: string | null;
+            /** Format: int64 */
+            entered_event_index: number;
+            entered_ns?: string | null;
+            /** Format: int32 */
+            level_orders: number;
+            /** Format: int64 */
+            level_shares: number;
+            order_ref: string;
+            /** Format: int32 */
+            price4: number;
+            /**
+             * Format: int32
+             * @description One-based FIFO position at its price.
+             */
+            queue_position: number;
+            /** Format: int64 */
+            shares: number;
+            /**
+             * Format: int64
+             * @description Shares of the orders ahead of it at its price, excluding itself.
+             */
+            shares_ahead: number;
+            side: string;
+        };
         MarketPoint: {
             ts_ns: string;
             values: components["schemas"]["Value"][];
@@ -2642,6 +2768,12 @@ export interface components {
             passed: boolean;
             /** Format: int64 */
             quarantined_total: number;
+        };
+        /** @description One resting order in FIFO order; its queue position is its array index + 1. */
+        MarketQueueSlot: {
+            order_ref: string;
+            /** Format: int64 */
+            shares: number;
         };
         MarketReport: {
             analytics_version: string;
@@ -2668,6 +2800,23 @@ export interface components {
             trade_imbalance: components["schemas"]["TradeImbalance"];
             /** @description Same bounded interval-view policy as ofi_intervals. */
             trade_intervals: components["schemas"]["TradeFlowInterval"][];
+        };
+        /** @description Events up to and including the selected one that share its source timestamp. */
+        MarketSameTimestamp: {
+            events: components["schemas"]["MarketSameTimestampEvent"][];
+            events_truncated: boolean;
+            /** Format: int64 */
+            first_event_index: number;
+            /** Format: int32 */
+            position: number;
+            ts_ns?: string | null;
+        };
+        MarketSameTimestampEvent: {
+            applied: string;
+            /** Format: int64 */
+            event_index: number;
+            level_changes: components["schemas"]["MarketLevelChange"][];
+            message_type: string;
         };
         MarketSeries: {
             clock_step_ns?: string | null;
@@ -5662,6 +5811,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    market_event_detail: {
+        parameters: {
+            query?: {
+                /** @description Depth levels per side, default 5; 1..10. */
+                levels?: number;
+                /** @description Listed orders per level, default 50; 1..100. Selected orders are always listed. */
+                orders_per_level?: number;
+            };
+            header?: never;
+            path: {
+                dataset_id: string;
+                event_index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketEventDetail"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    market_examples: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketExamples"];
                 };
             };
             404: {

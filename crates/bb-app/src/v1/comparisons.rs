@@ -33,6 +33,7 @@ use super::{
 };
 use crate::{
     artifacts::{open_run, verified_trailer},
+    report::{ComparisonRecord, RunFacts},
     wire::at_ns,
 };
 
@@ -378,7 +379,16 @@ pub async fn get_comparison(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let row = visible(&state, &caller, &id).await?;
+    // An anonymous read of a demo comparison is answered from the demo snapshot (no database
+    // query, SEC-10); any other id, and every keyed read, uses the database.
+    let snapshot = state.snapshot.for_read(&state, &caller).await;
+    let cached = uuid_param("comparison", &id)
+        .ok()
+        .and_then(|id| snapshot.as_ref()?.comparison(id).cloned());
+    let row = match cached {
+        Some(row) => row,
+        None => visible(&state, &caller, &id).await?,
+    };
     Ok(conditional(
         &headers,
         json(StatusCode::OK, &resource(&row, true)?, Cache::Revalidate)?,
@@ -522,44 +532,39 @@ pub async fn comparison_pairs(
     ))
 }
 
-/// Markdown report of a comparison.
-pub fn comparison_markdown(row: &Row) -> Result<String, ApiError> {
-    let c = stored(row)?;
-    let mut md = String::new();
-    md.push_str(&format!("# Comparison {} vs {}\n\n", c.run_a, c.run_b));
-    md.push_str(&format!(
-        "Eligibility: **{}** (like-for-like: {}).\n\n",
-        row.eligibility,
-        if c.eligibility.like_for_like {
-            "yes"
-        } else {
-            "no"
-        }
-    ));
-    for r in &c.eligibility.reasons {
-        md.push_str(&format!(
-            "- `{}`: A = {}, B = {}. {}\n",
-            r.field, r.a, r.b, r.explanation
-        ));
+/// Run views and dataset manifests of a comparison's two runs, from database metadata only (no
+/// artefact is opened); `None` for a run no longer visible.
+async fn report_runs(state: &Shared, row: &Row) -> [Option<RunFacts>; 2] {
+    let mut out = [None, None];
+    for (slot, id) in out.iter_mut().zip([row.run_a_id, row.run_b_id]) {
+        let Ok(view) = state.db.run_view_by_id(row.workspace_id, id).await else {
+            continue;
+        };
+        let dataset = state
+            .db
+            .dataset_version(&view.dataset_id, view.dataset_version_no)
+            .await
+            .ok()
+            .and_then(|v| crate::registry::manifest_of(&v).ok());
+        *slot = Some(RunFacts::from_view(&view, dataset));
     }
-    md.push_str("\n| Metric | A | B | B - A |\n|---|---:|---:|---:|\n");
-    let f = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.6}"));
-    for m in &c.metrics {
-        md.push_str(&format!(
-            "| {} ({}) | {} | {} | {} |\n",
-            m.label,
-            m.unit,
-            f(m.a),
-            f(m.b),
-            f(m.delta)
-        ));
-    }
-    md.push_str("\n## Interpretation\n\n");
-    for n in &c.interpretation {
-        md.push_str(&format!("- [{:?}] {}\n", n.basis, n.statement));
-    }
-    md.push_str("\nSimulated results only; nothing here is an exchange execution.\n");
-    Ok(md)
+    out
+}
+
+/// Markdown report of a comparison (docs/research/REPORT_FORMAT.md).
+pub async fn comparison_markdown(state: &Shared, row: &Row) -> Result<String, ApiError> {
+    let comparison = stored(row)?;
+    let runs = report_runs(state, row).await;
+    Ok(crate::report::comparison_markdown(
+        &ComparisonRecord {
+            id: row.id.to_string(),
+            comparator_version: row.comparator_version,
+            eligibility: &row.eligibility,
+            summary_sha256: hex::encode(&row.summary_sha256),
+            comparison: &comparison,
+        },
+        &runs,
+    ))
 }
 
 #[utoipa::path(get, path = "/comparisons/{id}/report", tag = "comparisons", security((), ("bearer" = [])),
@@ -573,7 +578,7 @@ pub async fn comparison_report(
     let row = visible(&state, &caller, &id).await?;
     let _ = Scope::Read;
     markdown_response(
-        comparison_markdown(&row)?,
+        comparison_markdown(&state, &row).await?,
         &format!("comparison-{}.md", row.id),
     )
 }

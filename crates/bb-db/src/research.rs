@@ -64,7 +64,8 @@ pub struct NewAuditEvent<'a> {
 
 /// Who performed a v1 mutation and under which request (SEC-25). Each mutation writes one
 /// `bb.audit_events` row (`outcome = 'ok'`) with it inside its own transaction, so the change
-/// and its audit row commit or roll back together.
+/// and its audit row commit or roll back together. A keyed write to the public demo workspace
+/// additionally writes a `demo.write` row (SECURITY_REVIEW §15) in the same transaction.
 #[derive(Debug, Clone, Default)]
 pub struct Audit {
     /// The workspace written to.
@@ -83,8 +84,40 @@ impl Audit {
         detail: Value,
     ) -> Result<()> {
         sqlx::query("INSERT INTO bb.audit_events (workspace_id,api_key_id,action,outcome,target_type,target_id,request_id,detail) VALUES ($1,$2,$3,'ok',$4,$5,$6,$7)")
-            .bind(self.workspace).bind(self.key).bind(action).bind(target_type).bind(target_id.to_string()).bind(&self.request_id).bind(detail).execute(conn).await?;
+            .bind(self.workspace).bind(self.key).bind(action).bind(target_type).bind(target_id.to_string()).bind(&self.request_id).bind(detail).execute(&mut *conn).await?;
+        if self.key.is_some() {
+            sqlx::query("INSERT INTO bb.audit_events (workspace_id,api_key_id,action,outcome,target_type,target_id,request_id,detail) SELECT $1,$2,'demo.write','ok',$3,$4,$5,jsonb_build_object('action',$6::text) WHERE EXISTS (SELECT 1 FROM bb.workspaces WHERE id=$1 AND kind='demo')")
+                .bind(self.workspace).bind(self.key).bind(target_type).bind(target_id.to_string()).bind(&self.request_id).bind(action).execute(&mut *conn).await?;
+        }
         Ok(())
+    }
+}
+
+impl Database {
+    /// Registers a dataset version like [`Database::register_version`] and, when this call
+    /// inserted it, writes its `dataset.create` audit row (SEC-25) in the same transaction:
+    /// both commit or neither does. Re-registering identical bytes writes no row.
+    pub async fn register_version_audited(
+        &self,
+        v: &NewDatasetVersion,
+        audit: &Audit,
+        detail: Value,
+    ) -> Result<DatasetVersion> {
+        let mut tx = self.pool.begin().await?;
+        let (row, inserted) = crate::repositories::insert_version(&mut tx, v).await?;
+        if inserted {
+            audit
+                .write(
+                    &mut tx,
+                    "dataset.create",
+                    "dataset",
+                    &row.dataset_id,
+                    detail,
+                )
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(row)
     }
 }
 

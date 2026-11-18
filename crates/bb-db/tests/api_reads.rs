@@ -11,6 +11,9 @@ use sqlx::{
 use std::{str::FromStr, time::Duration};
 use uuid::Uuid;
 
+/// Budget checks below predate caller classes; keyed reads have no class-specific limit.
+const KEYED: ReadClass = ReadClass::Keyed;
+
 const PLATFORM: &str = "linux-x86_64";
 const FAIR_PLATFORM: &str = "linux-aarch64";
 const PEPPER: &[u8] = b"test-pepper-0123456789";
@@ -778,14 +781,14 @@ async fn budgets(db: &Database) {
     let nov1 = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
     for i in 0..300 {
         assert!(
-            db.charge_storage_read_on("vercel_blob", 10, 9_000, i64::MAX, nov1)
+            db.charge_storage_read_on("vercel_blob", 10, 9_000, i64::MAX, nov1, KEYED)
                 .await
                 .unwrap(),
             "read {i}"
         );
     }
     assert!(
-        !db.charge_storage_read_on("vercel_blob", 10, 9_000, i64::MAX, nov1)
+        !db.charge_storage_read_on("vercel_blob", 10, 9_000, i64::MAX, nov1, KEYED)
             .await
             .unwrap()
     );
@@ -795,13 +798,13 @@ async fn budgets(db: &Database) {
     let nov2 = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
     for _ in 0..300 {
         assert!(
-            db.charge_storage_read_on("vercel_blob", 0, 9_000, i64::MAX, nov2)
+            db.charge_storage_read_on("vercel_blob", 0, 9_000, i64::MAX, nov2, KEYED)
                 .await
                 .unwrap()
         );
     }
     assert!(
-        !db.charge_storage_read_on("vercel_blob", 0, 9_000, i64::MAX, nov2)
+        !db.charge_storage_read_on("vercel_blob", 0, 9_000, i64::MAX, nov2, KEYED)
             .await
             .unwrap()
     );
@@ -809,34 +812,34 @@ async fn budgets(db: &Database) {
     // Last day of the month: the remaining monthly reads, and the byte cap, bound the charge.
     let nov30 = NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
     assert!(
-        db.charge_storage_read_on("fs", 600, 5, 1000, nov30)
+        db.charge_storage_read_on("fs", 600, 5, 1000, nov30, KEYED)
             .await
             .unwrap()
     );
     assert!(
-        !db.charge_storage_read_on("fs", 500, 5, 1000, nov30)
+        !db.charge_storage_read_on("fs", 500, 5, 1000, nov30, KEYED)
             .await
             .unwrap()
     );
     assert!(
-        db.charge_storage_read_on("fs", 400, 5, 1000, nov30)
+        db.charge_storage_read_on("fs", 400, 5, 1000, nov30, KEYED)
             .await
             .unwrap()
     );
     assert!(
-        !db.charge_storage_read_on("fs", 1, 5, 1000, nov30)
+        !db.charge_storage_read_on("fs", 1, 5, 1000, nov30, KEYED)
             .await
             .unwrap()
     );
     for _ in 0..3 {
         assert!(
-            db.charge_storage_read_on("fs", 0, 5, 1000, nov30)
+            db.charge_storage_read_on("fs", 0, 5, 1000, nov30, KEYED)
                 .await
                 .unwrap()
         );
     }
     assert!(
-        !db.charge_storage_read_on("fs", 0, 5, 1000, nov30)
+        !db.charge_storage_read_on("fs", 0, 5, 1000, nov30, KEYED)
             .await
             .unwrap()
     );
@@ -845,16 +848,17 @@ async fn budgets(db: &Database) {
     // A new month starts from zero.
     let dec1 = NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
     assert!(
-        db.charge_storage_read_on("fs", 0, 5, 1000, dec1)
+        db.charge_storage_read_on("fs", 0, 5, 1000, dec1, KEYED)
             .await
             .unwrap()
     );
     assert!(matches!(
-        db.charge_storage_read_on("fs", -1, 5, 1000, dec1).await,
+        db.charge_storage_read_on("fs", -1, 5, 1000, dec1, KEYED)
+            .await,
         Err(Error::Invalid(_))
     ));
     assert!(
-        db.charge_storage_read("vercel_blob", 1, 1_000_000, i64::MAX)
+        db.charge_storage_read("vercel_blob", 1, 1_000_000, i64::MAX, KEYED)
             .await
             .unwrap()
     );

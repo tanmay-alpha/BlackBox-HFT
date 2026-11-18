@@ -1244,3 +1244,250 @@ proptest! {
         validate_event_order(&rec.l2()[0].events).unwrap();
     }
 }
+
+// ---- quality report -------------------------------------------------------------------------
+
+use super::report::{QualityReport, QualityReporter};
+
+fn report(body: &[Vec<u8>]) -> QualityReport {
+    let mut messages = preamble();
+    messages.extend_from_slice(body);
+    let mut r = QualityReporter::new(None, &[SYMBOL.to_string()]);
+    for m in &messages {
+        r.push(m);
+    }
+    r.finish()
+}
+
+fn report_check(r: &QualityReport, id: &str) -> u64 {
+    r.checks.iter().find(|c| c.id == id).unwrap().count
+}
+
+fn by_type(pairs: &[(&str, u64)]) -> std::collections::BTreeMap<String, u64> {
+    pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+}
+
+#[test]
+fn report_episodes_carry_trading_state_and_market_phase() {
+    let body = [
+        trading_action(T0, LOCATE, SYMBOL, b'H'),
+        add(T0 + 1, 1, b'B', 100, P10 + 100),
+        add(T0 + 1, 2, b'S', 100, P10),
+        trading_action(T0 + 2, LOCATE, SYMBOL, b'T'),
+        delete(T0 + 3, 1),
+        system(T0 + 3, b'Q'),
+        add(T0 + 4, 3, b'B', 10, P10 + 200),
+        noii(T0 + 10),
+    ];
+    let r = report(&body);
+    let crossed_halted = &r.episodes["crossed/H/pre_market"];
+    assert_eq!(
+        (
+            crossed_halted.entries,
+            crossed_halted.total_ns,
+            crossed_halted.open_at_end
+        ),
+        (1, 2, 0),
+        "crossed from T0+1 until the delete at T0+3"
+    );
+    let crossed_trading = &r.episodes["crossed/T/regular"];
+    assert_eq!(
+        (
+            crossed_trading.entries,
+            crossed_trading.total_ns,
+            crossed_trading.open_at_end
+        ),
+        (1, 6, 1),
+        "open from T0+4 to the last timestamp T0+10"
+    );
+    assert_eq!(r.episodes.len(), 2);
+    assert!(r.episodes_agree_with_book);
+    assert_eq!(report_check(&r, "book.crossed_or_locked_while_trading"), 1);
+    let mut messages = preamble();
+    messages.extend_from_slice(&body);
+    let m = reconstruct_bytes("fixture", &file(&messages), options()).manifest;
+    assert_eq!(
+        (m.book.crossed_entries, m.book.crossed_entries_while_trading),
+        (2, 1)
+    );
+}
+
+#[test]
+fn report_locked_episode_duration_matches_the_book() {
+    let body = [
+        system(T0, b'Q'),
+        trading_action(T0, LOCATE, SYMBOL, b'T'),
+        add(T0 + 1, 1, b'B', 100, P10),
+        add(T0 + 2, 2, b'S', 100, P10),
+        delete(T0 + 5, 2),
+    ];
+    let r = report(&body);
+    let locked = &r.episodes["locked/T/regular"];
+    assert_eq!(
+        (locked.entries, locked.total_ns, locked.open_at_end),
+        (1, 3, 0)
+    );
+    assert!(r.episodes_agree_with_book);
+    let mut messages = preamble();
+    messages.extend_from_slice(&body);
+    let m = reconstruct_bytes("fixture", &file(&messages), options()).manifest;
+    assert_eq!((m.book.locked_entries, m.book.locked_ns), (1, 3));
+}
+
+#[test]
+fn report_counts_missing_references_per_type() {
+    let r = report(&[
+        add(T0, 1, b'B', 100, P10),
+        executed(T0 + 1, 99, 10, 1),
+        executed_at(T0 + 2, 98, 10, 2, true, P10),
+        cancel(T0 + 3, 97, 5),
+        delete(T0 + 4, 96),
+        replace(T0 + 5, 95, 200, 10, P10),
+        delete(T0 + 6, 1),
+    ]);
+    assert_eq!(
+        r.missing_ref_by_type,
+        by_type(&[("C", 1), ("D", 1), ("E", 1), ("U", 1), ("X", 1)])
+    );
+    assert_eq!(report_check(&r, "refs.missing"), 5);
+    assert_eq!(r.quarantined["unknown_order"], 5);
+}
+
+#[test]
+fn report_counts_duplicate_and_non_increasing_references() {
+    let r = report(&[
+        add(T0, 5, b'B', 100, P10),
+        add(T0 + 1, 3, b'B', 100, P10),
+        add(T0 + 2, 5, b'S', 100, P10 + 100),
+        replace(T0 + 3, 3, 3, 50, P10),
+        replace(T0 + 4, 3, 7, 50, P10),
+    ]);
+    assert_eq!(r.duplicate_live_ref_by_type, by_type(&[("A", 1)]));
+    assert_eq!(r.replace.new_ref_equals_original, 1);
+    // 3 after 5, 5 again, 3 again (the self-replace); 7 is a new maximum.
+    assert_eq!(r.new_ref_not_above_previous_max, 3);
+    assert_eq!(report_check(&r, "refs.duplicate_live"), 1);
+}
+
+#[test]
+fn report_flags_zero_quantities_and_out_of_range_prices() {
+    let r = report(&[
+        add(T0, 1, b'B', 100, P10),
+        add(T0 + 1, 2, b'B', 0, P10),
+        add(T0 + 2, 3, b'B', 10, 0),
+        add(T0 + 3, 4, b'B', 10, 2_000_000_001),
+        cancel(T0 + 4, 1, 0),
+        executed(T0 + 5, 1, 101, 1),
+        trade(T0 + 6, 10, 0, 2),
+        cross(T0 + 7, 0, 0, 3, b'O'),
+        cross(T0 + 8, 100, 0, 4, b'O'),
+    ]);
+    assert_eq!(r.zero_shares_by_type, by_type(&[("A", 1), ("X", 1)]));
+    assert_eq!(
+        r.price_out_of_range_by_type,
+        by_type(&[("A", 2), ("P", 1), ("Q", 1)])
+    );
+    assert_eq!(r.zero_share_crosses, 1, "a zero-share cross is legitimate");
+    assert_eq!(r.exceeds_remaining_by_type, by_type(&[("E", 1)]));
+    assert_eq!(report_check(&r, "values.zero_shares"), 2);
+    assert_eq!(report_check(&r, "values.price_out_of_range"), 4);
+    assert_eq!(report_check(&r, "values.exceeds_remaining"), 1);
+}
+
+#[test]
+fn report_classifies_replace_semantics_by_side() {
+    let r = report(&[
+        add(T0, 1, b'B', 100, P10),
+        add(T0, 10, b'S', 100, P10 + 500),
+        replace(T0 + 1, 1, 2, 50, P10),
+        replace(T0 + 2, 2, 3, 50, P10 + 100),
+        replace(T0 + 3, 3, 4, 80, P10),
+        replace(T0 + 4, 10, 11, 100, P10 + 400),
+        replace(T0 + 5, 99, 12, 100, P10),
+    ]);
+    let s = &r.replace;
+    assert_eq!((s.messages, s.applied), (5, 4));
+    assert_eq!(
+        (s.same_price, s.price_improved, s.price_worsened),
+        (1, 2, 1)
+    );
+    assert_eq!(
+        (s.shares_increased, s.shares_decreased, s.shares_unchanged),
+        (1, 1, 2)
+    );
+    assert_eq!(s.same_price_size_decrease, 1);
+    assert_eq!(s.new_ref_equals_original, 0);
+}
+
+#[test]
+fn report_counts_timestamp_ties_and_regressions() {
+    let r = report(&[
+        add(T0, 1, b'B', 100, P10),
+        add(T0, 2, b'B', 100, P10),
+        add(T0 + 1, 3, b'B', 100, P10),
+        add(T0, 4, b'B', 100, P10),
+    ]);
+    let t = &r.timestamps;
+    // Pairs: O->R, R->A, A->A (tie), A->A, A->A (regression).
+    assert_eq!((t.compared, t.ties, t.regressions), (5, 1, 1));
+    assert_eq!(t.fraction, Some(0.2));
+    assert_eq!((t.book_compared, t.book_ties), (3, 1));
+    assert_eq!(report_check(&r, "time.regression"), 1);
+}
+
+#[test]
+fn report_states_that_binaryfile_has_no_sequence_field_and_checks_what_it_can() {
+    let a = add(T0, 1, b'B', 100, P10);
+    let r = report(&[a.clone(), a, add_for(T0 + 1, 2, "OTHER", 2, b'B', 100, P10)]);
+    assert!(!r.sequence.supported);
+    assert_eq!(r.sequence.identical_consecutive_frames, 1);
+    assert_eq!(r.sequence.locate_without_directory, 1);
+    assert_eq!(report_check(&r, "sequence.identical_consecutive_frames"), 1);
+}
+
+#[test]
+fn report_lists_session_and_trading_state_transitions() {
+    let r = report(&[
+        system(T0, b'S'),
+        trading_action(T0, LOCATE, SYMBOL, b'H'),
+        directory(T0, 2, "OTHER"),
+        trading_action(T0, 2, "OTHER", b'T'),
+        trading_action(T0 + 1, LOCATE, SYMBOL, b'T'),
+        trading_action(T0 + 2, LOCATE, SYMBOL, b'T'),
+        system(T0 + 3, b'Q'),
+        system(T0 + 4, b'M'),
+    ]);
+    let s = &r.session;
+    let codes: Vec<&str> = s.system_events.iter().map(|e| e.code.as_str()).collect();
+    assert_eq!(codes, ["O", "S", "Q", "M"]);
+    assert_eq!(
+        s.trading_state_transitions,
+        by_type(&[("H->T", 1), ("none->H", 1), ("none->T", 1)])
+    );
+    assert_eq!(s.trading_state_repeats, 1);
+    let selected: Vec<(u64, &str, &str)> = s
+        .selected
+        .iter()
+        .map(|t| (t.timestamp_ns, t.from.as_str(), t.to.as_str()))
+        .collect();
+    assert_eq!(selected, [(T0, "none", "H"), (T0 + 1, "H", "T")]);
+    assert!(s.selected.iter().all(|t| t.symbol == SYMBOL));
+}
+
+#[test]
+fn report_runs_as_a_frame_sink_and_honours_the_message_limit() {
+    let mut messages = preamble();
+    messages.extend([add(T0, 1, b'B', 100, P10), delete(T0 + 1, 1)]);
+    let bytes = file(&messages);
+    let mut r = QualityReporter::new(Some(3), &[]);
+    let stop = super::run(&mut FrameReader::new(&bytes[..]), &mut r).unwrap();
+    assert_eq!(stop, super::Stop::MessageLimit);
+    assert_eq!(r.books().live_orders(), 1);
+    let report = r.finish();
+    assert_eq!(report.frames, 3);
+    assert!(
+        report.checks.iter().all(|c| c.passed),
+        "{:?}",
+        report.checks
+    );
+}

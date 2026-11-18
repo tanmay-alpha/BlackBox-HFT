@@ -6,6 +6,7 @@
 //! Queue completion accepts only already verified/uploaded artifact metadata; object storage
 //! and scientific hash computation remain the caller's responsibility.
 mod api_reads;
+mod demo_version;
 mod gc;
 mod keys;
 mod models;

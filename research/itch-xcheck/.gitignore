@@ -1,0 +1,4 @@
+# Build outputs; the pipeline builds into the repository target/ directory.
+bbadapter/target/
+*.exe
+__pycache__/

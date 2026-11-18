@@ -1,8 +1,12 @@
 //! Artefact storage and integrity on read (TARGET_ARCHITECTURE §6–§7, SECURITY_REVIEW §6.3).
 //!
-//! * [`Storage`] wraps the configured `ArtifactStore`. For Vercel Blob every GET attempt
-//!   (retries included) is charged against the persisted monthly/daily read budget *before* it
-//!   is sent; a refused charge fails closed (503 `storage`) without touching the network.
+//! * [`Storage`] owns the configured `ArtifactStore`; the store itself is private, so every
+//!   request goes through a wrapper below. A metered store (Vercel Blob) can only be built with
+//!   a [`ReadBudget`], and every GET and HEAD attempt (retries included) is charged against the
+//!   persisted monthly/daily read budget *before* it is sent, every PUT attempt against the
+//!   upload allowances; a refused charge fails closed (503 `storage`) without touching the
+//!   network. Reads caused by anonymous requests may take at most half of the daily share
+//!   ([`crate::v1::auth::read_class`]). Only the filesystem store is unmetered.
 //! * [`BundleCache`] keeps whole verified bundles on local disk (`<data-dir>/cache/bundles`),
 //!   byte-bounded. A bundle is fetched once (one GET), verified end to end against the trust
 //!   root in Postgres, and only then cached. Every page read re-verifies the page and metadata
@@ -19,8 +23,9 @@ use std::{
 };
 
 use bb_artifacts::{
-    ArtifactError, ArtifactStore, BlobConfig, BundleLimits, BundleReader, BundleTrailer,
-    BundleTrust, FsArtifactStore, RetryPolicy, Section, VercelBlobStore,
+    ArtifactError, ArtifactHead, ArtifactStore, BlobConfig, BundleLimits, BundleReader,
+    BundleTrailer, BundleTrailerCore, BundleTrust, FsArtifactStore, RetryPolicy, Section,
+    VercelBlobStore,
 };
 use bb_core::{
     flight::FlightEvent,
@@ -36,13 +41,41 @@ use crate::{config::StorageConfig, metrics::Metrics, v1::error::ApiError};
 const FETCH_CHUNK: u64 = 8 << 20;
 const STORE_ATTEMPTS: usize = 3;
 
-/// The configured artefact store plus the read budget.
+/// The persisted read budget of a metered store: the monthly Blob read-op and read-byte caps
+/// (daily pacing, the anonymous half share and the upload allowances live in Postgres).
+#[derive(Clone)]
+pub struct ReadBudget {
+    db: Database,
+    reads_cap: i32,
+    bytes_cap: i64,
+}
+
+impl ReadBudget {
+    pub fn new(db: Database, reads_cap: i32, bytes_cap: i64) -> Self {
+        Self {
+            db,
+            reads_cap,
+            bytes_cap,
+        }
+    }
+}
+
+/// The configured artefact store plus its budget.
 #[derive(Clone)]
 pub struct Storage {
-    pub store: Arc<dyn ArtifactStore>,
+    store: Arc<dyn ArtifactStore>,
     pub backend: &'static str,
-    /// `None` = unmetered (the filesystem store).
-    budget: Option<(Database, i32, i64)>,
+    /// `None` = unmetered (the filesystem store only).
+    budget: Option<ReadBudget>,
+}
+
+/// What one store attempt reserves first.
+#[derive(Clone, Copy)]
+enum Charge {
+    /// One read op (GET or HEAD) and its bytes.
+    Read(i64),
+    /// One upload attempt against the global and the workspace allowance.
+    Upload(Option<uuid::Uuid>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -83,11 +116,7 @@ impl Storage {
         bytes_cap: i64,
     ) -> Result<Self, ArtifactError> {
         Ok(match config {
-            StorageConfig::Fs(root) => Self {
-                store: Arc::new(FsArtifactStore::new(root)?),
-                backend: "fs",
-                budget: None,
-            },
+            StorageConfig::Fs(root) => Self::filesystem(Arc::new(FsArtifactStore::new(root)?)),
             StorageConfig::VercelBlob(token) => {
                 let parts: Vec<&str> = token.expose().split('_').collect();
                 let store_id = parts.get(3).copied().unwrap_or_default();
@@ -97,43 +126,74 @@ impl Storage {
                     attempts: 1,
                     ..RetryPolicy::default()
                 };
-                Self {
-                    store: Arc::new(VercelBlobStore::with_config(token.expose(), blob)?),
-                    backend: "vercel_blob",
-                    budget: Some((db, reads_cap, bytes_cap)),
-                }
+                Self::metered(
+                    Arc::new(VercelBlobStore::with_config(token.expose(), blob)?),
+                    "vercel_blob",
+                    ReadBudget::new(db, reads_cap, bytes_cap),
+                )
             }
         })
     }
 
-    /// A custom store (tests); `metered` charges the read budget like Vercel Blob.
-    pub fn custom(
+    /// A store charged like Vercel Blob: every GET/HEAD/PUT attempt reserves its budget first.
+    pub fn metered(
         store: Arc<dyn ArtifactStore>,
         backend: &'static str,
-        budget: Option<(Database, i32, i64)>,
+        budget: ReadBudget,
     ) -> Self {
         Self {
             store,
             backend,
-            budget,
+            budget: Some(budget),
         }
     }
 
-    /// One metered ranged GET with bounded retries on transient failures.
-    pub async fn get_range(&self, key: &str, range: Range<u64>) -> Result<Bytes, StorageError> {
-        let len = i64::try_from(range.end.saturating_sub(range.start)).unwrap_or(i64::MAX);
-        let mut delay = Duration::from_millis(250);
+    /// An unmetered filesystem store (`backend = "fs"`; local profile and tests).
+    pub fn filesystem(store: Arc<dyn ArtifactStore>) -> Self {
+        Self {
+            store,
+            backend: "fs",
+            budget: None,
+        }
+    }
+
+    /// Reserves `charge` on a metered store; `Budget` when it is refused.
+    async fn reserve(&self, charge: Charge) -> Result<(), StorageError> {
+        let Some(b) = &self.budget else {
+            return Ok(());
+        };
+        let granted = match charge {
+            Charge::Read(bytes) => {
+                let class = crate::v1::auth::read_class();
+                b.db.charge_storage_read(self.backend, bytes, b.reads_cap, b.bytes_cap, class)
+                    .await?
+            }
+            Charge::Upload(workspace) => b.db.reserve_upload(self.backend, workspace).await?,
+        };
+        if granted {
+            Ok(())
+        } else {
+            Err(StorageError::Budget)
+        }
+    }
+
+    /// Runs `op` up to [`STORE_ATTEMPTS`] times on transient failures (transport, 429, 5xx),
+    /// reserving `charge` before every attempt; a refused reservation ends it (fail closed).
+    async fn attempts<T, F, Fut>(
+        &self,
+        charge: Charge,
+        mut delay: Duration,
+        mut op: F,
+    ) -> Result<T, StorageError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, ArtifactError>>,
+    {
         let mut last = None;
         for _ in 0..STORE_ATTEMPTS {
-            if let Some((db, reads, bytes)) = &self.budget
-                && !db
-                    .charge_storage_read(self.backend, len, *reads, *bytes)
-                    .await?
-            {
-                return Err(StorageError::Budget);
-            }
-            match self.store.get_range(key, range.clone()).await {
-                Ok(bytes) => return Ok(bytes),
+            self.reserve(charge).await?;
+            match op().await {
+                Ok(value) => return Ok(value),
                 Err(e @ (ArtifactError::Transport(_) | ArtifactError::Http(429 | 500..=599))) => {
                     last = Some(e);
                     tokio::time::sleep(delay).await;
@@ -143,6 +203,25 @@ impl Storage {
             }
         }
         Err(last.map(StorageError::from).unwrap_or(StorageError::Budget))
+    }
+
+    /// One metered ranged GET with bounded retries on transient failures.
+    pub async fn get_range(&self, key: &str, range: Range<u64>) -> Result<Bytes, StorageError> {
+        let len = i64::try_from(range.end.saturating_sub(range.start)).unwrap_or(i64::MAX);
+        let store = &self.store;
+        self.attempts(Charge::Read(len), Duration::from_millis(250), move || {
+            store.get_range(key, range.clone())
+        })
+        .await
+    }
+
+    /// One metered HEAD (metadata retrieval is a simple op) with bounded retries.
+    pub async fn head(&self, key: &str) -> Result<ArtifactHead, StorageError> {
+        let store = &self.store;
+        self.attempts(Charge::Read(0), Duration::from_millis(250), move || {
+            store.head(key)
+        })
+        .await
     }
 
     /// Publishes a bundle with bounded retries. A metered store (Vercel Blob) reserves every
@@ -155,29 +234,22 @@ impl Storage {
         path: &Path,
         workspace: Option<uuid::Uuid>,
     ) -> Result<(), StorageError> {
-        let mut delay = Duration::from_millis(500);
-        let mut last = None;
-        for _ in 0..STORE_ATTEMPTS {
-            if let Some((db, _, _)) = &self.budget
-                && !db.reserve_upload(self.backend, workspace).await?
-            {
-                return Err(StorageError::Budget);
-            }
-            match self.store.put_bundle_from_file(key, path).await {
-                Ok(_) => return Ok(()),
-                // A previous attempt may have landed before its response was lost.
-                Err(ArtifactError::AlreadyExists) => return Ok(()),
-                Err(e @ (ArtifactError::Transport(_) | ArtifactError::Http(429 | 500..=599))) => {
-                    last = Some(e);
-                    tokio::time::sleep(delay).await;
-                    delay *= 2;
+        let store = &self.store;
+        self.attempts(
+            Charge::Upload(workspace),
+            Duration::from_millis(500),
+            move || async move {
+                match store.put_bundle_from_file(key, path).await {
+                    // A previous attempt may have landed before its response was lost.
+                    Ok(_) | Err(ArtifactError::AlreadyExists) => Ok(()),
+                    Err(e) => Err(e),
                 }
-                Err(e) => return Err(e.into()),
-            }
-        }
-        Err(last.map(StorageError::from).unwrap_or(StorageError::Budget))
+            },
+        )
+        .await
     }
 
+    /// Deletes an object (garbage collection; Blob deletes are not billed operations).
     pub async fn delete(&self, key: &str) -> Result<(), StorageError> {
         Ok(self.store.delete(key).await?)
     }
@@ -239,6 +311,38 @@ pub struct BundleCache {
     parsed: Mutex<ParsedLru<Arc<RunResult>>>,
     /// Whole-run decodes in progress, keyed by bundle sha256 (single-flight).
     loading: Mutex<HashMap<String, ParsedLoad>>,
+    /// Store fetches in progress, keyed by bundle sha256: concurrent cold reads of one bundle
+    /// wait for the first fetch instead of downloading it again.
+    fetching: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// Every active or waiting reader owns one reference. The last reader removes the map's
+/// reference on success, failure or cancellation, without letting a new reader get a second gate.
+struct FetchFlight<'a> {
+    cache: &'a BundleCache,
+    sha: &'a str,
+    gate: Option<Arc<tokio::sync::Mutex<()>>>,
+}
+
+impl Drop for FetchFlight<'_> {
+    fn drop(&mut self) {
+        let gate = self.gate.take().expect("flight owns its gate until drop");
+        let mut fetching = self
+            .cache
+            .fetching
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if Arc::strong_count(&gate) == 2
+            && fetching
+                .get(self.sha)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &gate))
+        {
+            fetching.remove(self.sha);
+        }
+        // Decrement under the same lock as acquisition and other readers' drops: otherwise two
+        // simultaneous cancellations can both observe another reader and leave the map behind.
+        drop(gate);
+    }
 }
 
 impl BundleCache {
@@ -256,11 +360,21 @@ impl BundleCache {
             clock: Default::default(),
             parsed: Mutex::new(ParsedLru::new()),
             loading: Mutex::new(HashMap::new()),
+            fetching: Mutex::new(HashMap::new()),
         })
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Active or waiting cold bundle fetches (diagnostic for cancellation regressions).
+    #[doc(hidden)]
+    pub fn fetching_len(&self) -> usize {
+        self.fetching
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     fn path(&self, sha256: &str) -> PathBuf {
@@ -394,11 +508,38 @@ pub async fn open_run(
             path
         }
         None => {
-            Metrics::inc(&metrics.artifact_cache_misses_total);
-            fetch_verified(
-                db, storage, cache, metrics, &view, &artifact, &trust, limits,
-            )
-            .await?
+            // Single-flight: the first cold reader fetches; the others wait for it and then find
+            // the bundle cached (a failed fetch leaves it uncached, so the next waiter retries).
+            let flight = FetchFlight {
+                cache,
+                sha: &sha,
+                gate: Some(
+                    cache
+                        .fetching
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .entry(sha.clone())
+                        .or_default()
+                        .clone(),
+                ),
+            };
+            let fetched = {
+                let _turn = flight.gate.as_ref().expect("live flight").lock().await;
+                match cache.touch(&sha) {
+                    Some(path) => {
+                        Metrics::inc(&metrics.artifact_cache_hits_total);
+                        Ok(path)
+                    }
+                    None => {
+                        Metrics::inc(&metrics.artifact_cache_misses_total);
+                        fetch_verified(
+                            db, storage, cache, metrics, &view, &artifact, &trust, limits,
+                        )
+                        .await
+                    }
+                }
+            };
+            fetched?
         }
     };
     Ok(OpenRun {
@@ -424,7 +565,7 @@ pub async fn verified_trailer(
     metrics: &Arc<Metrics>,
     limits: BundleLimits,
     view: &RunView,
-) -> Result<BundleTrailer, ApiError> {
+) -> Result<BundleTrailerCore, ApiError> {
     let artifact = db.artifact(view.run.id).await?;
     let trust = match trust_of(view, &artifact) {
         Ok(trust) => trust,
@@ -446,7 +587,7 @@ pub async fn verified_trailer(
             db: db.clone(),
             metrics: metrics.clone(),
         };
-        return open.trailer().await;
+        return open.trailer_core().await;
     }
     let mut members = Vec::with_capacity(2);
     for member in [&trust.header, &trust.trailer] {
@@ -613,8 +754,14 @@ impl OpenRun {
         .map_err(|e| ApiError::internal(format!("bundle reader panicked: {e}")))
     }
 
+    /// The complete verified trailer, including the analytics report.
     pub async fn trailer(&self) -> Result<BundleTrailer, ApiError> {
         self.read(|reader, path| reader.trailer(path)).await
+    }
+
+    /// The verified trailer without the analytics report (manifest, metrics, engine check).
+    pub async fn trailer_core(&self) -> Result<BundleTrailerCore, ApiError> {
+        self.read(|reader, path| reader.trailer_core(path)).await
     }
 
     /// Page numbers (indices into the trust page index) of one section.

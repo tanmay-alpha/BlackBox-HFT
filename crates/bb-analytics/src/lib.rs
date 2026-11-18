@@ -5,6 +5,7 @@ pub mod execution;
 pub mod l3;
 pub mod market;
 pub mod risk;
+pub mod shadow_queue;
 
 pub const ANALYTICS_VERSION: &str = "1.0.0";
 

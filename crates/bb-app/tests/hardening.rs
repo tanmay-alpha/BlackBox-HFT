@@ -450,10 +450,10 @@ async fn blob_uploads_are_reserved_per_attempt_against_the_workspace_share() {
         fail_puts: AtomicUsize::new(1),
         puts: AtomicUsize::new(0),
     });
-    let storage = bb_app::artifacts::Storage::custom(
+    let storage = bb_app::artifacts::Storage::metered(
         store.clone(),
         "vercel_blob",
-        Some((tdb.pool().await, 1_000_000, i64::MAX)),
+        bb_app::artifacts::ReadBudget::new(tdb.pool().await, 1_000_000, i64::MAX),
     );
     let server = Server::start(
         &tdb,

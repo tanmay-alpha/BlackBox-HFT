@@ -348,7 +348,7 @@ impl GridAxis {
         match self {
             GridAxis::OrderLatencyNs { values }
             | GridAxis::EntryLatencyNs { values }
-            | GridAxis::FeedLatencyOffsetNs { values } => Self::duration_label(values[i]),
+            | GridAxis::FeedLatencyOffsetNs { values } => duration_label(values[i]),
             GridAxis::QueueModel { values } => values[i].label(),
             GridAxis::MakerFee { values } | GridAxis::TakerFee { values } => {
                 // Fee fractions in basis points, rounded to hide binary noise (0.3 bp, not
@@ -356,19 +356,6 @@ impl GridAxis {
                 format!("{} bp", (values[i] * 1e4 * 1e6).round() / 1e6)
             }
         }
-    }
-
-    /// `1500000` -> `"1.5 ms"`: the largest unit that keeps the value exact to three decimals.
-    fn duration_label(ns: i64) -> String {
-        let (scale, unit) = match ns.unsigned_abs() {
-            n if n >= 1_000_000_000 && n % 1_000_000 == 0 => (1e9, "s"),
-            n if n >= 1_000_000 && n % 1_000 == 0 => (1e6, "ms"),
-            n if n >= 1_000 => (1e3, "us"),
-            _ => (1.0, "ns"),
-        };
-        let v = ns as f64 / scale;
-        let s = format!("{v:.3}");
-        format!("{} {unit}", s.trim_end_matches('0').trim_end_matches('.'))
     }
 
     /// Returns `config` with this axis' `i`-th value applied.
@@ -393,6 +380,19 @@ impl GridAxis {
         }
         c
     }
+}
+
+/// `1500000` -> `"1.5 ms"`: the largest unit that keeps the value exact to three decimals.
+pub fn duration_label(ns: i64) -> String {
+    let (scale, unit) = match ns.unsigned_abs() {
+        n if n >= 1_000_000_000 && n % 1_000_000 == 0 => (1e9, "s"),
+        n if n >= 1_000_000 && n % 1_000 == 0 => (1e6, "ms"),
+        n if n >= 1_000 => (1e3, "us"),
+        _ => (1.0, "ns"),
+    };
+    let v = ns as f64 / scale;
+    let s = format!("{v:.3}");
+    format!("{} {unit}", s.trim_end_matches('0').trim_end_matches('.'))
 }
 
 /// A bounded two-dimensional sweep around a base configuration.

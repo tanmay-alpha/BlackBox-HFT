@@ -17,6 +17,7 @@
 pub mod book;
 pub mod decode;
 pub mod l2;
+pub mod report;
 
 #[cfg(test)]
 mod tests;

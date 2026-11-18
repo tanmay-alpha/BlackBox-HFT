@@ -19,6 +19,7 @@ openapi = ["dep:utoipa", "bb-core/openapi"]
 [dev-dependencies]
 bb-app = { path = "../bb-app" }
 bb-sim.workspace = true
+hftbacktest.workspace = true
 bb-strategies.workspace = true
 bb-forensics.workspace = true
 serde_json.workspace = true
