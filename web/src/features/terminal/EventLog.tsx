@@ -10,21 +10,10 @@ import { usePhone } from '../../components/PaneTabs';
 import { Toolbar } from '../../components/Toolbar';
 import { Badge, ClockText } from '../../components/ui';
 import { eventSummary, eventTitle } from '../forensics/eventFormat';
+import { lastEventAtOrBefore } from './timelinePaging';
 
 const BEFORE = 12;
 const AFTER = 24;
-
-/** Index of the last event with `ts <= t` in `events` sorted by `ts`, or -1. */
-export function lastEventAtOrBefore(events: FlightEvent[], t: number): number {
-  let lo = 0;
-  let hi = events.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (events[mid].ts <= t) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo - 1;
-}
 
 export interface EventLogProps {
   /** Filtered events, sorted by `ts` then `seq`. */

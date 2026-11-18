@@ -205,7 +205,7 @@ export function TerminalHeatmap({
           <span className="legend-line legend-line-ask" aria-hidden="true" /> best ask
         </span>
         <span>
-          <span className="legend-dot legend-dot-buy" aria-hidden="true" /> market trade (observed)
+          <span className="legend-dot legend-dot-buy" aria-hidden="true" /> market trade (source data)
         </span>
         <span>
           <span className="term-swatch-order term-swatch-bid" aria-hidden="true" />

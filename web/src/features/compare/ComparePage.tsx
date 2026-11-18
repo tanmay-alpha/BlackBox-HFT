@@ -23,7 +23,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { fmtDuration, fmtInt, fmtNum, fmtPrice, fmtQty, fmtSigned } from "../../components/fmt";
 import { pathLabel, runLabelText, unitLabel, useDemoTitles, valueLabel } from "../../components/labels";
 import { fmtNsUtc } from "../../components/ns";
-import { Badge, Empty, ErrorBox, HashText, Notice, Panel, Pill, Spinner, useAsync } from "../../components/ui";
+import { Badge, BasisBadge, Empty, ErrorBox, HashText, Notice, Panel, Pill, Spinner, useAsync } from "../../components/ui";
 import { GatedButton } from "../../shell/access";
 import { paths } from "../../shell/paths";
 import { ClockText, EvidenceLegend } from "../forensics/evidence";
@@ -524,7 +524,7 @@ function ComparisonBody({ cmp, runs }: { cmp: Comparison; runs: [RunDetail, RunD
             <ul className="cmp-notes" aria-label="Interpretation">
               {cmp.interpretation.map((note, i) => (
                 <li key={i}>
-                  <Badge kind={note.basis}>{note.basis}</Badge>
+                  <BasisBadge basis={note.basis} />
                   <span>{readableNote(note.statement, instA !== null && instB !== null && instA.tick_size === instB.tick_size ? instA : null)}</span>
                 </li>
               ))}

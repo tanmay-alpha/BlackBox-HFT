@@ -529,9 +529,12 @@ Anonymous: `{"mode":"demo","workspace":{"slug":"demo",…,"kind":"demo"},"key":n
   "retired_at_ns": null, "manifest": DatasetManifest /* detail only */ }
 
 // Report
-{ "id": "01a1…", "kind": "run", "subject_id": "136d41410c6b23f1", "title": "…", "generator_version": 1,
+{ "id": "01a1…", "kind": "run", "subject_id": "136d41410c6b23f1", "title": "…", "generator_version": 2,
   "format": "markdown", "body_sha256": "…", "size_bytes": 18234, "created_at_ns": "…" }
 ```
+
+`generator_version` 2 (Phase 7) is the evidence-structured report format of
+[../research/REPORT_FORMAT.md](../research/REPORT_FORMAT.md); stored version-1 reports keep their bytes.
 
 `Experiment.status` is `completed` when a live run exists for its identity. Otherwise it is the job's state, or
 `detached` when the job row was retired by retention without a run (the UI offers "Re-submit").

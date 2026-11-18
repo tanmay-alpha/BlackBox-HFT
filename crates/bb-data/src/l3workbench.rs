@@ -6,7 +6,7 @@ use crate::{
     Event,
     itch::{
         self, FrameSink, ItchManifest, ItchOptions, Reconstructor, SourceFile, Stop,
-        book::{Change, OrderBooks, OrderView},
+        book::{Change, OrderBooks, OrderView, QueuedOrder},
         decode::{self, AddOrder, FrameReader, Header, Message, Price4, Side, Stock},
     },
 };
@@ -25,6 +25,15 @@ pub const MAX_CHECKPOINT_INTERVAL: usize = 4_096;
 const MAX_CHECKPOINT_ORDERS: usize = 1_000_000;
 const MIN_SNAPSHOT_SPACING: usize = 32;
 const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+/// Event-detail bounds: depth levels per side and listed orders per level.
+pub const MAX_DETAIL_LEVELS: usize = 10;
+pub const MAX_DETAIL_ORDERS: usize = 100;
+/// Same-timestamp events listed in an event detail (the most recent ones up to the event).
+const MAX_SAME_TS_EVENTS: usize = 32;
+const EXAMPLE_MIN_QUEUE: u32 = 6;
+const EXAMPLE_MIN_SAME_TS: usize = 3;
+/// Curated examples start once each side of the book holds this many resting orders.
+const EXAMPLE_WARM_ORDERS: u64 = 100;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct EventRecord {
@@ -92,6 +101,113 @@ pub struct BookOrder {
     pub shares_ahead: u64,
     pub entered_ns: Option<String>,
     pub entered_event_index: u64,
+}
+
+/// One resting order in a compact FIFO depth view; its queue position is its array index + 1.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueueSlot {
+    pub order_ref: String,
+    pub shares: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DepthLevel {
+    pub price4: u32,
+    pub shares: u64,
+    pub order_count: u32,
+    pub orders: Vec<QueueSlot>,
+    pub orders_truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Depth {
+    pub bids: Vec<DepthLevel>,
+    pub asks: Vec<DepthLevel>,
+}
+
+/// A price level the event changed, complete before and after the event. `role` is `order`, or
+/// for a replace `replaced` (same price), `replaced_from` and `replaced_to`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AffectedLevel {
+    pub side: String,
+    pub price4: u32,
+    pub role: String,
+    pub before: BookLevel,
+    pub after: BookLevel,
+}
+
+/// One resting order's place in its price queue at one instant. `age_ns` is the event timestamp
+/// minus the order's accepted add/replace timestamp.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrderPosition {
+    pub order_ref: String,
+    pub side: String,
+    pub price4: u32,
+    pub shares: u64,
+    pub queue_position: u32,
+    pub level_orders: u32,
+    pub shares_ahead: u64,
+    pub level_shares: u64,
+    pub entered_ns: Option<String>,
+    pub entered_event_index: u64,
+    pub age_ns: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LevelChange {
+    pub side: String,
+    pub price4: u32,
+    pub before_shares: u64,
+    pub after_shares: u64,
+    pub before_orders: u32,
+    pub after_orders: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SameTimestampEvent {
+    pub event_index: u64,
+    pub message_type: String,
+    pub applied: String,
+    pub level_changes: Vec<LevelChange>,
+}
+
+/// Events up to and including the selected one that share its source timestamp, in source order.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SameTimestamp {
+    pub ts_ns: Option<String>,
+    /// One-based position of the selected event among them.
+    pub position: u32,
+    pub first_event_index: u64,
+    pub events: Vec<SameTimestampEvent>,
+    /// Earlier same-timestamp events exist beyond the listed ones.
+    pub events_truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EventDetail {
+    pub event: EventRecord,
+    /// The `before` state is after this frame (`None`: before the first frame).
+    pub before_event_index: Option<u64>,
+    pub levels: usize,
+    pub orders_per_level: usize,
+    pub before: Depth,
+    pub after: Depth,
+    pub affected: Vec<AffectedLevel>,
+    /// The resting order an E/C/X/D/U message referenced, before the event.
+    pub order_before: Option<OrderPosition>,
+    /// The added, replacing, or still-resting referenced order after the event.
+    pub order_after: Option<OrderPosition>,
+    /// Completed lifetime when this event removed or replaced the referenced order.
+    pub lifetime_ns: Option<String>,
+    pub same_timestamp: SameTimestamp,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CuratedExample {
+    pub id: String,
+    pub title: String,
+    pub event_index: u64,
+    pub rule: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -186,13 +302,30 @@ impl Workbench {
         if !(1..=20).contains(&levels) || !(1..=100).contains(&orders_per_level) {
             return Err("levels must be 1..20 and orders_per_level must be 1..100".into());
         }
-        let index = usize::try_from(event_index).map_err(|_| "event index out of range")?;
-        if index >= self.source_frames.len() {
-            return Err("event index out of range".into());
-        }
+        let index = self.frame_index(event_index)?;
+        let (books, births) = self.replay(index + 1)?;
+        Ok(BookSnapshot {
+            event_index,
+            ts_ns: frame_ts(&self.source_frames[index].bytes).map(|t| t.to_string()),
+            levels,
+            bids: self.book_side(&books, &births, Side::Buy, levels, orders_per_level),
+            asks: self.book_side(&books, &births, Side::Sell, levels, orders_per_level),
+        })
+    }
+
+    fn frame_index(&self, event_index: u64) -> Result<usize, String> {
+        usize::try_from(event_index)
+            .ok()
+            .filter(|&index| index < self.source_frames.len())
+            .ok_or_else(|| "event index out of range".into())
+    }
+
+    /// Selected-symbol state after the first `frames` physical source frames (0: before any).
+    /// Reads no frame at or beyond `frames`.
+    fn replay(&self, frames: usize) -> Result<(OrderBooks, HashMap<u64, Birth>), String> {
         let cp_index = self
             .checkpoints
-            .partition_point(|c| c.frame_count <= index + 1)
+            .partition_point(|c| c.frame_count <= frames)
             - 1;
         let cp = &self.checkpoints[cp_index];
         let mut books = OrderBooks::new();
@@ -224,7 +357,7 @@ impl Workbench {
                 },
             );
         }
-        for (offset, source) in self.source_frames[cp.frame_count..index + 1]
+        for (offset, source) in self.source_frames[cp.frame_count..frames]
             .iter()
             .enumerate()
         {
@@ -239,51 +372,478 @@ impl Workbench {
                 );
             }
         }
-        let side = |side| -> Vec<BookLevel> {
+        Ok((books, births))
+    }
+
+    fn book_side(
+        &self,
+        books: &OrderBooks,
+        births: &HashMap<u64, Birth>,
+        side: Side,
+        levels: usize,
+        orders_per_level: usize,
+    ) -> Vec<BookLevel> {
+        books
+            .top_levels(self.locate, side, levels)
+            .into_iter()
+            .map(|level| {
+                let queue =
+                    books.level_queue_prefix(self.locate, side, level.price, orders_per_level);
+                let mut ahead = 0;
+                let orders = queue
+                    .iter()
+                    .enumerate()
+                    .map(|(i, order)| {
+                        let row = book_order(births, order, i, ahead);
+                        ahead += u64::from(order.shares);
+                        row
+                    })
+                    .collect();
+                BookLevel {
+                    price4: level.price.0,
+                    shares: level.shares,
+                    order_count: level.orders,
+                    orders,
+                    orders_truncated: level.orders as usize > orders_per_level,
+                }
+            })
+            .collect()
+    }
+
+    fn depth(&self, books: &OrderBooks, levels: usize, orders_per_level: usize) -> Depth {
+        let side = |side| {
             books
                 .top_levels(self.locate, side, levels)
                 .into_iter()
-                .map(|level| {
-                    let queue =
-                        books.level_queue_prefix(self.locate, side, level.price, orders_per_level);
-                    let mut ahead = 0;
-                    let orders = queue
-                        .iter()
-                        .take(orders_per_level)
-                        .enumerate()
-                        .map(|(i, order)| {
-                            let birth = births
-                                .get(&order.order_ref)
-                                .expect("every accepted resting order has a creator");
-                            let row = BookOrder {
-                                order_ref: order.order_ref.to_string(),
-                                shares: u64::from(order.shares),
-                                queue_position: i as u32 + 1,
-                                shares_ahead: ahead,
-                                entered_ns: birth.ts.map(|ts| ts.to_string()),
-                                entered_event_index: birth.event_index,
-                            };
-                            ahead += u64::from(order.shares);
-                            row
+                .map(|level| DepthLevel {
+                    price4: level.price.0,
+                    shares: level.shares,
+                    order_count: level.orders,
+                    orders: books
+                        .level_queue_prefix(self.locate, side, level.price, orders_per_level)
+                        .into_iter()
+                        .map(|o| QueueSlot {
+                            order_ref: o.order_ref.to_string(),
+                            shares: u64::from(o.shares),
                         })
-                        .collect();
-                    BookLevel {
-                        price4: level.price.0,
-                        shares: level.shares,
-                        order_count: level.orders,
-                        orders,
-                        orders_truncated: level.orders as usize > orders_per_level,
-                    }
+                        .collect(),
+                    orders_truncated: level.orders as usize > orders_per_level,
                 })
                 .collect()
         };
-        Ok(BookSnapshot {
-            event_index,
-            ts_ns: frame_ts(&self.source_frames[index].bytes).map(|t| t.to_string()),
-            levels,
+        Depth {
             bids: side(Side::Buy),
             asks: side(Side::Sell),
+        }
+    }
+
+    /// One complete price level: the first `limit` FIFO orders plus every order in `include`,
+    /// with exact queue positions and shares ahead computed over the whole queue.
+    fn level_detail(
+        &self,
+        books: &OrderBooks,
+        births: &HashMap<u64, Birth>,
+        side: Side,
+        price: Price4,
+        limit: usize,
+        include: &[u64],
+    ) -> BookLevel {
+        let queue = books.level_queue(self.locate, side, price);
+        let mut ahead = 0;
+        let mut orders = Vec::with_capacity(queue.len().min(limit + include.len()));
+        for (i, order) in queue.iter().enumerate() {
+            if i < limit || include.contains(&order.order_ref) {
+                orders.push(book_order(births, order, i, ahead));
+            }
+            ahead += u64::from(order.shares);
+        }
+        BookLevel {
+            price4: price.0,
+            shares: ahead,
+            order_count: queue.len() as u32,
+            orders_truncated: orders.len() < queue.len(),
+            orders,
+        }
+    }
+
+    fn level_totals(&self, books: &OrderBooks, side: Side, price: Price4) -> (u64, u32) {
+        books
+            .level_queue_prefix(self.locate, side, price, usize::MAX)
+            .iter()
+            .fold((0, 0), |(shares, orders), o| {
+                (shares + u64::from(o.shares), orders + 1)
+            })
+    }
+
+    fn order_position(
+        &self,
+        books: &OrderBooks,
+        births: &HashMap<u64, Birth>,
+        order_ref: u64,
+        at_ns: Option<u64>,
+    ) -> Option<OrderPosition> {
+        let queue = books.observed_queue(order_ref)?;
+        let birth = births.get(&order_ref).copied();
+        let entered = birth.and_then(|b| b.ts);
+        Some(OrderPosition {
+            order_ref: order_ref.to_string(),
+            side: side_name(queue.order.side).into(),
+            price4: queue.order.price.0,
+            shares: u64::from(queue.order.shares),
+            queue_position: queue.ahead.len() as u32 + 1,
+            level_orders: queue.level_orders,
+            shares_ahead: queue.shares_ahead,
+            level_shares: queue.level_shares,
+            entered_ns: entered.map(|t| t.to_string()),
+            entered_event_index: birth.map_or(0, |b| b.event_index),
+            age_ns: at_ns
+                .zip(entered)
+                .and_then(|(at, entered)| at.checked_sub(entered))
+                .map(|ns| ns.to_string()),
         })
+    }
+
+    /// The book immediately before (after frame `i - 1`) and after (frame `i`) one selected-symbol
+    /// event, from a single forward replay that reads no frame beyond `i`: a later message,
+    /// including a later message with the same timestamp, never affects the result.
+    /// `Ok(None)` when the frame belongs to another symbol.
+    pub fn event_detail(
+        &self,
+        event_index: u64,
+        levels: usize,
+        orders_per_level: usize,
+    ) -> Result<Option<EventDetail>, String> {
+        if !(1..=MAX_DETAIL_LEVELS).contains(&levels)
+            || !(1..=MAX_DETAIL_ORDERS).contains(&orders_per_level)
+        {
+            return Err(format!(
+                "levels must be 1..{MAX_DETAIL_LEVELS} and orders_per_level must be 1..{MAX_DETAIL_ORDERS}"
+            ));
+        }
+        let index = self.frame_index(event_index)?;
+        let Ok(position) = self
+            .events
+            .binary_search_by_key(&event_index, |e| e.event_index)
+        else {
+            return Ok(None);
+        };
+        let event = &self.events[position];
+        let ts = event.ts_ns.as_deref().and_then(|s| s.parse::<u64>().ok());
+        let mut first = position;
+        if event.ts_ns.is_some() {
+            while first > 0 && self.events[first - 1].ts_ns == event.ts_ns {
+                first -= 1;
+            }
+        }
+        let listed_from = first.max((position + 1).saturating_sub(MAX_SAME_TS_EVENTS));
+        let listed = &self.events[listed_from..=position];
+        let start = listed[0].event_index as usize;
+        let (mut books, mut births) = self.replay(start)?;
+        let mut same_ts = Vec::with_capacity(listed.len());
+        let mut pending = listed.iter().peekable();
+        let parse_ref = |s: &Option<String>| s.as_deref().and_then(|s| s.parse::<u64>().ok());
+        let kind = event.message_type.as_str();
+        let old_ref = parse_ref(&event.order_ref);
+        let new_ref = parse_ref(&event.new_order_ref);
+        let mut detail = None;
+        for frame in start..=index {
+            let source = &self.source_frames[frame];
+            let listed_event = pending.next_if(|e| e.event_index == frame as u64);
+            let message = if source.accepted_book {
+                Some(decode::decode(&source.bytes).map_err(|e| e.to_string())?)
+            } else {
+                None
+            };
+            let touched = message
+                .as_ref()
+                .map(|m| touched_levels(&books, m))
+                .unwrap_or_default();
+            let pre_totals: Vec<_> = touched
+                .iter()
+                .map(|&(side, price, _)| self.level_totals(&books, side, price))
+                .collect();
+            let mut before = None;
+            if frame == index {
+                let include: Vec<u64> = old_ref.into_iter().chain(new_ref).collect();
+                let order_before = if matches!(kind, "E" | "C" | "X" | "D" | "U") {
+                    old_ref.and_then(|id| self.order_position(&books, &births, id, ts))
+                } else {
+                    None
+                };
+                let levels_before: Vec<_> = touched
+                    .iter()
+                    .map(|&(side, price, _)| {
+                        self.level_detail(&books, &births, side, price, orders_per_level, &include)
+                    })
+                    .collect();
+                before = Some((
+                    self.depth(&books, levels, orders_per_level),
+                    levels_before,
+                    order_before,
+                    include,
+                ));
+            }
+            if let Some(message) = &message {
+                books.apply(message);
+                update_births(&mut births, &books, message, frame as u64);
+            }
+            if let Some(listed_event) = listed_event {
+                same_ts.push(SameTimestampEvent {
+                    event_index: listed_event.event_index,
+                    message_type: listed_event.message_type.clone(),
+                    applied: listed_event.applied.clone(),
+                    level_changes: touched
+                        .iter()
+                        .zip(&pre_totals)
+                        .map(|(&(side, price, _), &(before_shares, before_orders))| {
+                            let (after_shares, after_orders) =
+                                self.level_totals(&books, side, price);
+                            LevelChange {
+                                side: side_name(side).into(),
+                                price4: price.0,
+                                before_shares,
+                                after_shares,
+                                before_orders,
+                                after_orders,
+                            }
+                        })
+                        .collect(),
+                });
+            }
+            if let Some((depth_before, levels_before, order_before, include)) = before {
+                let accepted = message.is_some();
+                let after_ref = match kind {
+                    "A" | "F" if accepted => old_ref,
+                    "U" if accepted => new_ref,
+                    "E" | "C" | "X" | "D" | "U" => old_ref,
+                    _ => None,
+                };
+                let order_after =
+                    after_ref.and_then(|id| self.order_position(&books, &births, id, ts));
+                let terminal = accepted
+                    && order_before.is_some()
+                    && (kind == "U" || old_ref.is_some_and(|id| books.order(id).is_none()));
+                let lifetime_ns = order_before
+                    .as_ref()
+                    .filter(|_| terminal)
+                    .and_then(|o| ts?.checked_sub(o.entered_ns.as_deref()?.parse().ok()?))
+                    .map(|ns| ns.to_string());
+                let affected = touched
+                    .iter()
+                    .zip(levels_before)
+                    .map(|(&(side, price, role), before)| AffectedLevel {
+                        side: side_name(side).into(),
+                        price4: price.0,
+                        role: role.into(),
+                        before,
+                        after: self.level_detail(
+                            &books,
+                            &births,
+                            side,
+                            price,
+                            orders_per_level,
+                            &include,
+                        ),
+                    })
+                    .collect();
+                detail = Some(EventDetail {
+                    event: event.clone(),
+                    before_event_index: event_index.checked_sub(1),
+                    levels,
+                    orders_per_level,
+                    before: depth_before,
+                    after: self.depth(&books, levels, orders_per_level),
+                    affected,
+                    order_before,
+                    order_after,
+                    lifetime_ns,
+                    same_timestamp: SameTimestamp {
+                        ts_ns: event.ts_ns.clone(),
+                        position: (position - first + 1) as u32,
+                        first_event_index: self.events[first].event_index,
+                        events: Vec::new(),
+                        events_truncated: listed_from > first,
+                    },
+                });
+            }
+        }
+        Ok(detail.map(|mut d| {
+            d.same_timestamp.events = same_ts;
+            d
+        }))
+    }
+
+    /// Deterministic illustrative events, each the earliest accepted event in source order with
+    /// the property its `rule` states. Selection reads the whole session; the detail view of each
+    /// example remains causal.
+    pub fn curated_examples(&self) -> Result<Vec<CuratedExample>, String> {
+        let mut books = OrderBooks::new();
+        let mut found: [Option<u64>; 4] = [None; 4];
+        let mut warm_from = None;
+        for (index, source) in self.source_frames.iter().enumerate() {
+            if found.iter().all(Option::is_some) {
+                break;
+            }
+            if !source.accepted_book {
+                continue;
+            }
+            let message = decode::decode(&source.bytes).map_err(|e| e.to_string())?;
+            if warm_from.is_none() {
+                let (_, bids) = books.side_totals(self.locate, Side::Buy);
+                let (_, asks) = books.side_totals(self.locate, Side::Sell);
+                if bids.min(asks) >= EXAMPLE_WARM_ORDERS {
+                    warm_from = Some(index as u64);
+                } else {
+                    books.apply(&message);
+                    continue;
+                }
+            }
+            let pre = match &message {
+                Message::AddOrder(_) | Message::Trade(_) => None,
+                m => order_reference(m).and_then(|id| books.observed_queue(id)),
+            };
+            let touch = |books: &OrderBooks, side| {
+                if side == Side::Buy {
+                    books.best_bid(self.locate)
+                } else {
+                    books.best_ask(self.locate)
+                }
+                .map(|l| l.price)
+            };
+            let pre_touch = pre.as_ref().and_then(|q| touch(&books, q.order.side));
+            let at_touch = pre
+                .as_ref()
+                .is_some_and(|q| Some(q.order.price) == pre_touch);
+            let replace_target = match &message {
+                Message::OrderReplace(m) => pre.as_ref().map(|q| {
+                    m.price != q.order.price
+                        && !books
+                            .level_queue_prefix(self.locate, q.order.side, m.price, 1)
+                            .is_empty()
+                }),
+                _ => None,
+            };
+            books.apply(&message);
+            let Some(q) = pre else { continue };
+            let position = q.ahead.len() as u32 + 1;
+            let remains = books.order(q.order.order_ref).is_some();
+            let deep = q.level_orders >= EXAMPLE_MIN_QUEUE;
+            let slot = match &message {
+                Message::OrderDelete(_)
+                    if at_touch && deep && position > 1 && position < q.level_orders =>
+                {
+                    Some(0)
+                }
+                Message::OrderExecuted(_) | Message::OrderExecutedWithPrice(_)
+                    if at_touch && deep && remains =>
+                {
+                    Some(1)
+                }
+                Message::OrderReplace(_)
+                    if deep && position < q.level_orders && replace_target == Some(true) =>
+                {
+                    Some(2)
+                }
+                Message::OrderDelete(_)
+                | Message::OrderExecuted(_)
+                | Message::OrderExecutedWithPrice(_)
+                    if at_touch
+                        && q.level_orders == 1
+                        && !remains
+                        && touch(&books, q.order.side).is_some_and(|t| Some(t) != pre_touch) =>
+                {
+                    Some(3)
+                }
+                _ => None,
+            };
+            if let Some(slot) = slot
+                && found[slot].is_none()
+            {
+                found[slot] = Some(index as u64);
+            }
+        }
+        // Same-timestamp sequence: the last event of the first maximal run of consecutive
+        // selected-symbol events sharing one timestamp, all with accepted book effects.
+        let mut same_ts = None;
+        let mut run_start = 0;
+        for i in 1..=self.events.len() {
+            let continues = i < self.events.len()
+                && self.events[i].ts_ns.is_some()
+                && self.events[i].ts_ns == self.events[run_start].ts_ns;
+            if continues {
+                continue;
+            }
+            let run = &self.events[run_start..i];
+            let mut kinds: Vec<&str> = run.iter().map(|e| e.message_type.as_str()).collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            if warm_from.is_some_and(|warm| run[0].event_index >= warm)
+                && run
+                    .last()
+                    .is_some_and(|e| !found.contains(&Some(e.event_index)))
+                && run.len() >= EXAMPLE_MIN_SAME_TS
+                && run.iter().all(|e| e.applied == "book")
+                && kinds.len() >= 2
+            {
+                same_ts = run.last().map(|e| e.event_index);
+                break;
+            }
+            run_start = i;
+        }
+        let (q, warm) = (EXAMPLE_MIN_QUEUE, EXAMPLE_WARM_ORDERS);
+        let specs = [
+            (
+                "cancel-ahead",
+                "Cancel ahead of other orders",
+                found[0],
+                format!(
+                    "First accepted D (delete), once each side holds at least {warm} resting orders, of an order at the pre-event best price of its side whose queue holds at least {q} orders, with at least one order ahead of it and one behind it."
+                ),
+            ),
+            (
+                "partial-execution",
+                "Partial execution at the touch",
+                found[1],
+                format!(
+                    "First accepted E/C execution, once each side holds at least {warm} resting orders, at the pre-event best price of its side in a queue of at least {q} orders, after which the executed order still rests."
+                ),
+            ),
+            (
+                "replace",
+                "Replace loses queue priority",
+                found[2],
+                format!(
+                    "First accepted U (replace), once each side holds at least {warm} resting orders, to a different price that already has resting orders, of an order with at least one order behind it in a queue of at least {q} orders."
+                ),
+            ),
+            (
+                "same-timestamp",
+                "Same-timestamp sequence",
+                same_ts,
+                format!(
+                    "Last event of the first run, starting once each side holds at least {warm} resting orders, of at least {EXAMPLE_MIN_SAME_TS} consecutive events with one source timestamp, all with accepted book effects and at least 2 message types, whose last event is not one of the other examples."
+                ),
+            ),
+            (
+                "level-change",
+                "Touch level removed",
+                found[3],
+                format!(
+                    "First accepted D/E/C, once each side holds at least {warm} resting orders, that removes the only order at the pre-event best price of its side, after which that side's best price is another existing level."
+                ),
+            ),
+        ];
+        Ok(specs
+            .into_iter()
+            .filter_map(|(id, title, index, rule)| {
+                index.map(|event_index| CuratedExample {
+                    id: id.into(),
+                    title: title.into(),
+                    event_index,
+                    rule,
+                })
+            })
+            .collect())
     }
 
     /// Creates a new directory with a self-contained JSON artifact. Local artifacts are always
@@ -709,6 +1269,49 @@ fn fill_event(event: &mut EventRecord, message: &Message<'_>, pre: Option<OrderV
     }
 }
 
+fn book_order(
+    births: &HashMap<u64, Birth>,
+    order: &QueuedOrder,
+    index: usize,
+    shares_ahead: u64,
+) -> BookOrder {
+    let birth = births
+        .get(&order.order_ref)
+        .expect("every accepted resting order has a creator");
+    BookOrder {
+        order_ref: order.order_ref.to_string(),
+        shares: u64::from(order.shares),
+        queue_position: index as u32 + 1,
+        shares_ahead,
+        entered_ns: birth.ts.map(|ts| ts.to_string()),
+        entered_event_index: birth.event_index,
+    }
+}
+
+/// Price levels an accepted message changes, resolved against the pre-event book.
+fn touched_levels(books: &OrderBooks, message: &Message<'_>) -> Vec<(Side, Price4, &'static str)> {
+    match message {
+        Message::AddOrder(m) => vec![(m.side, m.price, "order")],
+        Message::OrderReplace(m) => books.order(m.original_ref).map_or_else(Vec::new, |o| {
+            if o.price == m.price {
+                vec![(o.side, o.price, "replaced")]
+            } else {
+                vec![
+                    (o.side, o.price, "replaced_from"),
+                    (o.side, m.price, "replaced_to"),
+                ]
+            }
+        }),
+        Message::OrderExecuted(_)
+        | Message::OrderExecutedWithPrice(_)
+        | Message::OrderCancel(_)
+        | Message::OrderDelete(_) => order_reference(message)
+            .and_then(|id| books.order(id))
+            .map_or_else(Vec::new, |o| vec![(o.side, o.price, "order")]),
+        _ => Vec::new(),
+    }
+}
+
 fn update_births(
     births: &mut HashMap<u64, Birth>,
     books: &OrderBooks,
@@ -994,5 +1597,353 @@ mod tests {
         );
         assert_eq!(w.book(17, 5, 20).unwrap().asks[0].shares, 80);
         assert_eq!(w.observations.last().unwrap().live_orders, 1);
+    }
+
+    fn depth_of(levels: &[BookLevel]) -> Vec<DepthLevel> {
+        levels
+            .iter()
+            .map(|l| DepthLevel {
+                price4: l.price4,
+                shares: l.shares,
+                order_count: l.order_count,
+                orders: l
+                    .orders
+                    .iter()
+                    .map(|o| QueueSlot {
+                        order_ref: o.order_ref.clone(),
+                        shares: o.shares,
+                    })
+                    .collect(),
+                orders_truncated: l.orders_truncated,
+            })
+            .collect()
+    }
+
+    fn frame_prefix(bytes: &[u8], frames: usize) -> &[u8] {
+        let mut end = 0;
+        for _ in 0..frames {
+            end += 2 + usize::from(u16::from_be_bytes([bytes[end], bytes[end + 1]]));
+        }
+        &bytes[..end]
+    }
+
+    #[test]
+    fn event_detail_hand_computed_partial_cancel_execution_replace_and_bounds() {
+        let w = Workbench::from_bytes("fixture", &fixture(), "TEST", 32).unwrap();
+        // #7: X cancels 50 of order 2 (200 shares, second of three at 10.0000).
+        let d = w.event_detail(7, 5, 100).unwrap().unwrap();
+        assert_eq!(d.event.message_type, "X");
+        assert_eq!(d.before_event_index, Some(6));
+        let before = d.order_before.as_ref().unwrap();
+        assert_eq!(
+            (
+                before.order_ref.as_str(),
+                before.shares,
+                before.queue_position,
+                before.level_orders,
+                before.shares_ahead,
+                before.level_shares,
+            ),
+            ("2", 200, 2, 3, 90, 590)
+        );
+        assert_eq!(before.age_ns.as_deref(), Some("30"));
+        let after = d.order_after.as_ref().unwrap();
+        assert_eq!(
+            (after.shares, after.queue_position, after.shares_ahead),
+            (150, 2, 90)
+        );
+        assert_eq!(d.lifetime_ns, None);
+        assert_eq!(d.affected.len(), 1);
+        let level = &d.affected[0];
+        assert_eq!(
+            (level.side.as_str(), level.price4, level.role.as_str()),
+            ("buy", 100_000, "order")
+        );
+        assert_eq!((level.before.shares, level.after.shares), (590, 540));
+        assert_eq!(level.before.orders[2].shares_ahead, 290);
+        assert_eq!(level.after.orders[2].shares_ahead, 240);
+        assert_eq!(d.same_timestamp.position, 1);
+        assert_eq!(
+            d.same_timestamp.events[0].level_changes,
+            vec![LevelChange {
+                side: "buy".into(),
+                price4: 100_000,
+                before_shares: 590,
+                after_shares: 540,
+                before_orders: 3,
+                after_orders: 3,
+            }]
+        );
+        // #9: C executes the remaining 90 of order 1 at the head: terminal, lifetime 70 - 10.
+        let d = w.event_detail(9, 5, 100).unwrap().unwrap();
+        assert_eq!(d.order_before.as_ref().unwrap().queue_position, 1);
+        assert!(d.order_after.is_none());
+        assert_eq!(d.lifetime_ns.as_deref(), Some("60"));
+        assert_eq!(d.affected[0].after.order_count, 2);
+        // #11: U replaces order 2 (alone at 10.0000) by order 5 at 9.9000: two levels change,
+        // the old lifetime ends and the new order starts at the back of its new queue.
+        let d = w.event_detail(11, 5, 100).unwrap().unwrap();
+        let roles: Vec<_> = d
+            .affected
+            .iter()
+            .map(|l| (l.role.as_str(), l.price4, l.before.shares, l.after.shares))
+            .collect();
+        assert_eq!(
+            roles,
+            vec![
+                ("replaced_from", 100_000, 150, 0),
+                ("replaced_to", 99_000, 0, 75)
+            ]
+        );
+        assert_eq!(d.lifetime_ns.as_deref(), Some("70"));
+        let after = d.order_after.as_ref().unwrap();
+        assert_eq!(
+            (
+                after.order_ref.as_str(),
+                after.queue_position,
+                after.entered_event_index,
+                after.age_ns.as_deref()
+            ),
+            ("5", 1, 11, Some("0"))
+        );
+        // #0 has no earlier state; quarantined messages change nothing and name no new order.
+        let d = w.event_detail(0, 5, 100).unwrap().unwrap();
+        assert_eq!(d.before_event_index, None);
+        assert!(d.before.bids.is_empty() && d.after.bids.is_empty());
+        for index in [14, 15] {
+            let d = w.event_detail(index, 5, 100).unwrap().unwrap();
+            assert_eq!(d.event.applied, "quarantined");
+            assert!(d.affected.is_empty() && d.order_after.is_none());
+            assert_eq!(d.before, d.after);
+        }
+        // Truncation keeps the selected order and says so.
+        let d = w.event_detail(7, 5, 1).unwrap().unwrap();
+        let level = &d.affected[0].before;
+        assert!(level.orders_truncated);
+        assert_eq!(
+            level
+                .orders
+                .iter()
+                .map(|o| o.queue_position)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(d.before.bids[0].orders_truncated);
+        assert_eq!(d.before.bids[0].orders.len(), 1);
+        assert!(w.event_detail(16, 5, 20).is_err());
+        assert!(w.event_detail(0, 11, 20).is_err());
+        assert!(w.event_detail(0, 5, 101).is_err());
+    }
+
+    #[test]
+    fn event_detail_is_causal_and_agrees_with_book_and_observations() {
+        let bytes = l3synth::generate(&L3SynthConfig {
+            events: 400,
+            ..Default::default()
+        })
+        .unwrap();
+        let w = Workbench::from_bytes("seed7", &bytes, "SYNTH", 32).unwrap();
+        let mut same_ts_checked = 0;
+        for (k, event) in w.events.iter().enumerate() {
+            let i = event.event_index;
+            let d = w.event_detail(i, 10, 100).unwrap().unwrap();
+            assert_eq!(&d.event, event);
+            let after = w.book(i, 10, 100).unwrap();
+            assert_eq!(d.after.bids, depth_of(&after.bids));
+            assert_eq!(d.after.asks, depth_of(&after.asks));
+            if let Some(previous) = i.checked_sub(1) {
+                let before = w.book(previous, 10, 100).unwrap();
+                assert_eq!(d.before.bids, depth_of(&before.bids));
+                assert_eq!(d.before.asks, depth_of(&before.asks));
+            }
+            let o = &w.observations[k];
+            assert_eq!(
+                d.lifetime_ns,
+                o.lifetime_ns.map(|ns| ns.to_string()),
+                "#{i}"
+            );
+            if o.executed_queue_position.is_some() {
+                assert_eq!(
+                    d.order_before.as_ref().map(|q| q.queue_position),
+                    o.executed_queue_position
+                );
+            }
+            for level in &d.affected {
+                for state in [&level.before, &level.after] {
+                    let mut ahead = 0;
+                    for order in &state.orders {
+                        assert_eq!(order.shares_ahead, ahead);
+                        ahead += order.shares;
+                    }
+                    assert_eq!(ahead, state.shares);
+                }
+            }
+            // Same-timestamp context never reaches past the event and keeps source order.
+            let st = &d.same_timestamp;
+            assert_eq!(st.events.last().unwrap().event_index, i);
+            assert_eq!(st.events.len(), st.position as usize);
+            assert!(
+                st.events
+                    .windows(2)
+                    .all(|p| p[0].event_index < p[1].event_index)
+            );
+            if st.position > 1 {
+                same_ts_checked += 1;
+            }
+        }
+        assert!(same_ts_checked > 0);
+        // No look-ahead: a source cut immediately after the event gives the identical detail,
+        // including where the next message shares the event's timestamp.
+        let mut cuts: Vec<usize> = w
+            .events
+            .windows(2)
+            .filter(|p| p[0].ts_ns == p[1].ts_ns)
+            .map(|p| p[0].event_index as usize)
+            .take(5)
+            .collect();
+        cuts.extend([40, 129, 200, 333]);
+        assert!(cuts.len() > 4);
+        for cut in cuts {
+            let prefix =
+                Workbench::from_bytes("prefix", frame_prefix(&bytes, cut + 1), "SYNTH", 32)
+                    .unwrap();
+            assert_eq!(
+                prefix.event_detail(cut as u64, 10, 100).unwrap(),
+                w.event_detail(cut as u64, 10, 100).unwrap(),
+                "#{cut}"
+            );
+        }
+    }
+
+    #[test]
+    fn curated_examples_have_their_stated_properties() {
+        let bytes = l3synth::generate(&L3SynthConfig::default()).unwrap();
+        let w = Workbench::from_bytes("seed7", &bytes, "SYNTH", 1024).unwrap();
+        let examples = w.curated_examples().unwrap();
+        assert_eq!(
+            examples.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            vec![
+                "cancel-ahead",
+                "partial-execution",
+                "replace",
+                "same-timestamp",
+                "level-change"
+            ]
+        );
+        assert_eq!(examples, w.curated_examples().unwrap());
+        let mut distinct: Vec<_> = examples.iter().map(|e| e.event_index).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), examples.len());
+        let detail = |id: &str| {
+            let example = examples.iter().find(|e| e.id == id).unwrap();
+            println!("{id}: #{}", example.event_index);
+            // Not an early, thin book: both sides already hold at least 100 orders.
+            let before = w.book(example.event_index - 1, 20, 1).unwrap();
+            for side in [&before.bids, &before.asks] {
+                assert!(
+                    side.iter().map(|l| l.order_count).sum::<u32>() >= 100,
+                    "{id}"
+                );
+            }
+            w.event_detail(example.event_index, 5, 100)
+                .unwrap()
+                .unwrap()
+        };
+        let best = |depth: &Depth, side: &str| {
+            if side == "buy" {
+                &depth.bids
+            } else {
+                &depth.asks
+            }
+            .first()
+            .map(|l| l.price4)
+        };
+
+        let d = detail("cancel-ahead");
+        assert_eq!(
+            (d.event.message_type.as_str(), d.event.applied.as_str()),
+            ("D", "book")
+        );
+        let o = d.order_before.as_ref().unwrap();
+        assert!(o.level_orders >= 6 && o.queue_position > 1 && o.queue_position < o.level_orders);
+        assert_eq!(best(&d.before, &o.side), Some(o.price4));
+        assert!(d.order_after.is_none());
+        let level = &d.affected[0];
+        assert_eq!(level.after.order_count + 1, level.before.order_count);
+        for behind in level
+            .before
+            .orders
+            .iter()
+            .filter(|r| r.queue_position > o.queue_position)
+        {
+            let moved = level
+                .after
+                .orders
+                .iter()
+                .find(|r| r.order_ref == behind.order_ref)
+                .unwrap();
+            assert_eq!(moved.queue_position + 1, behind.queue_position);
+            assert_eq!(moved.shares_ahead + o.shares, behind.shares_ahead);
+        }
+
+        let d = detail("partial-execution");
+        assert!(matches!(d.event.message_type.as_str(), "E" | "C"));
+        let (o, a) = (
+            d.order_before.as_ref().unwrap(),
+            d.order_after.as_ref().unwrap(),
+        );
+        assert_eq!(o.order_ref, a.order_ref);
+        assert!(o.level_orders >= 6);
+        assert_eq!(best(&d.before, &o.side), Some(o.price4));
+        assert_eq!(a.shares + d.event.shares.unwrap(), o.shares);
+        assert!(a.shares > 0);
+        assert_eq!(
+            (a.queue_position, a.shares_ahead),
+            (o.queue_position, o.shares_ahead)
+        );
+
+        let d = detail("replace");
+        assert_eq!(d.event.message_type, "U");
+        let roles: Vec<_> = d.affected.iter().map(|l| l.role.as_str()).collect();
+        assert_eq!(roles, vec!["replaced_from", "replaced_to"]);
+        let (o, a) = (
+            d.order_before.as_ref().unwrap(),
+            d.order_after.as_ref().unwrap(),
+        );
+        assert!(o.level_orders >= 6 && o.queue_position < o.level_orders);
+        let target = &d.affected[1];
+        assert!(target.before.order_count >= 1);
+        assert_eq!(a.queue_position, target.before.order_count + 1);
+        assert_eq!(a.shares_ahead, target.before.shares);
+        assert_eq!(Some(&a.order_ref), d.event.new_order_ref.as_ref());
+
+        let d = detail("same-timestamp");
+        let st = &d.same_timestamp;
+        assert!(st.events.len() >= 3 && !st.events_truncated);
+        assert_eq!(st.position as usize, st.events.len());
+        let k = w
+            .events
+            .binary_search_by_key(&d.event.event_index, |e| e.event_index)
+            .unwrap();
+        let run = &w.events[k + 1 - st.events.len()..=k];
+        assert!(
+            run.iter()
+                .all(|e| e.ts_ns == d.event.ts_ns && e.applied == "book")
+        );
+        assert_ne!(w.events.get(k + 1).map(|e| &e.ts_ns), Some(&d.event.ts_ns));
+        let mut kinds: Vec<_> = st.events.iter().map(|e| &e.message_type).collect();
+        kinds.sort();
+        kinds.dedup();
+        assert!(kinds.len() >= 2);
+
+        let d = detail("level-change");
+        assert!(matches!(d.event.message_type.as_str(), "D" | "E" | "C"));
+        let o = d.order_before.as_ref().unwrap();
+        let level = &d.affected[0];
+        assert_eq!((level.before.order_count, level.after.order_count), (1, 0));
+        assert_eq!(best(&d.before, &o.side), Some(o.price4));
+        let moved = best(&d.after, &o.side).unwrap();
+        assert_ne!(moved, o.price4);
     }
 }

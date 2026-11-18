@@ -1,4 +1,4 @@
-import { Badge } from "../../components/ui";
+import { Badge, BASIS_LABEL } from "../../components/ui";
 import { BASES, BASIS_MEANING, SOURCES, SOURCE_MEANING } from "./labels";
 import "./forensics.css";
 
@@ -13,7 +13,7 @@ export function EvidenceLegend({ sources = false }: { sources?: boolean }) {
         <dt className="ev-legend-title">Evidence basis</dt>
         {BASES.map((basis) => (
           <dd key={basis} className="ev-legend-item">
-            <Badge kind={basis}>{basis}</Badge>
+            <Badge kind={basis}>{BASIS_LABEL[basis]}</Badge>
             <span className="dim">{BASIS_MEANING[basis]}</span>
           </dd>
         ))}

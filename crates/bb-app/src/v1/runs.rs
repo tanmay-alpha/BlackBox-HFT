@@ -39,7 +39,7 @@ use super::{
 };
 use crate::{
     analytics::{self, RunAnalytics},
-    artifacts::{OpenRun, open_run, quarantine},
+    artifacts::{OpenRun, open_run, quarantine, verified_trailer},
     registry::manifest_of,
     wire,
 };
@@ -119,7 +119,8 @@ fn counts(view: &RunView) -> BundleCounts {
 /// The summary of a run after checking the stored row against `summary_row_sha256` (DB only)
 /// and its metrics against `summary_sha256`. A `summary_sha256` mismatch that is only JSONB
 /// number normalisation (e.g. `-0.0` stored as `0`) is resolved against the verified bundle
-/// trailer; any real difference quarantines the run.
+/// trailer (the cached bundle, else two ranged reads checked against the trust root: never a
+/// whole-bundle fetch outside the heavy-read limit); any real difference quarantines the run.
 pub async fn verified_summary(
     state: &Shared,
     view: &RunView,
@@ -147,8 +148,15 @@ pub async fn verified_summary(
     let expected = hex::encode(&view.run.summary_sha256);
     let computed = summary_sha256(&metrics, &engine_check, &counts(view))?;
     if computed != expected {
-        let open = open(state, view.clone()).await?;
-        let trailer = open.trailer().await?;
+        let trailer = verified_trailer(
+            &state.db,
+            &state.storage,
+            &state.cache,
+            &state.metrics,
+            state.bundle_limits(),
+            view,
+        )
+        .await?;
         if trailer.metrics != metrics || trailer.engine_check != engine_check {
             return Err(quarantine(&state.db, &state.metrics, view, "summary", &expected).await);
         }

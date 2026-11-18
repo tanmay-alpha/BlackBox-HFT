@@ -97,13 +97,26 @@ export function Badge({ kind, children, title }: BadgeProps) {
   );
 }
 
+/**
+ * Visible name of each evidence basis (docs/engineering/EVIDENCE_TERMINOLOGY.md). The `observed`
+ * basis covers source events and state reconstructed from them; whether those events are recorded
+ * or synthetic is the dataset's kind, so the badge never says "observed" on its own.
+ */
+export const BASIS_LABEL: Record<Basis, string> = {
+  observed: 'source data',
+  modeled: 'modeled',
+  derived: 'derived',
+  unobservable: 'unobservable',
+};
+
 /** What each evidence basis means. The single wording used by badges and the legend. */
 export const BASIS_MEANING: Record<Basis, string> = {
-  observed: 'Present in the replayed market data (recorded or synthetic, as the dataset declares).',
+  observed:
+    'A source event of the dataset, or book state reconstructed from those events. Recorded market data or synthetic generated events, as the dataset kind declares.',
   modeled:
-    'Output of the configured simulation model (queue position, latency, fills). An estimate, not a fact.',
-  derived: 'Arithmetic over observed and modeled values.',
-  unobservable: 'Not knowable from the available data.',
+    'Output of the configured simulation model (estimated queue position, latency, modeled decisions, simulated fills). An estimate, not a fact.',
+  derived: 'Arithmetic over source data and modeled values (a derived metric).',
+  unobservable: 'An unobservable counterfactual: not knowable from the available data.',
 };
 
 const BASIS_ORDER: Basis[] = ['observed', 'modeled', 'derived', 'unobservable'];
@@ -112,7 +125,7 @@ const BASIS_ORDER: Basis[] = ['observed', 'modeled', 'derived', 'unobservable'];
 export function BasisBadge({ basis }: { basis: Basis }) {
   return (
     <Badge kind={basis} title={BASIS_MEANING[basis]}>
-      {basis}
+      {BASIS_LABEL[basis]}
     </Badge>
   );
 }
@@ -124,7 +137,7 @@ export function BasisLegend() {
       {BASIS_ORDER.map((b) => (
         <li key={b}>
           <span>
-            <Badge kind={b}>{b}</Badge>
+            <Badge kind={b}>{BASIS_LABEL[b]}</Badge>
           </span>
           <span>{BASIS_MEANING[b]}</span>
         </li>
@@ -283,14 +296,24 @@ export function ClockText({ ns, digits }: { ns: NsInput | null; digits?: NsDigit
   );
 }
 
-/** Truncated hex digest; the full value is available on hover and to assistive technology. */
+/**
+ * Long identifier (digest, run or comparison id) shortened in the middle: the first `chars`
+ * characters, an ellipsis and the last four, so ids sharing a prefix stay distinguishable. The full
+ * value is the title, is read by assistive technology, and is copied on double-click.
+ */
 export function HashText({ hash, chars = 12 }: { hash: string; chars?: number }) {
+  const tail = hash.length > chars + 8 ? 4 : 0;
   const truncated = hash.length > chars;
   return (
-    <span className="mono" title={hash}>
+    <span
+      className="mono"
+      title={hash}
+      onDoubleClick={truncated ? () => void navigator.clipboard?.writeText(hash).catch(() => undefined) : undefined}
+    >
       {shortHash(hash, chars)}
+      {truncated ? <span className="visually-hidden">{hash.slice(chars, hash.length - tail)}</span> : null}
       {truncated ? <span className="dim" aria-hidden="true">{'\u2026'}</span> : null}
-      {truncated ? <span className="visually-hidden">{hash.slice(chars)}</span> : null}
+      {tail > 0 ? hash.slice(-tail) : null}
     </span>
   );
 }

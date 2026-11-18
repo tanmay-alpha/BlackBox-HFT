@@ -263,15 +263,16 @@ impl OrderLatencyConfig {
 
     /// One plain-language sentence describing the model, for reports and explanations.
     pub fn describe(&self) -> String {
-        let ln = |l: &LogNormalLeg| format!("median {} ns, sigma {}", l.median_ns, l.sigma);
+        use crate::compare::duration_label as d;
+        let ln = |l: &LogNormalLeg| format!("median {}, sigma {}", d(l.median_ns), l.sigma);
         let cubic = |l: &CubicLeg| {
             format!(
-                "min {} ns, jitter {}, clip {}, unit {} (at most {:.0} ns)",
-                l.min_ns,
+                "min {}, jitter {}, clip {}, unit {} (at most {})",
+                d(l.min_ns),
                 l.jitter,
                 l.clip,
                 l.unit,
-                l.max_ns()
+                d(l.max_ns().round() as i64)
             )
         };
         match self {
@@ -279,16 +280,20 @@ impl OrderLatencyConfig {
                 entry_ns,
                 response_ns,
             } => format!(
-                "Constant modeled order latency: entry {entry_ns} ns; response {response_ns} ns."
+                "Constant modeled order latency: entry {}; response {}.",
+                d(*entry_ns),
+                d(*response_ns)
             ),
             OrderLatencyConfig::Jitter {
                 entry_ns,
                 response_ns,
                 jitter_ns,
             } => format!(
-                "BlackBox seeded jitter model: base entry {entry_ns} ns and response \
-                 {response_ns} ns, each plus a draw from 0 through {jitter_ns} ns. Messages never \
-                 overtake."
+                "BlackBox seeded jitter model: base entry {} and response {}, each plus a draw \
+                 from 0 through {}. Messages never overtake.",
+                d(*entry_ns),
+                d(*response_ns),
+                d(*jitter_ns)
             ),
             OrderLatencyConfig::LogNormal {
                 entry,

@@ -19,6 +19,14 @@ ignore = [
     { id = "RUSTSEC-2026-0429", reason = "zip 6 extraction API, never called" },
     # bincode unmaintained (an engine dependency); informational, no known vulnerability.
     { id = "RUSTSEC-2025-0141", reason = "unmaintained engine dependency, no vulnerability" },
+    # Issued 2026-11-17, all patched only in zip 9 (engine pins ^6); none is reachable here:
+    # 0545 needs a password-decrypting read (`by_name_decrypt`), 0547 needs the `legacy-zip`
+    # feature (not enabled), 0548 needs `ZipStreamReader` (never called).
+    { id = "RUSTSEC-2026-0545", reason = "zip 6 AES decryption read, never called" },
+    { id = "RUSTSEC-2026-0547", reason = "zip 6 legacy-zip feature, not enabled" },
+    { id = "RUSTSEC-2026-0548", reason = "zip 6 ZipStreamReader, never called" },
+    # chrono unmaintained (sqlx and bb-db/bb-app timestamps); informational, no known vulnerability.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, no vulnerability; replacing needs sqlx time support" },
     # RUSTSEC-2026-0459 (libsqlite3-sys), ignored by the `audit` job, is not listed: cargo-deny
     # resolves the real feature graph, where sqlx-sqlite (sqlx is built with `postgres` only) and
     # so libsqlite3-sys never appear, and it warns on an ignore that matches nothing.

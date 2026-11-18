@@ -80,6 +80,11 @@ RUN apt-get update \
     && chown 10001:10001 /var/lib/blackbox
 COPY --from=rust-build /blackbox /usr/local/bin/blackbox
 ENTRYPOINT ["/usr/bin/tini", "--"]
+# At most two glibc malloc arenas. With the default (8 per CPU) every Tokio and blocking thread
+# that decodes a run keeps its own arena, and freed memory stays resident: in the hosted
+# full-process fixture (docs/rebuild/HOSTED_MEMORY.md) 32 concurrent anonymous heavy readers
+# drove the server from 246 to 697 MiB with the default and to 354 MiB with this setting.
+ENV MALLOC_ARENA_MAX=2
 
 # ---------------------------------------------------------------------------------------------
 # Hosted API image (Render). Process environment contract: docs/engineering/DEPLOYMENT.md §5.

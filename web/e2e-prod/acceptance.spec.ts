@@ -6,14 +6,16 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const API = process.env.PROD_API_URL ?? 'https://blackbox-hft-api.onrender.com';
-const ORIGIN = 'https://blackbox-hft.vercel.app';
+import { API_URL as API, IS_PRODUCTION, WEB_URL as ORIGIN } from './env';
+
 const QUESTION = 'What changes when a market-making strategy receives and executes orders more slowly?';
 const DEMO_ID = 'cost_of_latency';
 const BOOK_RUN = '253bbc23b342f373';
 const OTHER_RUN = 'd6a57aed972e18d0';
 
-const SHOTS = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'rebuild', 'img');
+// Production evidence goes to the docs; screenshots of any other target stay in test-results.
+const webDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SHOTS = IS_PRODUCTION ? resolve(webDir, '..', 'docs', 'rebuild', 'img') : join(webDir, 'test-results', 'prod-shots');
 
 interface Pair {
   order_id: number;

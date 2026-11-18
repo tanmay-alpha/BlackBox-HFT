@@ -63,7 +63,7 @@ fn counting(root: &std::path::Path) -> (Arc<CountingStore>, Storage) {
         inner: bb_artifacts::FsArtifactStore::new(root).unwrap(),
         reads: Mutex::new(Vec::new()),
     });
-    (store.clone(), Storage::custom(store, "fs", None))
+    (store.clone(), Storage::filesystem(store))
 }
 
 /// `maker_baseline` on `DATASET` with another interval and maker fee, every tick recorded.

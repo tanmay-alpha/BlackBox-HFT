@@ -1,0 +1,15 @@
+[package]
+name = "bbadapter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "BlackBox side of the ITCH cross-check: adapter records and the aggregate report"
+
+[dependencies]
+bb-data = { path = "../../../crates/bb-data" }
+bb-analytics = { path = "../../../crates/bb-analytics" }
+serde_json = "1"
+
+# Its own workspace: research tooling, built only by scripts/research/itch-validate.sh.
+[workspace]

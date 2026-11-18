@@ -22,6 +22,7 @@ pub mod error;
 pub mod metrics;
 pub mod pipeline;
 pub mod presets;
+pub mod queue_study;
 pub mod registry;
 mod report;
 pub mod runtime;

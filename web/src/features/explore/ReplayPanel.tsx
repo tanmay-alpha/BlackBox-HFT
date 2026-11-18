@@ -1,10 +1,10 @@
-// The synchronized replay: the observed best bid/ask of the window around the shared time with
+// The synchronized replay: the synthetic dataset's best bid/ask of the window around the shared time with
 // both scenarios' simulated arrivals and fills (PriceChart), and the book at that same time with
 // each scenario's resting orders. One time drives both: the chart's time line and the book.
 // Wide pages (`split`) show the book beside the chart; narrow ones show one of them under a
 // "Price chart / Order book" tab whose choice lives in the URL.
 
-import { useMemo, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { lazy, Suspense, useMemo, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 
 import type { InstrumentMeta } from '../../api/types';
 import { Spinner } from '../../components/ui';
@@ -12,8 +12,14 @@ import { lastAtOrBefore } from '../forensics/axis';
 import { fmtSec, restingAt, shows, type Focus, type ScenarioKey } from './data';
 import { Ladder } from './Ladder';
 import { PlainError } from './PlainError';
-import { PriceChart } from './PriceChart';
 import type { Moment } from './story';
+
+// The chart library (Lightweight Charts, ~170 kB) is its own chunk so the page's text paints
+// without waiting for it (PHASE6_PERFORMANCE). The download starts when this module is evaluated,
+// i.e. with the page's first render, so it overlaps the page's API requests; the chart box keeps
+// its fixed height while it arrives.
+const priceChartModule = import('./PriceChart');
+const PriceChart = lazy(() => priceChartModule.then((m) => ({ default: m.PriceChart })));
 
 export interface ReplayPanelProps {
   inst: InstrumentMeta;
@@ -122,7 +128,15 @@ export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, f
         ) : null}
         <div className={`ex-chart-wrap${loading || !current ? ' is-stale' : ''}`}>
           {moment ? (
-            <PriceChart moment={moment} focus={focus} inst={inst} selected={selected} names={names} t={t} onSelectOrder={onSelectOrder} onPick={onPick} />
+            <Suspense
+              fallback={
+                <div className="ex-chart-empty">
+                  <Spinner label="Loading the chart" />
+                </div>
+              }
+            >
+              <PriceChart moment={moment} focus={focus} inst={inst} selected={selected} names={names} t={t} onSelectOrder={onSelectOrder} onPick={onPick} />
+            </Suspense>
           ) : !error ? (
             <div className="ex-chart-empty">
               <Spinner label="Loading the market replay" />
@@ -131,10 +145,10 @@ export function ReplayPanel({ inst, names, moment, loading, error, onRetry, t, f
         </div>
         <ul className="ex-legend" aria-label="Chart legend">
           <li>
-            <span className="ex-key-line ex-key-bid" aria-hidden="true" /> Best bid <span className="ex-tagsm">observed</span>
+            <span className="ex-key-line ex-key-bid" aria-hidden="true" /> Best bid <span className="ex-tagsm">synthetic</span>
           </li>
           <li>
-            <span className="ex-key-line ex-key-ask" aria-hidden="true" /> Best ask <span className="ex-tagsm">observed</span>
+            <span className="ex-key-line ex-key-ask" aria-hidden="true" /> Best ask <span className="ex-tagsm">synthetic</span>
           </li>
           {(['fast', 'slow'] as const)
             .filter((k) => shows(focus, k))

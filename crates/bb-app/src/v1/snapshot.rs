@@ -1,23 +1,48 @@
 //! The versioned demo snapshot (FINAL_AUDIT §4 item 6, SECURITY_REVIEW SEC-10): every row the
 //! anonymous list and catalogue routes read (`/runs`, `/experiments`, `/comparisons`, `/reports`,
-//! `/sweeps`, `/datasets`, `/presets`, `/demos`), loaded from Postgres once and answered from memory for
-//! any query string. Filters, sorts, cursors and limits are evaluated here with the semantics of
-//! the keyed path's SQL, so varied anonymous queries cannot reach the database.
+//! `/sweeps`, `/datasets`, `/presets`, `/demos`) and the demo comparisons `GET /comparisons/{id}`
+//! answers anonymously, loaded from Postgres once and answered from memory for any query string.
+//! Filters, sorts, cursors and limits are evaluated here with the semantics of the keyed path's
+//! SQL, so varied anonymous queries cannot reach the database.
 //!
-//! The snapshot is built before the server listens ([`crate::runtime::prepare`]) and rebuilt
-//! when data this process can see changed ([`AppState::data_generation`]: any state change or
-//! quarantine here): [`maintain`] rebuilds it shortly after a change, while the database is awake
-//! anyway, and an anonymous read that finds it stale rebuilds it first (single flight). After
-//! [`MAX_AGE`] the next anonymous read rebuilds it, which picks up writers in other processes
-//! (`blackbox demo seed`, a separate worker). Rows are checked against their stored digests while
-//! building (FINAL_AUDIT item 5). A demo workspace with more than [`MAX_ROWS`] rows in a list is
-//! not snapshotted; anonymous reads then use the database path.
+//! Freshness (docs/rebuild/PHASE6_RELIABILITY.md §A3):
+//!
+//! * Changes made by this process ([`AppState::data_generation`]: any state change or quarantine
+//!   here) are never served stale: [`maintain`] rebuilds about a second after a change, and an
+//!   anonymous read that finds the snapshot behind rebuilds it first (single flight).
+//! * Rows written by another process (`blackbox demo seed`, a separate worker, an operator's SQL)
+//!   are found by [`bb_db::Database::demo_data_version`], one cheap statement over the demo
+//!   workspace's rows, read before every build. An anonymous read at least [`RECHECK`] after the
+//!   snapshot was built or last checked reads it again (one reader at a time; the others keep
+//!   the current snapshot meanwhile). A changed version counts as a change this process made: it
+//!   bumps the read version, so the snapshot and cached anonymous responses are rebuilt before
+//!   anything else is served. Worst-case staleness for an external write
+//!   is therefore [`RECHECK`] plus one build, and reads served from the snapshot query Postgres
+//!   at most once per [`RECHECK`] at any request rate, so they leave Neon (5 minutes to scale to
+//!   zero) asleep at least two thirds of the time.
+//! * A failed check keeps the snapshot (retried after [`RECHECK`]); a snapshot that no build or
+//!   check confirmed for [`MAX_AGE`] is rebuilt. A failed build never leaves a partial snapshot:
+//!   anonymous reads use the database path for [`RETRY_AFTER`], then one reader retries.
+//!
+//! Rows are checked against their stored digests while building (FINAL_AUDIT item 5); a changed
+//! row is left out (a run is quarantined), and since any row change also changes the data
+//! version, a row changed after the build is dropped at the next check. Stored comparisons are
+//! kept without their per-order pairs (only `/comparisons/{id}/pairs` serves those, from the
+//! database), which keeps the snapshot to kilobytes per comparison. A demo workspace with more
+//! than [`MAX_ROWS`] rows in a list is not snapshotted; anonymous reads then use the database path.
+//! The database fingerprint includes quality checks independently of dataset versions, joined
+//! workspace/key/job/config rows, and public experiment visibility used by the demo catalogue.
+//! Presets and instruments are rendered from version manifests, not mutable instrument rows;
+//! the audited dependency list is in docs/rebuild/PHASE6_RELIABILITY.md.
 //!
 //! [`AppState::data_generation`]: super::AppState::data_generation
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, PoisonError, RwLock},
+    sync::{
+        Arc, Mutex, PoisonError, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -40,17 +65,26 @@ use super::{
 
 /// Largest number of rows of one list kept in memory.
 pub const MAX_ROWS: usize = 1000;
-/// Oldest snapshot served; the next anonymous read then rebuilds it.
+/// Minimum time between two reads of the database's demo data version (rows written by another
+/// process): the worst-case staleness of such a write, and the most often warm anonymous traffic
+/// can make the server query Postgres.
+pub const RECHECK: Duration = Duration::from_secs(15 * 60);
+/// Longest a snapshot is served without a build or a check confirming it (checks failing).
 pub const MAX_AGE: Duration = Duration::from_secs(3600);
 /// After a failed build, anonymous reads use the database path this long before a retry.
-const RETRY_AFTER: Duration = Duration::from_secs(60);
+pub const RETRY_AFTER: Duration = Duration::from_secs(60);
 const PAGE: i64 = 100;
 
-/// One immutable build.
+/// One immutable build (plus when it was last confirmed).
 pub struct Snapshot {
     /// `AppState::data_generation` when the build started.
     generation: u64,
-    built: Instant,
+    /// The demo workspace and its `demo_data_version` read before any row.
+    workspace: Uuid,
+    version: String,
+    /// When a build or a check last found this snapshot current, and when a check last ran.
+    confirmed: Mutex<Instant>,
+    checked: Mutex<Instant>,
     /// Live, digest-checked runs listed in the demo workspace (every platform), newest first.
     runs: Vec<RunView>,
     pub runs_by_id: HashMap<Uuid, RunView>,
@@ -75,6 +109,24 @@ pub struct DemoSnapshot {
     /// Generation and time of the last failed build.
     failed: Mutex<Option<(u64, Instant)>>,
     build: tokio::sync::Mutex<()>,
+    /// Single flight of data version checks.
+    check: tokio::sync::Mutex<()>,
+    /// [`RECHECK`] override in milliseconds (0 = the default), see [`DemoSnapshot::set_recheck`].
+    recheck_ms: AtomicU64,
+}
+
+fn now(lock: &Mutex<Instant>) -> Instant {
+    *lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn touch(lock: &Mutex<Instant>) {
+    *lock.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
+}
+
+impl Snapshot {
+    fn usable(&self, generation: u64) -> bool {
+        self.generation == generation && now(&self.confirmed).elapsed() < MAX_AGE
+    }
 }
 
 impl DemoSnapshot {
@@ -83,7 +135,7 @@ impl DemoSnapshot {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .filter(|s| s.generation == generation && s.built.elapsed() < MAX_AGE)
+            .filter(|s| s.usable(generation))
             .cloned()
     }
 
@@ -92,6 +144,22 @@ impl DemoSnapshot {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_some_and(|(g, at)| g == generation && at.elapsed() < RETRY_AFTER)
+    }
+
+    /// The interval between data version checks ([`RECHECK`] unless overridden).
+    pub fn recheck(&self) -> Duration {
+        match self.recheck_ms.load(Ordering::Relaxed) {
+            0 => RECHECK,
+            ms => Duration::from_millis(ms),
+        }
+    }
+
+    /// Overrides [`RECHECK`] (tests and drills; at least 1 ms).
+    pub fn set_recheck(&self, interval: Duration) {
+        let ms = u64::try_from(interval.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        self.recheck_ms.store(ms, Ordering::Relaxed);
     }
 
     /// The snapshot for an anonymous caller (keyed callers always read the database).
@@ -103,11 +171,13 @@ impl DemoSnapshot {
         }
     }
 
-    /// The current snapshot, rebuilt first when stale; `None` when it cannot be built (callers
-    /// use the database path).
+    /// The current snapshot, checked against the database's data version when due and rebuilt
+    /// first when stale; `None` when it cannot be built (callers use the database path).
     pub async fn get(&self, state: &Shared) -> Option<Arc<Snapshot>> {
         let generation = state.data_generation();
-        if let Some(s) = self.fresh(generation) {
+        if let Some(s) = self.fresh(generation)
+            && self.unchanged(state, &s).await
+        {
             return Some(s);
         }
         if self.recently_failed(generation) {
@@ -131,6 +201,43 @@ impl DemoSnapshot {
                 *self.failed.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some((generation, Instant::now()));
                 None
+            }
+        }
+    }
+
+    /// Whether `s` still matches the database: `true` until a check is due, while another
+    /// reader checks, and after a failed check (retried after the interval); one version read
+    /// otherwise. A changed version is a state change this process can now observe: it bumps the
+    /// read version ([`AppState::data_generation`], which also keys the anonymous response
+    /// cache), so `s` is not served again and the caller rebuilds (`false`).
+    ///
+    /// [`AppState::data_generation`]: super::AppState::data_generation
+    async fn unchanged(&self, state: &Shared, s: &Snapshot) -> bool {
+        let interval = self.recheck();
+        if now(&s.checked).elapsed() < interval {
+            return true;
+        }
+        let Ok(_single_flight) = self.check.try_lock() else {
+            return true;
+        };
+        if now(&s.checked).elapsed() < interval {
+            return s.generation == state.data_generation();
+        }
+        let version = state.db.demo_data_version(s.workspace).await;
+        touch(&s.checked);
+        match version {
+            Ok(v) if v == s.version => {
+                touch(&s.confirmed);
+                true
+            }
+            Ok(_) => {
+                tracing::info!("demo data changed in another process; rebuilding the snapshot");
+                state.hub.bump();
+                false
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "demo data version check failed; keeping the snapshot");
+                true
             }
         }
     }
@@ -201,6 +308,9 @@ async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
         demo: demo.clone(),
     };
     let db = &state.db;
+    // Read before any row: a write that lands during the build changes the version again, so
+    // the next check rebuilds.
+    let version = db.demo_data_version(demo.id).await?;
 
     let rows = all_pages(
         "runs",
@@ -248,7 +358,10 @@ async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
     let mut comparisons = all_pages(
         "comparisons",
         |r: &Comparison| by_row(r.created_at, r.id),
-        |c| async move { db.comparisons(demo.id, c.as_ref(), PAGE).await },
+        |c| async move {
+            let rows = db.comparisons(demo.id, c.as_ref(), PAGE).await?;
+            Ok::<_, bb_db::Error>(rows.into_iter().map(without_pairs).collect())
+        },
     )
     .await?;
     let mut saved = all_pages(
@@ -301,9 +414,13 @@ async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
         }
     }
 
+    let at = Instant::now();
     Ok(Snapshot {
         generation,
-        built: Instant::now(),
+        workspace: demo.id,
+        version,
+        confirmed: Mutex::new(at),
+        checked: Mutex::new(at),
         runs,
         runs_by_id,
         experiments,
@@ -316,6 +433,16 @@ async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
         presets,
         demos,
     })
+}
+
+/// A stored comparison without its per-order pairs: every snapshot read renders the resource
+/// without them (`/comparisons/{id}/pairs` reads the database), and they are most of its bytes.
+/// `summary_intact` was computed by the database from the whole row first.
+fn without_pairs(mut row: Comparison) -> Comparison {
+    if let Some(pairs) = row.summary.pointer_mut("/alignment/pairs") {
+        *pairs = serde_json::Value::Array(Vec::new());
+    }
+    row
 }
 
 fn matches_identity(short_id: &str, fingerprint: &[u8], identity: Option<&str>) -> bool {
@@ -431,6 +558,11 @@ impl Snapshot {
             .take(count)
             .cloned()
             .collect()
+    }
+
+    /// One intact demo comparison (without per-order pairs).
+    pub fn comparison(&self, id: Uuid) -> Option<&Comparison> {
+        self.comparisons.iter().find(|r| r.id == id)
     }
 
     /// `Database::reports` of the demo workspace (intact rows only).

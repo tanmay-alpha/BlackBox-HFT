@@ -37,6 +37,32 @@ describe('values and units', () => {
   });
 });
 
+describe('configValueText (the single configuration formatter)', () => {
+  it('lists a heavy-tail latency leg as key/value text, min first', () => {
+    expect(configValueText('execution.order_latency.entry', { clip: 0.1, jitter: 0.5, min_ns: '768920', unit: 10 })).toBe(
+      'min 768.92 \u00b5s, jitter 0.5, clip 0.1, unit 10',
+    );
+  });
+
+  it('reads a log-normal leg with its median as a duration', () => {
+    expect(configValueText('execution.order_latency.entry', { median_ns: '20000000', sigma: 0 })).toBe('median 20 ms, sigma 0');
+  });
+
+  it('shows null, empty objects, booleans and enums as words', () => {
+    expect(configValueText('execution.order_latency.entry', null)).toBe('none');
+    expect(configValueText('x', undefined)).toBe('none');
+    expect(configValueText('x', {})).toBe('none');
+    expect(configValueText('x', [])).toBe('none');
+    expect(configValueText('risk.flatten', true)).toBe('yes');
+    expect(configValueText('execution.fill_model', 'no_partial_fill')).toBe(valueLabel('no_partial_fill'));
+  });
+
+  it('nests objects in parentheses and joins arrays', () => {
+    expect(configValueText('a', { inner: { min_ns: 1000 }, k: 2 })).toBe('inner (min 1 \u00b5s), k 2');
+    expect(configValueText('a_ns', [1000, 2000])).toBe('1 \u00b5s, 2 \u00b5s');
+  });
+});
+
 describe('controlledItem', () => {
   it('lists a JSON object by field name under the section that names its keys', () => {
     const c = controlledItem('Risk limits: {"max_drawdown":null,"max_open_orders":8,"max_order_qty":0.05,"max_position":0.1}');

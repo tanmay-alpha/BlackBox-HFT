@@ -138,6 +138,26 @@ pub struct BundleTrailer {
     pub analytics: Option<serde_json::Value>,
 }
 
+/// The verified [`BundleTrailer`] without its analytics report: what page reads and whole-run
+/// reads need. The report is still authenticated (the member digest covers the whole trailer)
+/// and checked to be well-formed JSON, but it is skipped instead of being built as a
+/// `serde_json::Value`, which is many times the size of its text and the largest part of the
+/// trailer (`docs/rebuild/HOSTED_MEMORY.md`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleTrailerCore {
+    pub manifest: RunManifest,
+    pub metrics: Metrics,
+    pub engine_check: EngineStateCheck,
+    pub counts: BundleCounts,
+    pub result_sha256: String,
+    pub summary_sha256: String,
+    #[serde(with = "index_encoding")]
+    pub page_index: Vec<PageIndex>,
+    #[serde(default, rename = "analytics")]
+    _analytics: Option<serde::de::IgnoredAny>,
+}
+
 /// Immutable database trust root. Keep the complete value, including manifest and member hashes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -715,18 +735,29 @@ impl<'a> BundleReader<'a> {
         }
         Ok(())
     }
-    /// The verified trailer from the raw header and trailer members (e.g. two ranged reads of
-    /// the stored bundle), checked against the trust root; no page is read.
+    /// The verified trailer, without its analytics report, from the raw header and trailer
+    /// members (e.g. two ranged reads of the stored bundle), checked against the trust root; no
+    /// page is read.
     pub fn check_metadata(
         &self,
         header: &[u8],
         trailer: &[u8],
-    ) -> Result<BundleTrailer, ArtifactError> {
+    ) -> Result<BundleTrailerCore, ArtifactError> {
+        Ok(self.checked_metadata(header, trailer)?.0)
+    }
+    /// Checks the header and trailer members against the trust root. Returns the trailer
+    /// without its analytics report, and the decoded trailer row for a caller that needs the
+    /// complete [`BundleTrailer`].
+    fn checked_metadata(
+        &self,
+        header: &[u8],
+        trailer: &[u8],
+    ) -> Result<(BundleTrailerCore, Vec<u8>), ArtifactError> {
         self.validate_index()?;
         let h: BundleHeader =
             decode_json(header, &self.trust.header, self.limits.max_metadata_bytes)?;
-        let t: BundleTrailer =
-            decode_json(trailer, &self.trust.trailer, self.limits.max_metadata_bytes)?;
+        let row = decode_member(trailer, &self.trust.trailer, self.limits.max_metadata_bytes)?;
+        let t: BundleTrailerCore = parse_row(&row)?;
         if h.format != "blackbox-bundle"
             || h.format_version != FORMAT_VERSION
             || h.fingerprint != self.trust.fingerprint
@@ -747,19 +778,22 @@ impl<'a> BundleReader<'a> {
         {
             return Err(integrity("trailer", "manifest, summary or index mismatch"));
         }
-        Ok(t)
+        Ok((t, row))
     }
-    fn metadata_file(&self, file: &mut File) -> Result<BundleTrailer, ArtifactError> {
+    fn metadata_file(
+        &self,
+        file: &mut File,
+    ) -> Result<(BundleTrailerCore, Vec<u8>), ArtifactError> {
         if file.metadata()?.len() != self.trust.size_bytes {
             return Err(integrity("bundle", "size mismatch"));
         }
         let header = read_member(file, &self.trust.header, self.limits.max_metadata_bytes)?;
         let trailer = read_member(file, &self.trust.trailer, self.limits.max_metadata_bytes)?;
-        self.check_metadata(&header, &trailer)
+        self.checked_metadata(&header, &trailer)
     }
-    pub fn verify_file(&self, path: &Path) -> Result<BundleTrailer, ArtifactError> {
+    pub fn verify_file(&self, path: &Path) -> Result<BundleTrailerCore, ArtifactError> {
         let mut file = File::open(path).map_err(io_error)?;
-        let trailer = self.metadata_file(&mut file)?;
+        let (trailer, _) = self.metadata_file(&mut file)?;
         if hash_file(&mut file)? != self.trust.sha256 {
             return Err(integrity("bundle", "sha256 mismatch"));
         }
@@ -801,7 +835,17 @@ impl<'a> BundleReader<'a> {
         Ok(trailer)
     }
     pub fn trailer(&self, path: &Path) -> Result<BundleTrailer, ArtifactError> {
-        self.metadata_file(&mut File::open(path).map_err(io_error)?)
+        parse_row(
+            &self
+                .metadata_file(&mut File::open(path).map_err(io_error)?)?
+                .1,
+        )
+    }
+    /// [`Self::trailer`] without building the analytics report.
+    pub fn trailer_core(&self, path: &Path) -> Result<BundleTrailerCore, ArtifactError> {
+        Ok(self
+            .metadata_file(&mut File::open(path).map_err(io_error)?)?
+            .0)
     }
     /// Returns verified uncompressed NDJSON for one index entry (never the whole section).
     pub fn page(&self, path: &Path, page_no: usize) -> Result<Vec<u8>, ArtifactError> {
@@ -815,17 +859,17 @@ impl<'a> BundleReader<'a> {
         let raw = read_member(&mut file, page, self.limits.max_page_bytes)?;
         self.decode_page(&raw, page)
     }
-    /// The verified trailer, then the verified uncompressed NDJSON of each of `page_nos` in turn,
-    /// with one metadata check for all of them (the trailer can be large: checking it per page
-    /// dominates reading a whole run).
+    /// The verified trailer (without its analytics report), then the verified uncompressed
+    /// NDJSON of each of `page_nos` in turn, with one metadata check for all of them (the
+    /// trailer can be large: checking it per page dominates reading a whole run).
     pub fn trailer_and_pages(
         &self,
         path: &Path,
         page_nos: &[usize],
         mut each: impl FnMut(usize, Vec<u8>) -> Result<(), ArtifactError>,
-    ) -> Result<BundleTrailer, ArtifactError> {
+    ) -> Result<BundleTrailerCore, ArtifactError> {
         let mut file = File::open(path).map_err(io_error)?;
-        let trailer = self.metadata_file(&mut file)?;
+        let (trailer, _) = self.metadata_file(&mut file)?;
         for &page_no in page_nos {
             let page = self
                 .trust
@@ -856,7 +900,7 @@ impl<'a> BundleReader<'a> {
             .ok_or_else(|| ArtifactError::InvalidInput("page index out of range".into()))?;
         let header = store.get_range(key, self.trust.header.range()?).await?;
         let trailer = store.get_range(key, self.trust.trailer.range()?).await?;
-        self.check_metadata(&header, &trailer)?;
+        self.checked_metadata(&header, &trailer)?;
         let raw = store.get_range(key, page.range()?).await?;
         self.decode_page(&raw, page)
     }
@@ -956,8 +1000,11 @@ fn decode_json<T: DeserializeOwned>(
     index: &MemberIndex,
     max: usize,
 ) -> Result<T, ArtifactError> {
-    let bytes = decode_member(raw, index, max)?;
-    let mut rows = lines(&bytes)?;
+    parse_row(&decode_member(raw, index, max)?)
+}
+/// The single NDJSON row of a decoded metadata member.
+fn parse_row<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ArtifactError> {
+    let mut rows = lines(bytes)?;
     let line = rows
         .next()
         .ok_or_else(|| integrity("metadata", "empty member"))?;

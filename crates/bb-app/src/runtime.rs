@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     artifacts::{BundleCache, Storage},
-    config::{AppConfig, Profile},
+    config::{AppConfig, Profile, RedactingWriter, redacted},
     metrics::Metrics,
     registry::DatasetRegistry,
     v1::{self, AppState},
@@ -28,18 +28,44 @@ use crate::{
 /// Lifetime of a bootstrap admin key created at start-up (SECURITY_REVIEW SEC-26).
 pub const BOOTSTRAP_KEY_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// Initialises logging: JSON lines in the hosted profile, compact text locally. `RUST_LOG`
-/// filters (default `info`).
+/// Initialises logging: JSON lines in the hosted profile, compact text locally, on stdout.
+/// `RUST_LOG` filters (default `info`).
 pub fn init_tracing(profile: Profile) {
+    init_tracing_with(profile, std::io::stdout);
+}
+
+/// [`init_tracing`] onto any sink (tests capture it). Every formatted event passes through the
+/// SEC-18 redactor ([`RedactingWriter`]), and panics are reported as one redacted `error` event
+/// instead of the default hook's raw stderr text, so a panic message carrying a credential never
+/// reaches a log sink verbatim.
+pub fn init_tracing_with<W>(profile: Profile, writer: W)
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_writer(RedactingWriter::new(writer))
         .with_target(true);
     let _ = match profile {
         Profile::Hosted => builder.json().with_current_span(false).try_init(),
         Profile::Local => builder.compact().try_init(),
     };
+    std::panic::set_hook(Box::new(|info| {
+        let message = info.payload_as_str().unwrap_or("non-text panic payload");
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        tracing::error!(
+            component = "panic",
+            error_class = "panic",
+            location = %location,
+            panic = %redacted(message),
+            "thread panicked"
+        );
+    }));
 }
 
 /// Opens the pooled connection pool (no minimum connections; every acquisition is counted).
@@ -307,8 +333,18 @@ pub async fn run_until_shutdown(
     }
     match tokio::time::timeout_at(deadline, server).await {
         Ok(Ok(Ok(()))) => {}
-        Ok(Ok(Err(e))) => tracing::warn!(error = %e, "server error during shutdown"),
-        Ok(Err(e)) => tracing::warn!(error = %e, "server task failed"),
+        Ok(Ok(Err(e))) => tracing::warn!(
+            component = "http",
+            error_class = "io",
+            error = %redacted(&e),
+            "server error during shutdown"
+        ),
+        Ok(Err(e)) => tracing::warn!(
+            component = "http",
+            error_class = "task",
+            error = %redacted(&e),
+            "server task failed"
+        ),
         Err(_) => tracing::warn!("in-flight requests did not finish within the grace period"),
     }
     snapshot.abort();

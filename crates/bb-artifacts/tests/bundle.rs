@@ -257,3 +257,56 @@ fn empty_sections_and_stale_science_hash() {
         Err(ArtifactError::Integrity(_))
     ));
 }
+
+#[test]
+fn page_and_whole_run_reads_skip_the_authenticated_analytics_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let run = common::run(5_001);
+    let analytics = serde_json::json!({
+        "analytics_version": "test",
+        "downsampled": [{"path": "/x", "points": [[1, 2.5], [2, 3.5]]}],
+    });
+    let bundle = BundleWriter::new(BundleLimits::default())
+        .unwrap()
+        .with_analytics(analytics.clone())
+        .write_run(directory.path(), &run)
+        .unwrap();
+    let reader = BundleReader::new(&bundle.trust, BundleLimits::default()).unwrap();
+    let full = reader.trailer(bundle.path()).unwrap();
+    assert_eq!(full.analytics, Some(analytics));
+    let same_as_full = |core: &BundleTrailerCore| {
+        assert_eq!(
+            (
+                &core.manifest,
+                &core.metrics,
+                &core.engine_check,
+                &core.counts
+            ),
+            (
+                &full.manifest,
+                &full.metrics,
+                &full.engine_check,
+                &full.counts
+            )
+        );
+        assert_eq!(
+            (&core.result_sha256, &core.summary_sha256, &core.page_index),
+            (&full.result_sha256, &full.summary_sha256, &full.page_index)
+        );
+    };
+    same_as_full(&reader.verify_file(bundle.path()).unwrap());
+    same_as_full(&reader.trailer_core(bundle.path()).unwrap());
+    let mut tape_rows = 0;
+    let all: Vec<usize> = (0..bundle.trust.page_index.len()).collect();
+    let core = reader
+        .trailer_and_pages(bundle.path(), &all, |page_no, bytes| {
+            if bundle.trust.page_index[page_no].section == Section::Tape {
+                tape_rows += bytes.iter().filter(|b| **b == b'\n').count();
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(tape_rows, 5_001);
+    same_as_full(&core);
+    assert!(!reader.page(bundle.path(), 0).unwrap().is_empty());
+}

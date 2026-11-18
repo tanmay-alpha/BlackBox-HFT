@@ -142,7 +142,7 @@ cook` = dependency layer, then `cargo build --release --locked --target x86_64-u
 | Web assets | none (the SPA is on Vercel) | `/app/web` |
 | Command | `blackbox --data-dir /var/lib/blackbox serve` | `blackbox --data-dir /data demo --addr 0.0.0.0:8787 --web-dir /app/web` |
 | Data | `/var/lib/blackbox`, ephemeral scratch (synthetic datasets, verified-bundle cache) | volume `/data` |
-| Env baked in | `PORT=8787` (Render overrides), `BB_GIT_SHA=<commit>` | – |
+| Env baked in | `PORT=8787` (Render overrides), `BB_GIT_SHA=<commit>`, `MALLOC_ARENA_MAX=2` (glibc arena cap, `docs/rebuild/HOSTED_MEMORY.md`) | `MALLOC_ARENA_MAX=2` |
 
 - **Base images** are pinned as `tag@sha256:<index digest>`: `rust:1.100.0-trixie`, `node:22.23.5-trixie-slim`,
   `debian:trixie-20261104-slim`. Each digest was read on 2026-11-14 with an anonymous registry token and
@@ -250,6 +250,7 @@ no second `BLACKBOX_` convention.
 | `BB_GIT_SHA` | baked in | no | 40-hex commit | Dockerfile `ARG GIT_SHA` ← publish.yml | `/api/v1/status` `git_sha`; smoke test waits for it |
 | `RUST_LOG` | no | no | `info` | render.yaml | `tracing-subscriber` filter |
 | `BB_RESULT_PLATFORM`, `BB_PAGE_CACHE_BYTES`, `BB_ARTIFACT_DISK_CACHE_BYTES`, `BB_ARTIFACT_WHOLE_FETCH_MAX`, `BB_MAX_RESPONSE_BYTES`, `BB_COMPARISON_TIMEOUT_S` (default 60, 1–600; API_CONTRACT §8.6) | no | no | defaults in TARGET_ARCHITECTURE §7–§9, §17 and API_CONTRACT §7 | – | tuning; unset on Render |
+| `BB_ALLOW_CLOUD_CREDENTIALS` | never on Render | no | `true` | operator env file only (`scripts/ops/prod-run.sh`) | local profile: permit `BLOB_READ_WRITE_TOKEN` or a non-local database URL for one operator command; startup logs `cloud_credentials_override` |
 
 Outside the container:
 
@@ -339,16 +340,18 @@ See §2 for the flow and §5 for secrets. Additional behaviour:
 6. **Store the deploy hook**: service Settings → Deploy Hook → copy, then `gh secret set RENDER_DEPLOY_HOOK_URL`
    (paste at the prompt; nothing is echoed or stored in shell history).
 7. **First admin key.** The free plan has no shell or one-off jobs [R1], so keys are minted from the operator
-   machine against Neon with the direct URL:
-   `DATABASE_URL=$DATABASE_URL_UNPOOLED blackbox keys mint --workspace lab --scopes read,run,admin --label lead`.
+   machine against Neon with the direct URL, in an isolated child environment (the local profile refuses cloud
+   credentials unless `BB_ALLOW_CLOUD_CREDENTIALS=true`; see [../OPERATOR_PRODUCTION.md](../OPERATOR_PRODUCTION.md)):
+   `scripts/ops/prod-run.sh <operator env file> blackbox keys mint --workspace lab --scopes read,run,admin --label lead`,
+   where the env file sets `DATABASE_URL` to the direct URL and `BB_ALLOW_CLOUD_CREDENTIALS=true`.
    The local ISP resolver refuses `*.neon.tech` (PROJECT_STATE), so pin `hostaddr=<resolved IP>` in the URL.
    Fallback without local DB access: generate a key locally
    (`printf 'bbk_%s\n' "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"`), store
    `printf %s "$KEY" | sha256sum` as `BB_ADMIN_BOOTSTRAP_KEY_SHA256`, and let the server create that key at startup.
    Clear the variable once real keys exist.
 8. **Deploy**: Actions → publish → Run workflow (branch `main`), or the manual digest release (§2). Watch the smoke
-   step, then seed the demo from the operator machine against Neon (direct URL, as in step 7):
-   `blackbox demo seed --platform <the Linux worker's class from /api/v1/status result_platform>` queues the demo
+   step, then seed the demo from the operator machine against Neon (isolated as in step 7):
+   `scripts/ops/prod-run.sh <operator env file> blackbox demo seed --platform <the Linux worker's class from /api/v1/status result_platform>` queues the demo
    runs; the hosted worker computes them; a second `blackbox demo seed` (idempotent) then stores the curated
    comparisons and saved reports in the `demo` workspace and prints anything still pending. The curation reads the
    run bundles, so that second run needs the service's `BLOB_READ_WRITE_TOKEN` in its environment too.

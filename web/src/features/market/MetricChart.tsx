@@ -8,7 +8,7 @@ import { useMemo } from 'react';
 import { groupThousands } from '../../components/ns';
 import { niceStep, ticksBetween } from '../forensics/axis';
 import { useElementSize } from '../forensics/useElementSize';
-import { sampleAtOrBefore } from './model';
+import { axisLeftMargin, clampAxisLabel, sampleAtOrBefore } from './model';
 
 export interface ChartLine {
   id: string;
@@ -36,14 +36,13 @@ export interface MetricChartProps {
 }
 
 const HEIGHT = 196;
-const LEFT = 64;
 const RIGHT = 12;
 const TOP = 10;
 const AXIS = 24;
 
 export function MetricChart({ xs, lines, selected, onSelect, fmt, ariaLabel, domain, zero }: MetricChartProps) {
   const [attach, size] = useElementSize<HTMLDivElement>();
-  const width = Math.max(260, Math.floor(size.width));
+  const width = Math.max(200, Math.floor(size.width));
 
   const geo = useMemo(() => {
     const x0 = xs.length > 0 ? xs[0] : 0;
@@ -70,10 +69,15 @@ export function MetricChart({ xs, lines, selected, onSelect, fmt, ariaLabel, dom
       hi += 1;
       lo -= lo === 0 ? 0 : 1;
     }
-    const plotW = width - LEFT - RIGHT;
+    const yStep = niceStep((hi - lo) / 4);
+    const yValues = ticksBetween(lo, hi, yStep);
+    const yLabels = yValues.map((v) => fmt(v));
+    // The plot starts right of the widest value label, so no label is cut at the left edge.
+    const left = axisLeftMargin(yLabels);
+    const plotW = width - left - RIGHT;
     const plotH = HEIGHT - TOP - AXIS;
     const spanX = x1 > x0 ? x1 - x0 : 1;
-    const sx = (x: number) => LEFT + ((x - x0) / spanX) * plotW;
+    const sx = (x: number) => left + ((x - x0) / spanX) * plotW;
     const sy = (v: number) => TOP + (1 - (v - lo) / (hi - lo)) * plotH;
     const paths = lines.map((l) => {
       let d = '';
@@ -91,18 +95,20 @@ export function MetricChart({ xs, lines, selected, onSelect, fmt, ariaLabel, dom
       }
       return d;
     });
-    const yStep = niceStep((hi - lo) / 4);
-    const yTicks = ticksBetween(lo, hi, yStep).map((v) => ({ y: sy(v), label: fmt(v) }));
+    const yTicks = yValues.map((v, i) => ({ y: sy(v), label: yLabels[i] }));
     const xStep = niceStep(spanX / Math.max(2, Math.floor(plotW / 96)));
-    const xTicks = ticksBetween(x0, x1, xStep).map((x) => ({ x: sx(x), label: `#${groupThousands(String(Math.round(x)))}` }));
-    return { x0, x1, sx, sy, paths, yTicks, xTicks, plotW, zeroY: lo <= 0 && hi >= 0 ? sy(0) : null };
+    const xTicks = ticksBetween(x0, x1, xStep).map((x) => {
+      const label = `#${groupThousands(String(Math.round(x)))}`;
+      return { key: x, x: clampAxisLabel(sx(x), label, width), label };
+    });
+    return { x0, x1, sx, sy, paths, yTicks, xTicks, plotW, left, zeroY: lo <= 0 && hi >= 0 ? sy(0) : null };
   }, [xs, lines, width, domain, zero, fmt]);
 
   const guide = selected !== null && selected >= geo.x0 && selected <= geo.x1 ? geo.sx(selected) : null;
 
   const pick = (clientX: number, rect: DOMRect) => {
     if (xs.length === 0) return;
-    const rel = (clientX - rect.left - LEFT) / geo.plotW;
+    const rel = (clientX - rect.left - geo.left) / geo.plotW;
     const target = geo.x0 + Math.max(0, Math.min(1, rel)) * (geo.x1 - geo.x0);
     const i = sampleAtOrBefore(xs.map((event_index) => ({ event_index })), target);
     onSelect(xs[Math.max(0, i)]);
@@ -121,18 +127,18 @@ export function MetricChart({ xs, lines, selected, onSelect, fmt, ariaLabel, dom
         >
           {geo.yTicks.map((t) => (
             <g key={`y${t.y}`}>
-              <line className="mk-grid" x1={LEFT} x2={width - RIGHT} y1={t.y} y2={t.y} />
-              <text className="mk-axis-label" x={LEFT - 6} y={t.y} textAnchor="end" dominantBaseline="middle">
+              <line className="mk-grid" x1={geo.left} x2={width - RIGHT} y1={t.y} y2={t.y} />
+              <text className="mk-axis-label" x={geo.left - 6} y={t.y} textAnchor="end" dominantBaseline="middle">
                 {t.label}
               </text>
             </g>
           ))}
           {geo.xTicks.map((t) => (
-            <text key={`x${t.x}`} className="mk-axis-label" x={t.x} y={HEIGHT - 6} textAnchor="middle">
+            <text key={`x${t.key}`} className="mk-axis-label" x={t.x} y={HEIGHT - 6} textAnchor="middle">
               {t.label}
             </text>
           ))}
-          {geo.zeroY !== null && zero ? <line className="mk-zero" x1={LEFT} x2={width - RIGHT} y1={geo.zeroY} y2={geo.zeroY} /> : null}
+          {geo.zeroY !== null && zero ? <line className="mk-zero" x1={geo.left} x2={width - RIGHT} y1={geo.zeroY} y2={geo.zeroY} /> : null}
           {lines.map((l, i) => (
             <path
               key={l.id}

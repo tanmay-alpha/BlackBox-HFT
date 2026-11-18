@@ -1,31 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { configCellText, configDiffRows, variedPaths } from './configValue';
+import { configDiffRows, variedPaths } from './configValue';
 import { fmtDuration, fmtDurationExact } from './fmt';
-
-describe('configCellText', () => {
-  it('lists a heavy-tail latency leg as key/value text, min first', () => {
-    expect(
-      configCellText('execution.order_latency.entry', { clip: 0.1, jitter: 0.5, min_ns: '768920', unit: 10 }),
-    ).toBe('min 768.92 \u00b5s, jitter 0.5, clip 0.1, unit 10');
-  });
-
-  it('reads a log-normal leg with its median as a duration', () => {
-    expect(configCellText('execution.order_latency.entry', { median_ns: '20000000', sigma: 0 })).toBe('median 20 ms, sigma 0');
-  });
-
-  it('shows null as none and scalars as read', () => {
-    expect(configCellText('execution.order_latency.entry', null)).toBe('none');
-    expect(configCellText('execution.order_latency.entry_ns', 1_000_000)).toBe('1 ms');
-    expect(configCellText('execution.fees.maker', 0.0002)).toBe('0.0002 (2 bp)');
-    expect(configCellText('risk.flatten', true)).toBe('yes');
-    expect(configCellText('x', {})).toBe('none');
-  });
-
-  it('nests objects in parentheses', () => {
-    expect(configCellText('a', { inner: { min_ns: 1000 }, k: 2 })).toBe('inner (min 1 \u00b5s), k 2');
-  });
-});
 
 describe('configDiffRows', () => {
   it('merges the two keys of one latency setting into one row', () => {

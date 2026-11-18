@@ -37,8 +37,21 @@ export interface LatencyStory {
 
 export class StoryUnavailable extends Error {}
 
-/** Loads the latency experiment from the public demo. Throws `StoryUnavailable` with a reason. */
+/**
+ * Loads the latency experiment from the public demo. Throws `StoryUnavailable` with a reason.
+ *
+ * The comparison list depends on nothing and the stored pair is found from the two run ids in
+ * either order, so the list loads alongside `/demos` and the comparison detail alongside the two
+ * runs (on a mobile connection each sequential round trip cost 0.2–0.45 s, PHASE6_PERFORMANCE).
+ * Of these requests only the two run reads take the API's heavy-read permit, as before. Failures
+ * surface in the same order as when the requests ran one after another: demos, runs, list, detail.
+ */
 export async function loadLatencyStory(signal: AbortSignal): Promise<LatencyStory> {
+  // The demo workspace's comparisons; a keyed caller's default list holds only its own workspace,
+  // so ask for the demo workspace explicitly.
+  const listing = api.comparisons({ signal, workspace: DEMO_WORKSPACE });
+  // Awaited below; this only keeps a failure from being reported as unhandled when an earlier step throws.
+  listing.catch(() => {});
   const demos = await api.demos(undefined, { signal });
   const demo = demos.find((d) => d.id === LATENCY_DEMO_ID);
   if (!demo) throw new StoryUnavailable('The latency experiment is not published by this API.');
@@ -46,6 +59,12 @@ export async function loadLatencyStory(signal: AbortSignal): Promise<LatencyStor
   if (demo.runs.length !== 2 || ids.some((id) => !id)) {
     throw new StoryUnavailable('The latency experiment has no stored runs yet.');
   }
+  const [idA, idB] = ids as [string, string];
+  const stored = listing.then((list) =>
+    list.items.find((c) => (c.run_a === idA && c.run_b === idB) || (c.run_a === idB && c.run_b === idA)),
+  );
+  const detail = stored.then((s) => (s ? api.comparison(s.id, { signal }) : null));
+  detail.catch(() => {});
   const runs = await Promise.all(ids.map((id) => api.run(id as string, { signal })));
   const scenarios: Scenario[] = demo.runs.map((r, i) => ({
     runId: ids[i] as string,
@@ -57,20 +76,14 @@ export async function loadLatencyStory(signal: AbortSignal): Promise<LatencyStor
   scenarios.sort((x, y) => x.entryNs + x.responseNs - (y.entryNs + y.responseNs));
   const [fast, slow] = scenarios;
 
-  // The latency demo's comparison lives in the public demo workspace; a keyed caller's default
-  // list holds only its own workspace, so ask for the demo workspace explicitly.
-  const list = await api.comparisons({ signal, workspace: DEMO_WORKSPACE });
-  const stored = list.items.find(
-    (c) => (c.run_a === fast.runId && c.run_b === slow.runId) || (c.run_a === slow.runId && c.run_b === fast.runId),
-  );
-  let comparison: Comparison | null = null;
-  if (stored) comparison = await api.comparison(stored.id, { signal });
+  const row = await stored;
+  const comparison: Comparison | null = await detail;
   return {
     demo,
     fast,
     slow,
     comparison,
-    comparisonId: stored?.id ?? null,
+    comparisonId: row?.id ?? null,
     oriented: comparison === null || comparison.run_a === fast.runId,
   };
 }
@@ -145,7 +158,7 @@ export function momentWindow(t: number, beforeNs = 250_000_000, afterNs = 750_00
 
 export interface Moment {
   window: MomentWindow;
-  /** Observed historical book and trades (identical for both scenarios: same dataset version). */
+  /** Synthetic source book and trades (identical for both scenarios: same dataset version). */
   market: ReplayWindow;
   fast: RunTimeline;
   slow: RunTimeline;

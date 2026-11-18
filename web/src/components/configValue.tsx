@@ -2,51 +2,13 @@
 // metrics (Compare, Latency Lab), so they always read the same.
 
 import type { ConfigDiff, JsonValue, MetricRow } from '../api/types';
-import { fractionToBps } from './describe';
-import { fmtDuration, fmtDurationExact, fmtNum } from './fmt';
-import { valueLabel } from './labels';
+import { configValueText } from './labels';
+import { fmtDuration } from './fmt';
 
 /** Server labels markout horizons in raw milliseconds (`Markout 30000 ms`); show them as durations. */
 export function metricLabel(row: MetricRow): string {
   const m = /^markout_(\d+)ms$/.exec(row.key);
   return m ? `Markout ${fmtDuration(Number(m[1]) * 1_000_000)}` : row.label;
-}
-
-/** Keys of a configuration object listed first, in this order (a latency leg reads `min …, jitter …`). */
-const KEY_ORDER = ['min_ns', 'median_ns', 'mean_ns', 'jitter', 'sigma', 'clip', 'unit'];
-
-function keyRank(k: string): number {
-  const i = KEY_ORDER.indexOf(k);
-  return i === -1 ? KEY_ORDER.length : i;
-}
-
-/**
- * One stored configuration value as text: `none` for null, durations for `_ns`, basis points
- * beside fee fractions, enum words for strings and `key value` lists for objects
- * (`min 768.92 µs, jitter 0.5, clip 0.1, unit 10`).
- */
-export function configCellText(path: string, value: JsonValue): string {
-  if (value === null) return 'none';
-  if (typeof value === 'boolean') return value ? 'yes' : 'no';
-  if (path.endsWith('_ns') && (typeof value === 'number' || (typeof value === 'string' && /^-?\d+$/.test(value)))) {
-    return typeof value === 'number' && !Number.isFinite(value) ? String(value) : fmtDurationExact(value);
-  }
-  if (typeof value === 'number') {
-    return path.startsWith('execution.fees.') && Number.isFinite(value) ? `${value} (${fractionToBps(value)} bp)` : String(value);
-  }
-  if (typeof value === 'string') return valueLabel(value);
-  if (Array.isArray(value)) {
-    return value.length === 0 ? 'none' : value.map((v) => configCellText(path, v)).join(', ');
-  }
-  const entries = Object.entries(value).sort(([x], [y]) => keyRank(x) - keyRank(y));
-  if (entries.length === 0) return 'none';
-  return entries
-    .map(([k, v]) => {
-      const name = k.replace(/_ns$/, '').replace(/_/g, ' ');
-      const text = configCellText(`${path}.${k}`, v);
-      return `${name} ${v !== null && typeof v === 'object' && !Array.isArray(v) ? `(${text})` : text}`;
-    })
-    .join(', ');
 }
 
 /** One side of a configuration difference: the stored path that holds the value, and the value. */
@@ -98,11 +60,11 @@ export function variedPaths(paths: readonly string[]): string[] {
 /** A table cell for one stored configuration value, the stored JSON as its title. */
 export function ConfigValue({ path, value }: { path: string; value: JsonValue }) {
   const raw = JSON.stringify(value);
-  const text = configCellText(path, value);
+  const text = configValueText(path, value);
   if (path.endsWith('_ns') && typeof value === 'number' && Number.isFinite(value)) {
     return (
       <td className="mono wrap-anywhere" title={`${raw} ns as stored`}>
-        {text} <span className="dim">({fmtNum(value, 0)} ns)</span>
+        {text}
       </td>
     );
   }

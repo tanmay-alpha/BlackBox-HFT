@@ -151,7 +151,7 @@ export default function SweepFormPage() {
     <Panel
       title="Sweep definition"
       basis="modeled"
-      caption="Re-runs one stored configuration under declared variations. Every configuration is a complete simulation on historical replay, queued as its own job (two with an in-sample / out-of-sample split); the sweep page shows each run as it finishes and the report once all have."
+      caption="Re-runs one stored configuration under declared variations. Every configuration is a complete simulation on a replay of the stored run's dataset, queued as its own job (two with an in-sample / out-of-sample split); the sweep page shows each run as it finishes and the report once all have."
     >
       {runs.error ? <ErrorBox error={runs.error} onRetry={runs.reload} /> : null}
       {runs.data?.incomplete ? (

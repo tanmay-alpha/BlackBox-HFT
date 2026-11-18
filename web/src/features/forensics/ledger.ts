@@ -124,7 +124,7 @@ export function buildLedger({ detail, execution, dataset }: LedgerInput): Ledger
   const filled = order.filled_qty > 0;
   const rested = queued !== null;
 
-  // ----- 1. Observed market events -------------------------------------------------------------
+  // ----- 1. Source market events of the dataset ---------------------------------------------------
   const observedFacts: LedgerFact[] = [];
   if (intent) {
     const m = intent.body.market;
@@ -155,7 +155,7 @@ export function buildLedger({ detail, execution, dataset }: LedgerInput): Ledger
       value: `${qty(order.traded_at_price_qty)}${
         rested && truncated === 0 ? ` in ${plural(tradeUpdates.length, "trade print")}` : ""
       }`,
-      note: rested ? "base quantity, historical trades" : "The order never rested.",
+      note: rested ? "base quantity, trades in the dataset" : "The order never rested.",
     },
   );
   if (rested) {
@@ -177,7 +177,7 @@ export function buildLedger({ detail, execution, dataset }: LedgerInput): Ledger
     id: "observed",
     basis: "observed",
     evidence: "observed",
-    title: "Observed market events",
+    title: "Market events in the dataset (source data)",
     what: "Book and trades at the order's price, read from the dataset around the order.",
     summary: queued
       ? `${qty(queued.body.level_qty)} displayed at ${price(order.price_tick)} on arrival \u00b7 ${qty(order.traded_at_price_qty)} traded at price`

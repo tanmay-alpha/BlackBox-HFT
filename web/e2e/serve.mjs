@@ -1,7 +1,7 @@
 // Playwright web server for the v1 E2E stories: from the repo root, apply the migrations, seed the
 // public demo workspace with `demo seed --wait` (demo runs, curated comparisons and saved reports
 // are stored before `serve` builds its anonymous demo snapshot; rows written later by another
-// process would only appear after the snapshot's next rebuild), mint a research key (written to
+// process appear after the snapshot's next version check, at most 15 minutes), mint a research key (written to
 // `<data-dir>/e2e-key.txt`; the key is never logged), then run `blackbox serve` with the built UI
 // on the same origin.
 //

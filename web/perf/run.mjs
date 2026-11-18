@@ -135,10 +135,16 @@ function deriveLoad(snap, net, quietReached, heap) {
     lcp_ms: last ? last.t : null,
     lcp_element: last ? { tag: last.tag, cls: last.cls, id: last.id, size: last.size, url: last.url, text: last.text } : null,
     lcp_candidates: snap.lcp.length,
+    // Every candidate in order (time, element, size): shows which element held LCP back.
+    lcp_entries: snap.lcp.map((c) => ({ t: Math.round(c.t), tag: c.tag, cls: c.cls, size: c.size, text: c.text })),
+    // What the page showed before the ready marker, at each change (probe.mjs `phase`).
+    phases: snap.phases,
     cls: cls(snap.shifts, snap.now),
     layout_shift_count: snap.shifts.filter((s) => !s.input).length,
     tbt_ms: fcp === null ? null : longTasks(snap.longtasks, fcp, snap.now, LIMITS.longTaskMs).blocking_ms,
-    long_tasks: { count: all.count, max_ms: all.max_ms, total_ms: all.total_ms },
+    // `blocking_ms` counts from navigation start, so it does not depend on when FCP happened
+    // (TBT counts only after FCP: painting earlier moves start-up work into the TBT window).
+    long_tasks: { count: all.count, max_ms: all.max_ms, total_ms: all.total_ms, blocking_ms: all.blocking_ms },
     ready_ms: snap.ready,
     dom_content_loaded_ms: snap.nav?.domContentLoadedEventEnd ?? null,
     load_event_ms: snap.nav?.loadEventEnd ?? null,

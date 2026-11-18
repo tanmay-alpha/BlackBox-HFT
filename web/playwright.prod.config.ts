@@ -1,9 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
 
+import { WEB_URL } from './e2e-prod/env';
+
 // Read-only, anonymous acceptance against the deployed product (Vercel UI + Render API).
 // No webServer; generous timeouts cover a Render cold start. `npm run test:prod`.
-const baseURL = process.env.PROD_URL ?? 'https://blackbox-hft.vercel.app';
-
+// `PROD_WEB_URL` / `PROD_API_URL` (origins) run the same specs against another stack, e.g. a
+// local `blackbox serve --web-dir web/dist` on one origin (see `e2e-prod/env.ts`).
 export default defineConfig({
   testDir: './e2e-prod',
   fullyParallel: false,
@@ -14,7 +16,7 @@ export default defineConfig({
   expect: { timeout: 60_000 },
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report-prod' }]],
   use: {
-    baseURL,
+    baseURL: WEB_URL,
     viewport: { width: 1440, height: 900 },
     navigationTimeout: 120_000,
     actionTimeout: 30_000,

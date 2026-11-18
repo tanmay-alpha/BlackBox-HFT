@@ -2,10 +2,31 @@
 //! reads environment variables (TARGET_ARCHITECTURE §3 rule 5); everything below receives an
 //! [`AppConfig`].
 //!
-//! Secrets (database URLs, the Blob token) are wrapped in [`Secret`], whose `Debug`/`Display`
-//! never print the value, so the startup log ([`AppConfig::summary`]) cannot leak them.
+//! Secrets (database URLs, the Blob token, the API key pepper) are wrapped in [`Secret`], whose
+//! `Debug`/`Display` never print the value, so the startup log ([`AppConfig::summary`]) cannot
+//! leak them.
+//!
+//! Safe diagnostics (SECURITY_REVIEW SEC-18): every [`Secret`] value is also registered with the
+//! process-wide redactor ([`redact`]). Raw dependency, engine or panic text is only ever logged
+//! through [`redacted`] and, as a second guard, every formatted log line passes through
+//! [`RedactingWriter`], which removes registered secret values, URL credentials and Blob/API key
+//! shaped tokens before the line reaches its sink. Log events carry the safe fields
+//! (`request_id`, `job_id`, `component`, `error_class`, `reason`, timings) as separate fields so
+//! they survive redaction.
+//!
+//! Credential isolation: the `local` profile refuses production cloud credentials
+//! (`BLOB_READ_WRITE_TOKEN`, a non-local `DATABASE_URL`/`DATABASE_URL_UNPOOLED`) unless the
+//! operator sets `BB_ALLOW_CLOUD_CREDENTIALS=true` for one deliberate command
+//! (`scripts/ops/prod-run.sh`, docs/OPERATOR_PRODUCTION.md).
 
-use std::{fmt, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{
+    fmt,
+    io::Write,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::{PoisonError, RwLock},
+    time::Duration,
+};
 
 use bb_core::limits::ExecutionLimits;
 
@@ -32,8 +53,11 @@ impl Profile {
 pub struct Secret(String);
 
 impl Secret {
+    /// Wraps `value` and registers it (and, for a URL, its password) with the log redactor.
     pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+        let value = value.into();
+        register_secret(&value);
+        Self(value)
     }
     pub fn expose(&self) -> &str {
         &self.0
@@ -42,7 +66,208 @@ impl Secret {
 
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
+        f.write_str(REDACTED)
+    }
+}
+
+// ----- safe diagnostics (SEC-18) -----
+
+/// What a removed value is replaced with.
+pub const REDACTED: &str = "<redacted>";
+
+/// Shortest secret value searched for verbatim. Shorter values (a toy local password) are too
+/// common as substrings to replace safely; URL credentials are still removed by shape.
+const MIN_REDACTED_LEN: usize = 8;
+
+/// Every secret value this process has configured, longest first, in each spelling it can take
+/// in a log line (as is, percent-decoded, JSON-escaped).
+static SECRET_VALUES: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+fn register_secret(value: &str) {
+    let mut forms = vec![value.to_string()];
+    if let Some(password) = url_password(value) {
+        forms.push(percent_decode(password));
+        forms.push(password.to_string());
+    }
+    let escaped: Vec<String> = forms
+        .iter()
+        .filter_map(|f| serde_json::to_string(f).ok())
+        .map(|json| json[1..json.len() - 1].to_string())
+        .collect();
+    forms.extend(escaped);
+    let mut values = SECRET_VALUES
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    for form in forms {
+        if form.len() >= MIN_REDACTED_LEN && !values.contains(&form) {
+            values.push(form);
+        }
+    }
+    values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+}
+
+/// The password of `scheme://user:password@host...`, if any.
+fn url_password(url: &str) -> Option<&str> {
+    let (_, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let (userinfo, _) = authority.rsplit_once('@')?;
+    userinfo
+        .split_once(':')
+        .map(|(_, password)| password)
+        .filter(|p| !p.is_empty())
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Removes URL credentials (`scheme://user:pass@` → `scheme://<redacted>@`), every configured
+/// secret value and Vercel Blob / BlackBox API key shaped tokens from `text`. URL credentials go
+/// first: a replaced value's `<` would otherwise end the URL authority before its `@`.
+pub fn redact(text: &str) -> String {
+    let mut out = strip_url_credentials(text);
+    {
+        let values = SECRET_VALUES.read().unwrap_or_else(PoisonError::into_inner);
+        for value in values.iter() {
+            if out.contains(value.as_str()) {
+                out = out.replace(value.as_str(), REDACTED);
+            }
+        }
+    }
+    let out = mask_tokens(&out, "vercel_blob_rw_", 1);
+    mask_tokens(&out, "bbk_", 16)
+}
+
+fn strip_url_credentials(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let start = at + 3;
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail
+            .find(|c: char| "/?#\"'<>`\\".contains(c) || c.is_whitespace())
+            .unwrap_or(tail.len());
+        match tail[..end].rfind('@') {
+            Some(userinfo_end) => {
+                out.push_str(REDACTED);
+                rest = &tail[userinfo_end..];
+            }
+            None => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Replaces the body of every `prefix` token at least `min` characters long.
+fn mask_tokens(text: &str, prefix: &str, min: usize) -> String {
+    let is_token = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(prefix) {
+        let body_start = at + prefix.len();
+        out.push_str(&rest[..body_start]);
+        let tail = &rest[body_start..];
+        let len = tail.find(|c: char| !is_token(c)).unwrap_or(tail.len());
+        if len >= min {
+            out.push_str(REDACTED);
+            rest = &tail[len..];
+        } else {
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A `Display` value shown through [`redact`]: the only way raw dependency, engine or panic text
+/// may enter a log field.
+pub struct Redacted<T>(T);
+
+/// Wraps raw diagnostic text for logging (`error = %redacted(&e)`).
+pub fn redacted<T: fmt::Display>(value: T) -> Redacted<T> {
+    Redacted(value)
+}
+
+impl<T: fmt::Display> fmt::Display for Redacted<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&redact(&self.0.to_string()))
+    }
+}
+
+/// A log sink wrapper (`tracing_subscriber` `MakeWriter`) that redacts each formatted event
+/// before it reaches `M`'s writer: the guard for log fields that were not wrapped in
+/// [`redacted`] (third-party crates, future call sites).
+pub struct RedactingWriter<M>(M);
+
+impl<M> RedactingWriter<M> {
+    pub fn new(inner: M) -> Self {
+        Self(inner)
+    }
+}
+
+impl<'a, M: tracing_subscriber::fmt::MakeWriter<'a>> tracing_subscriber::fmt::MakeWriter<'a>
+    for RedactingWriter<M>
+{
+    type Writer = RedactedEvent<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        RedactedEvent {
+            inner: self.0.make_writer(),
+            buf: Vec::new(),
+        }
+    }
+}
+
+/// One event being written: buffered whole, redacted and forwarded on flush or drop.
+pub struct RedactedEvent<W: Write> {
+    inner: W,
+    buf: Vec<u8>,
+}
+
+impl<W: Write> RedactedEvent<W> {
+    fn emit(&mut self) -> std::io::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let line = redact(&String::from_utf8_lossy(&self.buf));
+        self.buf.clear();
+        self.inner.write_all(line.as_bytes())
+    }
+}
+
+impl<W: Write> Write for RedactedEvent<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.emit()?;
+        self.inner.flush()
+    }
+}
+
+impl<W: Write> Drop for RedactedEvent<W> {
+    fn drop(&mut self) {
+        let _ = self.emit();
     }
 }
 
@@ -130,6 +355,9 @@ pub struct AppConfig {
     /// Blob read budget per month (SECURITY_REVIEW §6.3).
     pub blob_monthly_reads_cap: i32,
     pub blob_monthly_read_bytes_cap: i64,
+    /// The local profile holds production cloud credentials because the operator set
+    /// `BB_ALLOW_CLOUD_CREDENTIALS=true` (one deliberate maintenance command).
+    pub cloud_credentials_override: bool,
 }
 
 /// One environment variable that is missing or invalid.
@@ -254,6 +482,45 @@ impl AppConfig {
                 })
             }
         };
+
+        // Credential isolation: a developer process (local profile) must never pick up
+        // production cloud credentials from an inherited shell or `.env` file. Only the
+        // variable name is reported, never its value.
+        let allow_cloud = match get("BB_ALLOW_CLOUD_CREDENTIALS").as_deref() {
+            None | Some("false") | Some("0") => false,
+            Some("true") | Some("1") => true,
+            Some(_) => {
+                problem(
+                    "BB_ALLOW_CLOUD_CREDENTIALS",
+                    "must be `true` or `false`".into(),
+                );
+                false
+            }
+        };
+        let mut cloud_credentials = Vec::new();
+        if matches!(storage, StorageConfig::VercelBlob(_)) {
+            cloud_credentials.push("BLOB_READ_WRITE_TOKEN");
+        }
+        for (name, url) in [
+            ("DATABASE_URL", &database_url),
+            ("DATABASE_URL_UNPOOLED", &database_url_unpooled),
+        ] {
+            if url.as_ref().is_some_and(|u| !is_local_database(u.expose())) {
+                cloud_credentials.push(name);
+            }
+        }
+        if !hosted && !allow_cloud {
+            for name in cloud_credentials.iter().copied() {
+                problem(
+                    name,
+                    "holds a production cloud credential but BB_PROFILE is local; unset it \
+                     (scripts/local-stack.* clear it) or run the one operator command through \
+                     scripts/ops/prod-run.sh (docs/OPERATOR_PRODUCTION.md)"
+                        .into(),
+                );
+            }
+        }
+        let cloud_credentials_override = !hosted && allow_cloud && !cloud_credentials.is_empty();
 
         let cors_allowed_origins: Vec<String> = list(get("BB_CORS_ALLOWED_ORIGINS"));
         for origin in &cors_allowed_origins {
@@ -492,6 +759,7 @@ impl AppConfig {
             anonymous_max_response_bytes: 1 << 20,
             blob_monthly_reads_cap: 9_000,
             blob_monthly_read_bytes_cap: 9_000_000_000,
+            cloud_credentials_override,
         })
     }
 
@@ -612,6 +880,32 @@ pub fn is_platform(value: &str) -> bool {
 fn verifies_full(url: &str) -> bool {
     url.parse::<sqlx::postgres::PgConnectOptions>()
         .is_ok_and(|o| matches!(o.get_ssl_mode(), sqlx::postgres::PgSslMode::VerifyFull))
+}
+
+/// Whether a Postgres URL names a database on this machine or a private network: a Unix
+/// socket, `localhost`, a loopback/private/link-local address, or a single-label host name (a
+/// Docker Compose service such as `db`). Managed cloud Postgres hosts are public DNS names.
+pub fn is_local_database(url: &str) -> bool {
+    let Ok(options) = url.parse::<sqlx::postgres::PgConnectOptions>() else {
+        return false;
+    };
+    let host = options
+        .get_host()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    if host.starts_with('/') || host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if host.to_ascii_lowercase().ends_with(".localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(IpAddr::V6(ip)) => {
+            ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()
+        }
+        Err(_) => !host.is_empty() && !host.contains('.'),
+    }
 }
 
 #[cfg(test)]
@@ -746,5 +1040,162 @@ mod tests {
             "postgres://u:p@db.example/x?sslmode=require&application_name=sslmode=verify-full"
         ));
         assert!(!hosted("postgres://u:p@db.example/x?sslmode=verify-full"));
+    }
+
+    // Fake credentials, spelled so `scripts/ci/secret-scan.sh` does not take them for real ones.
+    const NEON: &str = concat!(
+        "postgres",
+        "://owner:Cl0udSentinelPassw0rd@ep-x-pooler.ap-southeast-1.aws.neon.tech/db?sslmode=verify-full"
+    );
+    const BLOB: &str = "vercel_blob_rw_store_Cl0udSentinelBlobToken";
+
+    #[test]
+    fn local_profile_refuses_cloud_credentials_naming_only_the_variable() {
+        let err = config(&[
+            ("DATABASE_URL", NEON),
+            ("DATABASE_URL_UNPOOLED", NEON),
+            ("BLOB_READ_WRITE_TOKEN", BLOB),
+        ])
+        .unwrap_err();
+        let names: Vec<_> = err.0.iter().map(|p| p.variable).collect();
+        assert_eq!(
+            names,
+            [
+                "BLOB_READ_WRITE_TOKEN",
+                "DATABASE_URL",
+                "DATABASE_URL_UNPOOLED"
+            ]
+        );
+        let text = format!("{err} {err:?}");
+        assert!(!text.contains("Cl0udSentinel"), "{text}");
+        assert!(text.contains("scripts/ops/prod-run.sh"), "{text}");
+
+        // The explicit operator flag admits them, and says so.
+        let c = config(&[
+            ("DATABASE_URL", NEON),
+            ("BLOB_READ_WRITE_TOKEN", BLOB),
+            ("BB_ALLOW_CLOUD_CREDENTIALS", "true"),
+        ])
+        .unwrap();
+        assert!(c.cloud_credentials_override);
+        assert!(config(&[("BB_ALLOW_CLOUD_CREDENTIALS", "yes")]).is_err());
+        assert!(
+            !config(&[("BB_ALLOW_CLOUD_CREDENTIALS", "true")])
+                .unwrap()
+                .cloud_credentials_override
+        );
+
+        // The hosted profile (Render) keeps starting with real credentials and no flag.
+        let hosted = config(&[
+            ("BB_PROFILE", "hosted"),
+            ("DATABASE_URL", NEON),
+            ("DATABASE_URL_UNPOOLED", NEON),
+            ("BLOB_READ_WRITE_TOKEN", BLOB),
+            ("BB_CORS_ALLOWED_ORIGINS", "https://app.example.org"),
+            ("RENDER_EXTERNAL_HOSTNAME", "api.example.org"),
+            ("BB_API_KEY_PEPPER", "Cl0udSentinelPepper-0123456789abcdef"),
+        ])
+        .unwrap();
+        assert!(!hosted.cloud_credentials_override);
+    }
+
+    #[test]
+    fn local_database_urls_are_recognised() {
+        for url in [
+            "postgres://blackbox:blackbox-local@127.0.0.1:55432/blackbox",
+            "postgres://u:p@localhost/x",
+            "postgres://u:p@[::1]:5432/x",
+            "postgres://blackbox:blackbox-local@db:5432/blackbox",
+            "postgres://u:p@192.168.1.20/x",
+            "postgres://u:p@10.0.0.5/x",
+            "postgres://u:p@pg.localhost/x",
+            "postgres:///x?host=/var/run/postgresql",
+        ] {
+            assert!(is_local_database(url), "{url}");
+        }
+        for url in [
+            NEON,
+            "postgres://u:p@db.example.org/x",
+            "postgres://u:p@8.8.8.8/x",
+            "postgres://u:p@host.docker.internal:55432/x",
+            "not a url",
+        ] {
+            assert!(!is_local_database(url), "{url}");
+        }
+        // The local stacks keep working: CI service, docker compose `db`.
+        assert!(
+            config(&[(
+                "DATABASE_URL",
+                "postgres://blackbox:blackbox-local@db:5432/blackbox"
+            )])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn redactor_removes_configured_secrets_url_credentials_and_tokens() {
+        let _registered = config(&[
+            ("BB_ALLOW_CLOUD_CREDENTIALS", "true"),
+            (
+                "DATABASE_URL",
+                concat!(
+                    "postgres",
+                    "://owner:R3dact%2FMe-Sentinel@ep-y.aws.neon.tech/db"
+                ),
+            ),
+            ("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_R3dactBlobSentinel"),
+            ("BB_API_KEY_PEPPER", "R3dactPepperSentinel-0123456789abcdef"),
+        ])
+        .unwrap();
+        let raw = concat!(
+            "connect postgres",
+            "://owner:R3dact%2FMe-Sentinel@ep-y.aws.neon.tech/db failed; retry postgres",
+            "://owner:R3dact%2FMe-Sentinel@ep-y.aws.neon.tech:5432/other; ",
+            "password R3dact/Me-Sentinel; json \"R3dact/Me-Sentinel\"; ",
+            "token vercel_blob_rw_R3dactBlobSentinel; pepper R3dactPepperSentinel-0123456789abcdef; ",
+            "other mysql://x:unregistered@h/db; key bbk_abcdefghijklmnopqrstuvwxyz0123456789; ",
+            "job 0193f0a2-1111-7222-8333-444455556666 at worker.rs:42"
+        );
+        let clean = redact(raw);
+        for secret in ["R3dact", "unregistered", "abcdefghijklmnop"] {
+            assert!(!clean.contains(secret), "{clean}");
+        }
+        // Useful context survives.
+        for kept in [
+            "ep-y.aws.neon.tech:5432/other",
+            "0193f0a2-1111-7222-8333-444455556666",
+            "worker.rs:42",
+            "bbk_<redacted>",
+        ] {
+            assert!(clean.contains(kept), "{kept} missing from {clean}");
+        }
+        assert_eq!(redacted("plain text").to_string(), "plain text");
+
+        // The writer guard redacts whole events even when a call site forgot `redacted`.
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let writer = {
+            let sink = sink.clone();
+            RedactingWriter::new(move || SinkWriter(sink.clone()))
+        };
+        {
+            use tracing_subscriber::fmt::MakeWriter;
+            let mut event = writer.make_writer();
+            event.write_all(b"error=R3dactPepperSentinel-").unwrap();
+            event.write_all(b"0123456789abcdef done\n").unwrap();
+        }
+        let written = String::from_utf8(sink.lock().unwrap().clone()).unwrap();
+        assert_eq!(written, "error=<redacted> done\n");
+    }
+
+    struct SinkWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for SinkWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }

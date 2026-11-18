@@ -13,6 +13,8 @@ export function installProbe(readyFn) {
     inputs: [],
     unsupported: [],
     ready: null,
+    // What the page shows, per animation frame, recorded at each change (see `phase` below).
+    phases: [],
     watch: null,
   };
   window.__bbperf = P;
@@ -92,6 +94,26 @@ export function installProbe(readyFn) {
   };
   requestAnimationFrame(tick);
 
+  // Visible-content phases from the first frame until the ready marker: `blank` (no text in the
+  // app root), `boot` (static loading markup, no shell yet), `shell:<first 40 characters of the
+  // workspace area>` (`shell:` alone = the workspace area is empty while the shell shows). Checks
+  // that the workspace area is never empty while a chunk or the data loads. `textContent`, not
+  // `innerText`, so sampling forces no layout.
+  let lastPhase = null;
+  const phase = () => {
+    const root = document.getElementById('root');
+    const main = document.getElementById('main');
+    let label;
+    if (main) label = `shell:${(main.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40)}`;
+    else label = root && (root.textContent || '').trim() ? 'boot' : 'blank';
+    if (label !== lastPhase) {
+      lastPhase = label;
+      P.phases.push({ t: Math.round(performance.now()), label, busy: Boolean(main && main.querySelector('[aria-busy="true"]')) });
+    }
+    if (P.ready === null && P.phases.length < 60) requestAnimationFrame(phase);
+  };
+  requestAnimationFrame(phase);
+
   // Interaction watcher: per animation frame, records when `resultFn(P, baseline)` first holds and
   // the largest gap between frames until `stopWatch` is called.
   P.arm = (resultFn, baselineFn) => {
@@ -128,6 +150,7 @@ export function installProbe(readyFn) {
     const nav = performance.getEntriesByType('navigation')[0];
     return {
       now: performance.now(),
+      phases: P.phases,
       ready: P.ready,
       lcp: P.lcp,
       shifts: P.shifts,

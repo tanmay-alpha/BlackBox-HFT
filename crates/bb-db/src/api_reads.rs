@@ -211,6 +211,35 @@ fn egress_class(class: &str) -> Result<()> {
     Ok(())
 }
 
+/// Who causes a Blob read (SECURITY_REVIEW §6.3): anonymous requests may reserve at most half of
+/// the daily pacing share; keyed requests and server-side work (the worker's read-back) share
+/// the rest of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadClass {
+    Anonymous,
+    Keyed,
+    System,
+}
+
+/// A presented key's row, by digest (SEC-25 attribution of refused keys).
+#[derive(Debug, Clone)]
+pub enum KeyLookup {
+    /// Active: neither revoked nor expired.
+    Active(ApiKey),
+    /// The key exists but is refused; `reason` is `revoked` or `expired`.
+    Inactive { key: ApiKey, reason: &'static str },
+    /// No key has this digest.
+    Unknown,
+}
+
+#[derive(sqlx::FromRow)]
+struct KeyRow {
+    #[sqlx(flatten)]
+    key: ApiKey,
+    revoked: bool,
+    expired: bool,
+}
+
 impl Database {
     pub async fn dataset_version_by_id(&self, id: Uuid) -> Result<DatasetVersion> {
         sqlx::query_as("SELECT * FROM bb.dataset_versions WHERE id=$1")
@@ -261,14 +290,16 @@ impl Database {
     // ----- budgets -----
 
     /// Reserves one Blob read op and `bytes` before a GET/HEAD attempt (SEC-11). `false` (nothing
-    /// charged) once the month's reads or bytes would exceed their caps, or today's reads would
-    /// exceed the daily pacing share `(monthly_reads_cap - reads before today) / days left`.
+    /// charged) once the month's reads or bytes would exceed their caps, today's reads would
+    /// exceed the daily pacing share `(monthly_reads_cap - reads before today) / days left`, or,
+    /// for [`ReadClass::Anonymous`], today's anonymous reads would exceed half of that share.
     pub async fn charge_storage_read(
         &self,
         backend: &str,
         bytes: i64,
         monthly_reads_cap: i32,
         monthly_bytes_cap: i64,
+        class: ReadClass,
     ) -> Result<bool> {
         self.charge_storage_read_on(
             backend,
@@ -276,6 +307,7 @@ impl Database {
             monthly_reads_cap,
             monthly_bytes_cap,
             Utc::now().date_naive(),
+            class,
         )
         .await
     }
@@ -288,6 +320,7 @@ impl Database {
         monthly_reads_cap: i32,
         monthly_bytes_cap: i64,
         today: NaiveDate,
+        class: ReadClass,
     ) -> Result<bool> {
         if bytes < 0 || monthly_reads_cap < 0 || monthly_bytes_cap < 0 {
             return Err(Error::Invalid("storage budget values must be >= 0".into()));
@@ -302,22 +335,55 @@ impl Database {
             .bind(month).bind(backend).execute(&mut *tx).await?;
         let (month_reads, month_bytes): (i32, i64) = sqlx::query_as("SELECT reads,read_bytes FROM bb.storage_usage_monthly WHERE month=$1 AND storage_backend=$2 FOR UPDATE")
             .bind(month).bind(backend).fetch_one(&mut *tx).await?;
-        let today_reads: i32 = sqlx::query_scalar("SELECT coalesce((SELECT reads FROM bb.storage_reads_daily WHERE day=$1 AND storage_backend=$2),0)")
+        let (today_reads, today_anonymous): (i32, i32) = sqlx::query_as("SELECT coalesce(max(reads),0),coalesce(max(anonymous_reads),0) FROM bb.storage_reads_daily WHERE day=$1 AND storage_backend=$2")
             .bind(today).bind(backend).fetch_one(&mut *tx).await?;
         let before_today = i64::from(month_reads) - i64::from(today_reads);
         let daily_cap = ((i64::from(monthly_reads_cap) - before_today) / days_left).max(1);
+        let anonymous = class == ReadClass::Anonymous;
         if i64::from(month_reads) + 1 > i64::from(monthly_reads_cap)
             || month_bytes.saturating_add(bytes) > monthly_bytes_cap
             || i64::from(today_reads) + 1 > daily_cap
+            || (anonymous && i64::from(today_anonymous) + 1 > daily_cap / 2)
         {
             return Ok(false);
         }
         sqlx::query("UPDATE bb.storage_usage_monthly SET reads=reads+1,read_bytes=read_bytes+$3 WHERE month=$1 AND storage_backend=$2")
             .bind(month).bind(backend).bind(bytes).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO bb.storage_reads_daily (day,storage_backend,reads,read_bytes) VALUES ($1,$2,1,$3) ON CONFLICT (day,storage_backend) DO UPDATE SET reads=bb.storage_reads_daily.reads+1,read_bytes=bb.storage_reads_daily.read_bytes+excluded.read_bytes")
-            .bind(today).bind(backend).bind(bytes).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO bb.storage_reads_daily (day,storage_backend,reads,read_bytes,anonymous_reads) VALUES ($1,$2,1,$3,$4) ON CONFLICT (day,storage_backend) DO UPDATE SET reads=bb.storage_reads_daily.reads+1,read_bytes=bb.storage_reads_daily.read_bytes+excluded.read_bytes,anonymous_reads=bb.storage_reads_daily.anonymous_reads+excluded.anonymous_reads")
+            .bind(today).bind(backend).bind(bytes).bind(i32::from(anonymous)).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(true)
+    }
+    /// The key with this plaintext's digest and whether it is usable (SEC-25): a revoked or
+    /// expired key is still attributed to its workspace so its refusal can be audited. An active
+    /// key's `last_used_at` is refreshed at most hourly. The caller checks the key's tag first, so
+    /// a forged key never reaches this query.
+    pub async fn lookup_key(&self, plaintext: &str) -> Result<KeyLookup> {
+        if plaintext.len() != 47
+            || !plaintext.starts_with("bbk_")
+            || !plaintext[4..]
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        {
+            return Ok(KeyLookup::Unknown);
+        }
+        let row: Option<KeyRow> = sqlx::query_as("SELECT k.*,(k.revoked_at IS NOT NULL) AS revoked,(k.expires_at IS NOT NULL AND k.expires_at<=now()) AS expired FROM bb.api_keys k WHERE k.key_sha256=$1")
+            .bind(key_sha256(plaintext).as_slice()).fetch_optional(&self.pool).await?;
+        let Some(KeyRow {
+            key,
+            revoked,
+            expired,
+        }) = row
+        else {
+            return Ok(KeyLookup::Unknown);
+        };
+        if revoked || expired {
+            let reason = if revoked { "revoked" } else { "expired" };
+            return Ok(KeyLookup::Inactive { key, reason });
+        }
+        sqlx::query("UPDATE bb.api_keys SET last_used_at=now() WHERE id=$1 AND (last_used_at IS NULL OR last_used_at<now()-interval '1 hour')")
+            .bind(key.id).execute(&self.pool).await?;
+        Ok(KeyLookup::Active(key))
     }
     /// Reserves one Blob upload attempt before every PUT, retries included (SEC-8/SEC-11): one
     /// unit of the global monthly allowance ([`BLOB_UPLOADS_PER_MONTH`]) and, for a job with a

@@ -13,7 +13,7 @@ import { latencyLabel, ORDER_OUTCOMES, OUTCOME_MEANING, strategyName, tifLabel }
 import {
   DASH, fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtQty, fmtTicks, words,
 } from '../../components/fmt';
-import { runLabelText, useDemoTitles } from '../../components/labels';
+import { reasonText, runLabelText, useDemoTitles } from '../../components/labels';
 import { digitsForUnit, fmtNsUtc } from '../../components/ns';
 import { useMediaQuery, usePhone } from '../../components/PaneTabs';
 import { SplitPane, type Pane } from '../../components/SplitPane';
@@ -538,7 +538,7 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
     { id: 'filled', header: 'Filled', unit: qtyUnit, numeric: true, cell: (o) => quantity(o.filled_qty, instrument), sortValue: (o) => o.filled_qty },
     { id: 'qentry', header: 'Queue ahead at entry', unit: qtyUnit, term: 'queue_position', numeric: true, cell: (o) => quantity(o.queue_ahead_at_entry, instrument), sortValue: (o) => o.queue_ahead_at_entry },
     { id: 'qmin', header: 'Min queue ahead', unit: qtyUnit, term: 'queue_position', numeric: true, cell: (o) => quantity(o.min_queue_ahead, instrument), sortValue: (o) => o.min_queue_ahead },
-    { id: 'reason', header: 'Reason', cell: (o) => o.reason || DASH, sortValue: (o) => o.reason },
+    { id: 'reason', header: 'Reason', cell: (o) => (o.reason ? <span title={o.reason}>{reasonText(o.reason)}</span> : DASH), sortValue: (o) => o.reason, raw: (o) => o.reason },
   ], [runId, instrument, priceUnit, qtyUnit, remember]);
 
   return (
@@ -547,7 +547,7 @@ function OrdersBlotter({ runId, instrument }: { runId: string; instrument: Instr
       basis="modeled"
       flush
       fill
-      caption="Decision time is local-clock time after dataset origin. Queue quantities are modeled, not observed. Open an order for its full simulated lifecycle."
+      caption="Decision time is local-clock time after dataset origin. Queue quantities are estimated queue positions (modeled), not source data. Open an order for its full simulated lifecycle."
       actions={
         <>
           <label className="row" htmlFor="run-outcome">Outcome
@@ -614,7 +614,7 @@ function FillsTable({ runId, instrument }: { runId: string; instrument: Instrume
       basis="modeled"
       flush
       fill
-      caption={<>Fill time is exchange-clock time after dataset origin. Monetary amounts are quote currency; realized P&amp;L is before fees. Mid at fill is <BasisBadge basis="derived" /> from historical data.</>}
+      caption={<>Fill time is exchange-clock time after dataset origin. Monetary amounts are quote currency; realized P&amp;L is before fees. Mid at fill is <BasisBadge basis="derived" /> from the dataset&apos;s reconstructed book.</>}
       actions={<button type="button" onClick={fills.reload} disabled={fills.loading}>Reload fills</button>}
     >
       <LoadState result={fills} label="Loading simulated fills" />

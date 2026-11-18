@@ -1,0 +1,695 @@
+/* Execution study viewer (`/studies`). Chart marks are positioned boxes on a shared percentage
+   scale; their colours name a series or a data class, never good or bad. Every mark also has its
+   number printed beside it. */
+
+.stc-page {
+  max-width: 1280px;
+  gap: var(--sp-4);
+}
+
+.stc-title {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: var(--text-xl);
+  line-height: var(--lh-xl);
+  font-weight: 600;
+}
+
+.stc-head {
+  gap: var(--sp-2);
+}
+
+.stc-section {
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.stc-section-head {
+  gap: var(--sp-2);
+}
+
+.stc-h2 {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: var(--text-lg);
+  line-height: var(--lh-lg);
+  font-weight: 600;
+}
+
+.stc-h3 {
+  margin: var(--sp-2) 0 0;
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  font-weight: 600;
+}
+
+.stc-badges {
+  gap: var(--sp-1);
+}
+
+.stc-index {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stc-index-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-2);
+  background: var(--bg-1);
+}
+
+.stc-index-link {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.stc-classes,
+.stc-caveats {
+  margin: 0;
+  padding-left: var(--sp-4);
+}
+
+.stc-classes {
+  padding-left: 0;
+  list-style: none;
+  gap: var(--sp-2);
+}
+
+/* Data-class tags: an outlined label whose border style tells the classes apart without colour. */
+.stc-class {
+  display: inline-block;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-1);
+  color: var(--fg-1);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--track-caps);
+  white-space: nowrap;
+}
+
+.stc-class-sensitivity {
+  border-style: dashed;
+  border-color: var(--modeled);
+}
+
+.stc-class-seed_variation {
+  border-style: dotted;
+  border-color: var(--info);
+}
+
+.stc-metric-pick select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ---- interval and decomposition charts ---- */
+
+.stc-chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  min-width: 0;
+}
+
+.stc-chart-labels {
+  gap: var(--sp-1);
+}
+
+.stc-rows {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+
+.stc-rows th,
+.stc-rows td {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+.stc-label {
+  width: 34%;
+  color: var(--fg-1);
+  font-weight: 400;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.stc-ref > .stc-label {
+  color: var(--fg-0);
+}
+
+.stc-track-cell {
+  width: 38%;
+}
+
+.stc-value {
+  width: 28%;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.stc-track {
+  position: relative;
+  height: 16px;
+  border-radius: var(--radius-0);
+  background: var(--bg-2);
+}
+
+.stc-track-bars {
+  height: 20px;
+}
+
+.stc-zero,
+.stc-refline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid var(--fg-2);
+}
+
+.stc-refline {
+  border-left: 1px dashed var(--fg-1);
+}
+
+.stc-whisker {
+  position: absolute;
+  top: 7px;
+  height: 2px;
+  background: var(--info);
+}
+
+.stc-dot {
+  position: absolute;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.stc-dot-seed {
+  background: var(--info);
+}
+
+.stc-bar {
+  position: absolute;
+  height: 5px;
+}
+
+.stc-key {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  gap: var(--sp-3);
+}
+
+.stc-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  vertical-align: middle;
+}
+
+.stc-part-gross {
+  background: var(--accent);
+}
+
+.stc-part-fees {
+  background: var(--fg-2);
+}
+
+.stc-part-net {
+  background: var(--derived);
+}
+
+@media (max-width: 720px) {
+  .stc-label {
+    width: 40%;
+  }
+
+  .stc-track-cell {
+    width: 24%;
+  }
+
+  .stc-value {
+    width: 36%;
+  }
+}
+
+/* ---- matrix, evidence and run tables ---- */
+
+.stc-matrix td.num {
+  vertical-align: top;
+}
+
+.stc-matrix th,
+.stc-matrix td {
+  height: auto;
+}
+
+/* Status plus links or a reproduction block; the cell grows with it. */
+.stc-evidence {
+  gap: var(--sp-1);
+  padding: var(--sp-1) 0;
+}
+
+/* Values and intervals wrap between, never inside, numbers on narrow screens. */
+.stc-rows td.stc-value {
+  white-space: normal;
+}
+
+.stc-ci {
+  white-space: nowrap;
+}
+
+.table td.stc-wide {
+  min-width: 28ch;
+}
+
+.stc-chain {
+  gap: var(--sp-2);
+}
+
+.stc-repro > summary,
+.stc-cells > summary {
+  cursor: pointer;
+  color: var(--fg-1);
+}
+
+.stc-pre {
+  max-width: 72ch;
+  margin: var(--sp-1) 0;
+  padding: var(--sp-2);
+  overflow-x: auto;
+  border-radius: var(--radius-1);
+  background: var(--bg-2);
+  white-space: pre;
+}
+
+/* ---- cell selection (B1) ---- */
+
+/* Row labels that select their cell: text, not a filled button, so a chart still reads as a chart. */
+.stc-pick {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline dotted var(--fg-2);
+  text-underline-offset: 3px;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.stc-pick:hover,
+.stc-pick[aria-pressed='true'] {
+  background: none;
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
+.stc-track-pick {
+  cursor: pointer;
+}
+
+.stc-rows tr.stc-selected > th,
+.stc-rows tr.stc-selected > td,
+.table td.stc-selected {
+  background: var(--bg-selected);
+}
+
+/* A matrix cell is one button holding its value, interval and delta; the numbers never wrap inside. */
+.stc-cellbtn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+  width: 100%;
+  min-height: 0;
+  padding: var(--sp-1);
+  border: 1px solid transparent;
+  background: none;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.stc-cellbtn:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-2);
+}
+
+.stc-mcell {
+  text-align: right;
+}
+
+.stc-mcell .stc-cmps {
+  justify-content: flex-end;
+}
+
+/* Comparison labels (B3): outlined like the data-class tags; the border style tells them apart. */
+.stc-cmps {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px var(--sp-1);
+}
+
+.stc-cmp {
+  display: inline-block;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-1);
+  color: var(--fg-1);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-2xs);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.stc-cmp-paired {
+  border-color: var(--modeled);
+}
+
+.stc-cmp-metrics_only,
+.stc-cmp-reference {
+  border-style: dotted;
+}
+
+.stc-cmp-cross_dataset {
+  border-style: dashed;
+  border-color: var(--derived);
+}
+
+.stc-cmp-multi_seed {
+  border-style: dotted;
+  border-color: var(--info);
+}
+
+.stc-cmp-not_attributable {
+  border-color: var(--warn);
+  color: var(--fg-0);
+}
+
+/* The detail panel: a sticky column beside the study on wide screens, a drawer below that. */
+.stc-shell-open {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 460px);
+  align-items: start;
+}
+
+.stc-aside {
+  position: sticky;
+  top: 0;
+  max-height: calc(100dvh - var(--h-topbar) - var(--h-toolbar) - var(--h-statusbar));
+  overflow: auto;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-1);
+}
+
+@media (max-width: 1179px) {
+  .stc-shell-open {
+    display: block;
+  }
+
+  .stc-aside {
+    position: fixed;
+    top: calc(var(--h-topbar) + var(--h-toolbar));
+    right: 0;
+    bottom: var(--h-statusbar);
+    z-index: 40;
+    width: min(460px, 92vw);
+    max-height: none;
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow-float);
+  }
+}
+
+.stc-panel {
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) var(--sp-5);
+}
+
+.stc-panel .stc-h3 {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.stc-panel .kv {
+  grid-template-columns: minmax(8ch, max-content) minmax(0, 1fr);
+}
+
+.stc-panel-head {
+  gap: var(--sp-1);
+}
+
+.stc-panel-top {
+  justify-content: space-between;
+}
+
+.stc-panel .stc-pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Full hashes and ids wrap anywhere instead of being cut. */
+.stc-full {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.stc-gap-1 {
+  gap: var(--sp-1);
+}
+
+.stc-plain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stc-plain > li + li {
+  margin-top: var(--sp-1);
+}
+
+.stc-members > li + li {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.stc-omitted {
+  padding: var(--sp-2);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-1);
+}
+
+.stc-delta-head {
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: baseline;
+}
+
+/* ---- seed strip (B2) ---- */
+
+.stc-strip {
+  height: 20px;
+}
+
+.stc-band {
+  position: absolute;
+  top: 6px;
+  height: 8px;
+  background: var(--bg-selected);
+  outline: 1px dotted var(--info);
+}
+
+.stc-mean {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 0;
+  border-left: 2px solid var(--info);
+}
+
+.stc-seed {
+  position: absolute;
+  top: 5px;
+  width: 10px;
+  height: 10px;
+  min-height: 0;
+  margin-left: -5px;
+  padding: 0;
+  border: 1px solid var(--bg-0);
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.stc-seed[data-selected='true'] {
+  outline: 2px solid var(--fg-0);
+}
+
+.stc-strip-scale {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.stc-seedvals {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 var(--sp-2);
+}
+
+/* ---- phone stages (Overview / Matrix / Cell / Uncertainty) ---- */
+
+.stc-stages > .tablist {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-0);
+}
+
+.stc-stage {
+  gap: var(--sp-4);
+  padding-top: var(--sp-3);
+}
+
+/* Phone: tables of numbers stack into labelled rows (each value beside its column name) and chart
+   rows put the label above the marks, so no number is cut off or needs sideways scrolling. */
+@media (max-width: 599px) {
+  .stc-panel {
+    padding: 0;
+  }
+
+  .stc-panel .kv {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 var(--sp-2);
+  }
+
+  .stc-panel .kv > dd {
+    margin-bottom: var(--sp-2);
+  }
+
+  .stc-stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .stc-stack,
+  .stc-stack tbody,
+  .stc-stack tr {
+    display: block;
+    width: 100%;
+  }
+
+  .stc-stack tr {
+    padding: var(--sp-2) 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .table.stc-stack th[scope='row'],
+  .table.stc-stack td {
+    height: auto;
+    border: 0;
+    white-space: normal;
+  }
+
+  .table.stc-stack th[scope='row'] {
+    display: block;
+    padding: 0 var(--sp-2) var(--sp-1);
+    color: var(--fg-0);
+  }
+
+  .table.stc-stack td {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0 var(--sp-3);
+    padding: 2px var(--sp-2);
+    text-align: right;
+  }
+
+  .table.stc-stack td::before {
+    content: attr(data-label);
+    flex: 1 1 0;
+    min-width: 0;
+    color: var(--fg-2);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    text-align: left;
+  }
+
+  .stc-stack td > .stc-cmps {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+
+  .stc-stack .stc-cellbtn {
+    width: auto;
+  }
+
+  .stc-rows,
+  .stc-rows tbody {
+    display: block;
+  }
+
+  .stc-rows tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: var(--sp-2);
+    padding: var(--sp-1) 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .stc-rows th.stc-label,
+  .stc-rows td.stc-track-cell,
+  .stc-rows td.stc-value {
+    width: auto;
+    border: 0;
+  }
+
+  .stc-rows th.stc-label {
+    grid-column: 1 / -1;
+  }
+
+  /* Seed strips: label, marks and every seed value each get the full width. */
+  .stc-strips tr {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stc-strips .stc-seedvals {
+    justify-content: flex-start;
+  }
+
+  .stc-strips td.stc-value {
+    text-align: left;
+  }
+}

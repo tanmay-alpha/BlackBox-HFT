@@ -151,6 +151,9 @@ enum StudyCommand {
         #[arg(long)]
         quick: bool,
     },
+    /// Shadow orders through the reconstructed L3 queue versus the L2 queue models
+    /// (docs/research/QUEUE_SHADOW_EXPERIMENT.md). Real ITCH input stays local-only.
+    QueueShadow(bb_app::queue_study::QueueShadowArgs),
 }
 
 #[derive(Args)]
@@ -290,7 +293,9 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            // Dependency errors (connect, migrate, storage) may echo configured values; the
+            // SEC-18 redactor removes every configured secret and URL credential.
+            eprintln!("error: {}", bb_app::config::redact(&format!("{err:#}")));
             ExitCode::FAILURE
         }
     }
@@ -325,6 +330,9 @@ fn run(cli: Cli) -> Result<()> {
             bb_app::study::exec_validation(&out, quick)?;
             Ok(())
         }
+        Command::Study {
+            command: StudyCommand::QueueShadow(args),
+        } => bb_app::queue_study::run_cli(args),
         Command::Serve(args) => cmd_serve(&paths, data_dir, args),
         Command::Worker => cmd_worker(data_dir),
         Command::Migrate => cmd_migrate(data_dir),
@@ -1365,7 +1373,15 @@ fn tokio_runtime() -> Result<tokio::runtime::Runtime> {
 fn app_config(cli_data_dir: &Path) -> Result<AppConfig> {
     let cfg = AppConfig::from_env(cli_data_dir.to_path_buf())?;
     runtime::init_tracing(cfg.profile);
-    tracing::info!(config = %cfg.summary(), "configuration");
+    tracing::info!(component = "startup", config = %cfg.summary(), "configuration");
+    if cfg.cloud_credentials_override {
+        tracing::warn!(
+            component = "startup",
+            reason = "cloud_credentials_override",
+            "BB_ALLOW_CLOUD_CREDENTIALS=true: this local-profile process holds production cloud \
+             credentials (one operator command; docs/OPERATOR_PRODUCTION.md)"
+        );
+    }
     Ok(cfg)
 }
 

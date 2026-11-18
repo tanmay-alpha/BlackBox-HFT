@@ -19,6 +19,8 @@ function withQuery(path: string, query: Query = {}): string {
 export const paths = {
   /** The public latency experiment, the console's landing page. */
   explore: () => '/',
+  /** Research home: the investigations, each linking into the workspace holding its evidence. */
+  research: () => '/research',
   /** The experiments catalogue (Mission Control). */
   overview: () => '/experiments',
   datasets: () => '/data',
@@ -33,12 +35,42 @@ export const paths = {
   /**
    * One workbench dataset. `tab` is the step, `event` the selected event index (shared by the
    * book, timeline and metrics), `type` the timeline's ITCH message-type filter, `from` the event
-   * index the timeline page starts at.
+   * index the timeline page starts at, `example` the curated example id (`cancel-ahead`) the book
+   * step's picker shows as selected.
    */
   marketDataset: (
     id: string,
-    query?: { tab?: 'dataset' | 'validation' | 'book' | 'events' | 'metrics'; event?: number | null; type?: string | null; from?: number | null },
+    query?: {
+      tab?: 'dataset' | 'validation' | 'book' | 'events' | 'metrics';
+      event?: number | null;
+      type?: string | null;
+      from?: number | null;
+      example?: string | null;
+    },
   ) => withQuery(`/market/${enc(id)}`, query),
+  /** Published execution studies (study viewer index). */
+  studies: () => '/studies',
+  /**
+   * One published study. `metric` is a `measures` key of the study contract, `cell` the selected
+   * run (`run.<run_id>`) or aggregate group (`group.<regime>.<queue>.<latency>.<feed_ns>`),
+   * built with the study feature's `runCellKey` / `groupCellKey`.
+   */
+  study: (id: string, query?: { metric?: string | null; cell?: string | null }) => withQuery(`/studies/${enc(id)}`, query),
+  /**
+   * Queue Model & Fill Uncertainty Lab: the published `queue-shadow` study (its study route
+   * `/studies/queue-shadow` redirects here, keeping the query). `model` is an L2 queue
+   * model id, `side` is `pooled` (contract v1 has no per-side values), `latency`, `tau` and
+   * `checkpoint` are design values in nanoseconds, `tab` the phone stage.
+   */
+  queueLab: (query?: {
+    symbol?: string | null;
+    model?: string | null;
+    side?: string | null;
+    latency?: string | number | null;
+    tau?: string | number | null;
+    checkpoint?: string | number | null;
+    tab?: 'overview' | 'fills' | 'queue' | 'hypotheses' | null;
+  }) => withQuery('/queue-lab', query),
   strategy: (query?: { dataset?: string; from?: string }) => withQuery('/strategy', query),
   runs: () => '/forensics',
   run: (runId: string) => `/forensics/${enc(runId)}`,

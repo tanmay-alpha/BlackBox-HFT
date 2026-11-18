@@ -6,6 +6,11 @@
 //! ([`WorkerHub::notify`]), the earliest scheduled queue event (`next_wake`) or shutdown. A
 //! standalone `blackbox worker` cannot be woken by another process, so it additionally polls
 //! with exponential backoff (1 s … `idle_poll_max`).
+//!
+//! Failures are persisted with a stable category/code and a generic or bounded message; raw
+//! dependency, engine and panic text only reaches the log, through the SEC-18 redactor, next to
+//! the safe fields `job_id`, `component`, `error_class`, `reason` and `elapsed_ms`. A
+//! [`FaultInjector`] (tests only) can make individual steps fail (SEC-17).
 
 use std::{
     collections::HashMap,
@@ -24,12 +29,13 @@ use bb_sim::{Progress, RunControl};
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
     analytics,
     artifacts::{BundleCache, Storage, StorageError, bundle_limits},
-    config::AppConfig,
+    config::{AppConfig, redact, redacted},
     error::AppError,
     metrics::Metrics,
     pipeline,
@@ -151,6 +157,38 @@ pub struct WorkerHub {
     shutdown: CancellationToken,
     /// Bumped on every state change the API can observe (anonymous response cache).
     pub generation: AtomicU64,
+    faults: Mutex<Option<Arc<dyn FaultInjector>>>,
+}
+
+/// Test-only fault seam (SECURITY_DISPOSITIONS SEC-17): makes one step of a real job fail the way
+/// a production dependency fails, so integration tests can check the persisted job state and the
+/// logs. Production never installs one: there is no endpoint, environment variable or flag for
+/// it, only in-process code holding the [`WorkerHub`] ([`WorkerHub::inject_faults`]).
+pub trait FaultInjector: Send + Sync {
+    /// Runs on the simulation thread right before the simulation, inside its panic guard: may
+    /// panic, wait on `control` (cancellation, lease loss, deadline, drain) or return an engine
+    /// error. `Ok` runs the real simulation.
+    fn before_simulation(&self, _control: &JobControl) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// A database failure returned instead of performing `step` for job `job`.
+    fn database(&self, _step: DbStep, _job: Uuid) -> Option<bb_db::Error> {
+        None
+    }
+}
+
+/// Database steps of a job that a [`FaultInjector`] can fail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DbStep {
+    /// Reading the job's stored configuration (first query of an attempt).
+    ReadConfig,
+    /// A lease-extending heartbeat.
+    Heartbeat,
+    /// The completion transaction.
+    Complete,
+    /// Recording a failed, released or expired outcome.
+    RecordOutcome,
 }
 
 impl WorkerHub {
@@ -173,6 +211,7 @@ impl WorkerHub {
             drain_started: Mutex::new(None),
             shutdown: CancellationToken::new(),
             generation: AtomicU64::new(0),
+            faults: Mutex::new(None),
         }
     }
 
@@ -239,6 +278,19 @@ impl WorkerHub {
         self.draining.load(Ordering::SeqCst)
     }
 
+    /// Installs a test [`FaultInjector`] for the jobs this process claims from now on.
+    #[doc(hidden)]
+    pub fn inject_faults(&self, faults: Arc<dyn FaultInjector>) {
+        *self.faults.lock().unwrap_or_else(PoisonError::into_inner) = Some(faults);
+    }
+
+    fn faults(&self) -> Option<Arc<dyn FaultInjector>> {
+        self.faults
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn drain_elapsed(&self) -> Option<Duration> {
         self.drain_started
             .lock()
@@ -271,6 +323,11 @@ pub fn worker_id(cfg: &AppConfig) -> String {
 }
 
 impl WorkerCtx {
+    /// The injected failure for `step`, if a test installed one.
+    fn db_fault(&self, step: DbStep, job: Uuid) -> Option<bb_db::Error> {
+        self.hub.faults().and_then(|f| f.database(step, job))
+    }
+
     async fn heartbeat_row(&self, state: &str, job: Option<Uuid>) {
         let now = chrono::Utc::now();
         let row = WorkerHeartbeat {
@@ -290,7 +347,13 @@ impl WorkerCtx {
             stopped_at: None,
         };
         if let Err(e) = self.db.worker_heartbeat(&row).await {
-            tracing::warn!(error = %e, "worker heartbeat row not written");
+            tracing::warn!(
+                component = "worker",
+                error_class = "database",
+                reason = "heartbeat_row_not_written",
+                error = %redacted(&e),
+                "worker heartbeat row not written"
+            );
         }
     }
 
@@ -301,12 +364,24 @@ impl WorkerCtx {
                     if job.state != "expired" {
                         Metrics::inc(&self.metrics.lease_reclaims_total);
                     }
-                    tracing::warn!(job_id = %job.id, state = %job.state, "reaper moved job");
+                    tracing::warn!(
+                        job_id = %job.id,
+                        component = "worker",
+                        state = %job.state,
+                        reason = "lease_expired",
+                        "reaper moved job"
+                    );
                 }
                 self.hub.bump();
             }
             Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "reaper pass failed"),
+            Err(e) => tracing::warn!(
+                component = "worker",
+                error_class = "database",
+                reason = "reap_failed",
+                error = %redacted(&e),
+                "reaper pass failed"
+            ),
         }
     }
 
@@ -391,11 +466,19 @@ async fn slot_loop(ctx: Arc<WorkerCtx>, slot: usize, standalone: bool) {
                 ctx.hub.bump();
                 process(&ctx, job).await;
                 ctx.reap().await;
+                let _ = tokio::task::spawn_blocking(release_freed_heap).await;
                 continue;
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(slot, error = %e, "claim failed");
+                tracing::warn!(
+                    slot,
+                    component = "worker",
+                    error_class = "database",
+                    reason = "claim_failed",
+                    error = %redacted(&e),
+                    "claim failed"
+                );
             }
         }
         // Idle.
@@ -444,6 +527,21 @@ async fn sleep_or_forever(d: Duration) {
     }
 }
 
+/// Returns the heap a finished job freed to the operating system (AT-5 / SEC-6,
+/// `docs/rebuild/HOSTED_MEMORY.md`). A job allocates and frees up to a few hundred MiB (the
+/// run, its analytics, bundle pages); glibc keeps freed chunks inside its arenas and only ever
+/// gives back an arena's top, so resident memory ratcheted job after job until a 512 MB
+/// container was killed. `malloc_trim(0)` releases the free pages of every arena; live
+/// allocations are untouched. A no-op on other platforms and C libraries.
+fn release_freed_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` takes glibc's own arena locks and only returns pages of free chunks
+    // to the kernel; it neither moves nor frees a live allocation.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 enum Outcome {
     Completed,
     Failed(&'static str, &'static str, String),
@@ -478,41 +576,77 @@ async fn process(ctx: &Arc<WorkerCtx>, job: Job) {
         control.clone(),
         stop.clone(),
     ));
+    let started = Instant::now();
     let span = tracing::info_span!("job", job_id = %job.id, attempt = job.claim_count);
-    let outcome = {
-        let _enter = span.enter();
-        tracing::info!("job claimed");
-        drop(_enter);
-        execute(ctx, &job, &lease, &control).await
-    };
+    tracing::info!(parent: &span, job_id = %job.id, component = "worker", "job claimed");
+    let outcome = execute(ctx, &job, &lease, &control)
+        .instrument(span.clone())
+        .await;
     stop.cancel();
     let _ = heartbeat.await;
 
-    let result = match &outcome {
-        Outcome::Completed | Outcome::Abandoned => Ok(()),
-        Outcome::Failed(category, code, message) => ctx
+    let unrecordable = match &outcome {
+        Outcome::Completed | Outcome::Abandoned => None,
+        _ => ctx.db_fault(DbStep::RecordOutcome, job.id),
+    };
+    let result = match (&outcome, unrecordable) {
+        (Outcome::Completed | Outcome::Abandoned, _) => Ok(()),
+        (_, Some(e)) => Err(e),
+        (Outcome::Failed(category, code, message), None) => ctx
             .db
-            .fail(&lease, category, code, message)
+            .fail(&lease, category, code, &redact(message))
             .await
             .map(|_| ()),
-        Outcome::Released => ctx.db.release(&lease).await.map(|_| ()),
-        Outcome::Expired => ctx
+        (Outcome::Released, None) => ctx.db.release(&lease).await.map(|_| ()),
+        (Outcome::Expired, None) => ctx
             .db
             .expire_attempt(&lease, "exceeded the 600 s per-attempt deadline")
             .await
             .map(|_| ()),
     };
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let job_id = job.id;
     match (&outcome, result) {
-        (_, Err(bb_db::Error::LeaseLost)) => {
-            tracing::warn!(job_id = %job.id, "lease lost before the outcome was recorded")
-        }
-        (_, Err(e)) => {
-            tracing::error!(job_id = %job.id, error = %e, "recording job outcome failed")
-        }
-        (Outcome::Failed(category, code, _), Ok(())) => {
-            tracing::warn!(job_id = %job.id, category, code, "job failed")
-        }
-        _ => {}
+        (_, Err(bb_db::Error::LeaseLost)) => tracing::warn!(
+            job_id = %job_id,
+            component = "worker",
+            reason = "lease_lost",
+            elapsed_ms,
+            "lease lost before the outcome was recorded"
+        ),
+        (_, Err(e)) => tracing::error!(
+            job_id = %job_id,
+            component = "worker",
+            error_class = "database",
+            reason = "outcome_not_recorded",
+            elapsed_ms,
+            error = %redacted(&e),
+            "recording job outcome failed; the lease will expire and the job is retried"
+        ),
+        (Outcome::Failed(category, code, _), Ok(())) => tracing::warn!(
+            job_id = %job_id,
+            component = "worker",
+            error_class = *category,
+            reason = *code,
+            elapsed_ms,
+            "job failed"
+        ),
+        (Outcome::Released, Ok(())) => tracing::info!(
+            job_id = %job_id,
+            component = "worker",
+            reason = "released",
+            elapsed_ms,
+            "job released (cancelled or draining)"
+        ),
+        (Outcome::Expired, Ok(())) => tracing::warn!(
+            job_id = %job_id,
+            component = "worker",
+            error_class = "deadline",
+            reason = "deadline_exceeded",
+            elapsed_ms,
+            "job attempt expired"
+        ),
+        (Outcome::Completed | Outcome::Abandoned, Ok(())) => {}
     }
     ctx.hub
         .jobs
@@ -544,11 +678,15 @@ async fn heartbeat_loop(
             _ = interval.tick() => {}
         }
         let (ticks, tape) = control.snapshot();
-        match ctx
-            .db
-            .heartbeat(&lease, ctx.cfg.lease_seconds, ticks, tape)
-            .await
-        {
+        let beat = match ctx.db_fault(DbStep::Heartbeat, lease.job_id) {
+            Some(e) => Err(e),
+            None => {
+                ctx.db
+                    .heartbeat(&lease, ctx.cfg.lease_seconds, ticks, tape)
+                    .await
+            }
+        };
+        match beat {
             Ok(job) => {
                 ctx.hub.update(|s| s.last_heartbeat = Some(Instant::now()));
                 if job.state == "cancelling" {
@@ -556,11 +694,23 @@ async fn heartbeat_loop(
                 }
             }
             Err(bb_db::Error::LeaseLost) => {
-                tracing::warn!(job_id = %lease.job_id, "lease lost; abandoning the attempt");
+                tracing::warn!(
+                    job_id = %lease.job_id,
+                    component = "worker",
+                    reason = "lease_lost",
+                    "lease lost; abandoning the attempt"
+                );
                 control.lost.store(true, Ordering::SeqCst);
                 return;
             }
-            Err(e) => tracing::warn!(job_id = %lease.job_id, error = %e, "heartbeat failed"),
+            Err(e) => tracing::warn!(
+                job_id = %lease.job_id,
+                component = "worker",
+                error_class = "database",
+                reason = "heartbeat_failed",
+                error = %redacted(&e),
+                "heartbeat failed"
+            ),
         }
     }
 }
@@ -571,9 +721,16 @@ async fn execute(
     lease: &Lease,
     control: &Arc<JobControl>,
 ) -> Outcome {
-    let config_row = match ctx.db.config(job.experiment_config_id).await {
+    let read = match ctx.db_fault(DbStep::ReadConfig, job.id) {
+        Some(e) => Err(e),
+        None => ctx.db.config(job.experiment_config_id).await,
+    };
+    let config_row = match read {
         Ok(row) => row,
-        Err(e) => return Outcome::Failed("internal", "internal", generic(&e)),
+        Err(e) => {
+            let message = generic(job.id, "database", "config_unreadable", &e);
+            return Outcome::Failed("internal", "internal", message);
+        }
     };
     // Claim-time de-duplication: a valid run for this identity already exists.
     if let Ok(Some(run)) = ctx.db.existing_run(config_row.id, &job.platform).await {
@@ -602,37 +759,54 @@ async fn execute(
         .await
     {
         Ok(v) => v,
-        Err(e) => return Outcome::Failed("internal", "internal", generic(&e)),
+        Err(e) => {
+            let message = generic(job.id, "database", "dataset_version_unreadable", &e);
+            return Outcome::Failed("internal", "internal", message);
+        }
     };
     let dataset = match ctx.registry.load(&version).await {
         Ok(d) => d,
-        Err(e) => return Outcome::Failed("internal", "dataset_unavailable", generic(&e)),
+        Err(e) => {
+            let message = generic(job.id, "dataset", "dataset_unavailable", &e);
+            return Outcome::Failed("internal", "dataset_unavailable", message);
+        }
     };
 
     Metrics::inc(&ctx.metrics.simulations_started_total);
     let limits = ctx.cfg.limits;
     let run_control = control.clone();
     let ds = dataset.clone();
+    let faults = ctx.hub.faults();
     let simulated = tokio::task::spawn_blocking(move || {
         catch_unwind(AssertUnwindSafe(|| {
+            if let Some(faults) = &faults {
+                faults.before_simulation(run_control.as_ref())?;
+            }
             pipeline::execute_with(&ds, &config, &limits, run_control.as_ref())
         }))
     })
     .await;
     let run = match simulated {
         Ok(Ok(Ok(run))) => run,
-        Ok(Ok(Err(err))) => return failure(control, err),
+        Ok(Ok(Err(err))) => return failure(job.id, control, err),
         Ok(Err(panic)) => {
-            tracing::error!(job_id = %job.id, panic = ?panic_text(&*panic), "simulation panicked");
+            tracing::error!(
+                job_id = %job.id,
+                component = "worker",
+                error_class = "panic",
+                reason = "simulation_failed",
+                panic = %redacted(panic_text(&*panic)),
+                "simulation panicked"
+            );
             return Outcome::Failed(
                 "simulation_failed",
                 "simulation_failed",
-                "the simulation failed; the details are in the server log".into(),
+                SIMULATION_FAILED.into(),
             );
         }
         Err(e) => {
-            tracing::error!(job_id = %job.id, error = %e, "simulation task failed");
-            return Outcome::Failed("internal", "internal", "internal worker error".into());
+            let message = generic(job.id, "task", "simulation_task_failed", &e);
+            return Outcome::Failed("internal", "internal", message);
         }
     };
     if control.lost.load(Ordering::SeqCst) {
@@ -646,7 +820,12 @@ async fn execute(
     persist(ctx, job, lease, &config_row.fingerprint, run, &dataset).await
 }
 
-fn failure(control: &JobControl, err: AppError) -> Outcome {
+/// Persisted message of an engine error or panic (the detail is only in the redacted log).
+const SIMULATION_FAILED: &str = "the simulation failed; the details are in the server log";
+/// Persisted message of every other internal failure.
+const INTERNAL: &str = "internal worker error";
+
+fn failure(job: Uuid, control: &JobControl, err: AppError) -> Outcome {
     match err {
         AppError::Cancelled(_) => {
             if control.lost.load(Ordering::SeqCst) {
@@ -670,23 +849,43 @@ fn failure(control: &JobControl, err: AppError) -> Outcome {
             Outcome::Failed("internal", "platform_mismatch", message)
         }
         AppError::SimulationFailed(detail) => {
-            tracing::error!(error = %detail, "simulation failed");
+            tracing::error!(
+                job_id = %job,
+                component = "worker",
+                error_class = "engine",
+                reason = "simulation_failed",
+                error = %redacted(&detail),
+                "simulation failed"
+            );
             Outcome::Failed(
                 "simulation_failed",
                 "simulation_failed",
-                "the simulation failed; the details are in the server log".into(),
+                SIMULATION_FAILED.into(),
             )
         }
         other => {
-            tracing::error!(error = %other, "job failed");
-            Outcome::Failed("internal", "internal", "internal worker error".into())
+            let message = generic(job, "internal", "internal", &other);
+            Outcome::Failed("internal", "internal", message)
         }
     }
 }
 
-fn generic(e: &dyn std::fmt::Display) -> String {
-    tracing::error!(error = %e, "job failed");
-    "internal worker error".into()
+/// Logs a failed job step (raw text redacted) and returns the generic persisted message.
+fn generic(
+    job: Uuid,
+    class: &'static str,
+    reason: &'static str,
+    e: &dyn std::fmt::Display,
+) -> String {
+    tracing::error!(
+        job_id = %job,
+        component = "worker",
+        error_class = class,
+        reason,
+        error = %redacted(e),
+        "job step failed"
+    );
+    INTERNAL.into()
 }
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -716,17 +915,34 @@ async fn persist(
         {
             Ok(Ok(a)) => Some(a),
             Ok(Err(e)) => {
-                tracing::warn!(job_id = %job.id, error = %e, "run analytics unavailable");
+                tracing::warn!(
+                    job_id = %job.id,
+                    component = "worker",
+                    error_class = "analytics",
+                    reason = "analytics_unavailable",
+                    error = %redacted(&e),
+                    "run analytics unavailable"
+                );
                 None
             }
             Err(e) => {
-                tracing::warn!(job_id = %job.id, error = %e, "run analytics task failed");
+                tracing::warn!(
+                    job_id = %job.id,
+                    component = "worker",
+                    error_class = "task",
+                    reason = "analytics_task_failed",
+                    error = %redacted(&e),
+                    "run analytics task failed"
+                );
                 None
             }
         };
     let encoded = match analytics.as_ref().map(analytics::encode).transpose() {
         Ok(e) => e,
-        Err(e) => return Outcome::Failed("internal", "internal", generic(&e)),
+        Err(e) => {
+            let message = generic(job.id, "json", "analytics_encoding_failed", &e);
+            return Outcome::Failed("internal", "internal", message);
+        }
     };
     let analytics_value: Option<serde_json::Value> = encoded
         .as_ref()
@@ -756,15 +972,28 @@ async fn persist(
             );
         }
         Ok(Err(ArtifactError::Integrity(e))) => {
-            tracing::error!(job_id = %job.id, error = %e, "bundle failed self-verification");
+            tracing::error!(
+                job_id = %job.id,
+                component = "worker",
+                error_class = "artifact",
+                reason = "integrity_failed",
+                error = %redacted(&e),
+                "bundle failed self-verification"
+            );
             return Outcome::Failed(
                 "integrity_failed",
                 "integrity_failed",
                 "the bundle failed verification after writing; nothing was stored".into(),
             );
         }
-        Ok(Err(e)) => return Outcome::Failed("internal", "internal", generic(&e)),
-        Err(e) => return Outcome::Failed("internal", "internal", generic(&e)),
+        Ok(Err(e)) => {
+            let message = generic(job.id, "artifact", "bundle_write_failed", &e);
+            return Outcome::Failed("internal", "internal", message);
+        }
+        Err(e) => {
+            let message = generic(job.id, "task", "bundle_task_failed", &e);
+            return Outcome::Failed("internal", "internal", message);
+        }
     };
     let trust = bundle.trust.clone();
     let run_uuid = Uuid::now_v7();
@@ -776,7 +1005,8 @@ async fn persist(
     );
     // 4a: upload intent (own transaction) so an orphaned object is garbage collected.
     if let Err(e) = ctx.db.upload_intent(ctx.storage.backend, &key).await {
-        return Outcome::Failed("storage_failed", "storage_failed", generic(&e));
+        let message = generic(job.id, "database", "upload_intent_failed", &e);
+        return Outcome::Failed("storage_failed", "storage_failed", message);
     }
     // 4b: publish (never overwrites); every attempt is charged to the submitting workspace.
     match ctx
@@ -793,7 +1023,14 @@ async fn persist(
             );
         }
         Err(e) => {
-            tracing::error!(job_id = %job.id, error = %e, "upload failed");
+            tracing::error!(
+                job_id = %job.id,
+                component = "storage",
+                error_class = "transport",
+                reason = "upload_failed",
+                error = %redacted(&e),
+                "upload failed"
+            );
             return Outcome::Failed(
                 "storage_failed",
                 "storage_failed",
@@ -804,7 +1041,10 @@ async fn persist(
     // 4c: read back the trailer and compare its digest.
     let range = match trust.trailer.range() {
         Ok(r) => r,
-        Err(e) => return Outcome::Failed("internal", "internal", generic(&e)),
+        Err(e) => {
+            let message = generic(job.id, "artifact", "trailer_range_invalid", &e);
+            return Outcome::Failed("internal", "internal", message);
+        }
     };
     match ctx.storage.get_range(&key, range).await {
         Ok(bytes) if hex::encode(Sha256::digest(&bytes)) == trust.trailer.sha256 => {}
@@ -816,7 +1056,14 @@ async fn persist(
             );
         }
         Err(e) => {
-            tracing::error!(job_id = %job.id, error = %e, "read-back failed");
+            tracing::error!(
+                job_id = %job.id,
+                component = "storage",
+                error_class = "transport",
+                reason = "read_back_failed",
+                error = %redacted(&e),
+                "read-back failed"
+            );
             return Outcome::Failed(
                 "storage_failed",
                 "storage_failed",
@@ -827,7 +1074,10 @@ async fn persist(
     // 5: transactional completion with the complete BundleTrust as the trust root.
     let page_index = match serde_json::to_value(&trust) {
         Ok(v) => v,
-        Err(e) => return Outcome::Failed("internal", "internal", generic(&e)),
+        Err(e) => {
+            let message = generic(job.id, "json", "trust_encoding_failed", &e);
+            return Outcome::Failed("internal", "internal", message);
+        }
     };
     let page_index_sha256 = crate::canonical::sha256(&page_index).to_vec();
     let decode = |h: &str| hex::decode(h).unwrap_or_default();
@@ -852,11 +1102,17 @@ async fn persist(
         peak_rss_bytes: crate::metrics::resident_bytes().map(|(_, hwm)| hwm as i64),
         metrics: match serde_json::to_value(&run.metrics) {
             Ok(v) => v,
-            Err(e) => return Outcome::Failed("internal", "internal", generic(&e)),
+            Err(e) => {
+                let message = generic(job.id, "json", "metrics_encoding_failed", &e);
+                return Outcome::Failed("internal", "internal", message);
+            }
         },
         engine_check: match serde_json::to_value(&run.engine_check) {
             Ok(v) => v,
-            Err(e) => return Outcome::Failed("internal", "internal", generic(&e)),
+            Err(e) => {
+                let message = generic(job.id, "json", "engine_check_encoding_failed", &e);
+                return Outcome::Failed("internal", "internal", message);
+            }
         },
     };
     let artifact = NewArtifact {
@@ -869,7 +1125,11 @@ async fn persist(
         page_index,
         page_index_sha256,
     };
-    match ctx.db.complete(lease, &new_run, &artifact).await {
+    let completed = match ctx.db_fault(DbStep::Complete, job.id) {
+        Some(e) => Err(e),
+        None => ctx.db.complete(lease, &new_run, &artifact).await,
+    };
+    match completed {
         Ok(completion) => {
             if !completion.reused {
                 if let Some(encoded) = &encoded
@@ -883,7 +1143,14 @@ async fn persist(
                         )
                         .await
                 {
-                    tracing::warn!(error = %e, "run analytics row not stored");
+                    tracing::warn!(
+                        job_id = %job.id,
+                        component = "worker",
+                        error_class = "database",
+                        reason = "analytics_row_not_stored",
+                        error = %redacted(&e),
+                        "run analytics row not stored"
+                    );
                 }
                 // 6: keep the verified file in the read cache.
                 let size = trust.size_bytes;
@@ -892,19 +1159,41 @@ async fn persist(
                     Ok(path) => {
                         let _ = ctx.cache.insert(&trust.sha256, &path, size);
                     }
-                    Err(e) => tracing::warn!(error = %e, "bundle not cached"),
+                    Err(e) => tracing::warn!(
+                        job_id = %job.id,
+                        component = "worker",
+                        error_class = "io",
+                        reason = "bundle_not_cached",
+                        error = %redacted(&e),
+                        "bundle not cached"
+                    ),
                 }
             }
-            tracing::info!(job_id = %job.id, run = %completion.run.id, reused = completion.reused, "job completed");
+            tracing::info!(
+                job_id = %job.id,
+                component = "worker",
+                run = %completion.run.id,
+                reused = completion.reused,
+                "job completed"
+            );
             Outcome::Completed
         }
         Err(bb_db::Error::Nondeterminism) => {
             Metrics::inc(&ctx.metrics.nondeterminism_total);
-            tracing::error!(job_id = %job.id, "nondeterminism detected");
+            tracing::error!(
+                job_id = %job.id,
+                component = "worker",
+                error_class = "integrity",
+                reason = "nondeterminism_detected",
+                "nondeterminism detected"
+            );
             // The job was already failed inside the completion transaction.
             Outcome::Abandoned
         }
         Err(bb_db::Error::LeaseLost) => Outcome::Abandoned,
-        Err(e) => Outcome::Failed("internal", "internal", generic(&e)),
+        Err(e) => {
+            let message = generic(job.id, "database", "completion_failed", &e);
+            Outcome::Failed("internal", "internal", message)
+        }
     }
 }

@@ -1,4 +1,4 @@
-// Order Book Lab, market only (UI_DESIGN_SPEC.md §11.3): the historical book of one dataset as the
+// Order Book Lab, market only (UI_DESIGN_SPEC.md §11.3): the reconstructed book of one dataset as the
 // data shows it, before any strategy is simulated. Toolbar: window, playback, brightness and the
 // `Market only | With run` switch; body: heatmap | depth ladder.
 
@@ -342,7 +342,7 @@ export default function ReplayPage() {
     'Market replay',
     <div className="col prose">
       <p>
-        The historical book as the data shows it, before any strategy is simulated. Times are on the exchange clock,
+        The book reconstructed from the dataset&apos;s events, before any strategy is simulated. Times are on the exchange clock,
         relative to the dataset origin.
       </p>
       {win ? (
@@ -488,7 +488,7 @@ export default function ReplayPage() {
                       flush
                       caption={
                         <>
-                          Observed L2 · {fmtInt(win.depth.length)} frames, one per {fmtDuration(win.step_ns)}
+                          Reconstructed L2 · {fmtInt(win.depth.length)} frames, one per {fmtDuration(win.step_ns)}
                           {win.bbo_downsampled ? ` · best bid/ask downsampled 1:${fmtDuration(win.step_ns)}` : ''} · legend
                           and method in the inspector
                         </>

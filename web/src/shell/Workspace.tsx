@@ -11,6 +11,7 @@ import { useLocation } from 'react-router-dom';
 
 import { LayoutResetContext } from '../components/layoutReset';
 import { Toolbar } from '../components/Toolbar';
+import { Spinner } from '../components/ui';
 import { useSettings, type Density } from './settings';
 import { workspaceFor } from './workspaces';
 
@@ -98,6 +99,25 @@ export function Workspace({ context, toolbar, layout = false, children, scroll =
       <LayoutResetContext.Provider value={reset}>
         <div className={scroll ? 'ws-body ws-body-scroll' : 'ws-body'}>{children}</div>
       </LayoutResetContext.Provider>
+    </div>
+  );
+}
+
+/**
+ * Shown in the workspace area while a workspace's code chunk loads: the same frame as
+ * `Workspace` (an empty toolbar row of the same height above the body), so the page's first rows
+ * do not move when the workspace replaces it. It shows no data; it is marked busy and announces
+ * the load (with the elapsed time and the API's waking state, as every loading line does).
+ */
+export function WorkspaceLoading() {
+  return (
+    <div className="ws" aria-busy="true">
+      <div className="toolbar ws-toolbar" aria-hidden="true" />
+      <div className="ws-body">
+        <div className="state-line">
+          <Spinner label="Loading workspace" />
+        </div>
+      </div>
     </div>
   );
 }

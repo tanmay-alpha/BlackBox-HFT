@@ -282,7 +282,10 @@ pub fn new_version(
 
 /// Registers a dataset version (idempotent) with its quality report. `storage` is `regenerate`
 /// for synthetic data and `fs` for a dataset under `<data-dir>/datasets`. The hosted profile
-/// refuses sources that are not hostable (SEC-35).
+/// refuses sources that are not hostable (SEC-35). A refusal and a newly inserted version are
+/// audited as `dataset.create` (SEC-25, SECURITY_REVIEW §15); the success row commits in the
+/// version insert's transaction. Inside an API request (a sweep's derived window slice) the row
+/// carries the caller's key and request id with `actor = "api"`, otherwise `actor = "cli"`.
 pub async fn register(
     db: &Database,
     manifest: &DatasetManifest,
@@ -299,17 +302,25 @@ pub async fn register(
     } else {
         None
     };
+    let request = crate::v1::auth::request_actor();
+    let actor = if request.is_some() { "api" } else { "cli" };
+    let audit = bb_db::Audit {
+        // Datasets are global: the row names no workspace, the key identifies the actor.
+        workspace: None,
+        key: request.and_then(|r| r.key),
+        request_id: request.map(|_| crate::v1::error::request_id()),
+    };
     if let Some(reason) = refusal {
         db.audit(bb_db::NewAuditEvent {
             workspace: None,
-            key: None,
+            key: audit.key,
             action: "dataset.create",
             outcome: "denied",
             target_type: Some("dataset"),
             target_id: Some(&manifest.id),
-            request_id: None,
+            request_id: audit.request_id.as_deref(),
             client_ip: None,
-            detail: &serde_json::json!({ "actor": "cli", "reason": reason }),
+            detail: &serde_json::json!({ "actor": actor, "reason": reason }),
         })
         .await
         .map_err(db_error)?;
@@ -362,7 +373,18 @@ pub async fn register(
         Err(e) => return Err(db_error(e)),
     };
     let version = db
-        .register_version(&new_version(manifest, version_no, storage)?)
+        .register_version_audited(
+            &new_version(manifest, version_no, storage)?,
+            &audit,
+            serde_json::json!({
+                "actor": actor,
+                "version_no": version_no,
+                "events_sha256": manifest.events_sha256,
+                "kind": if synthetic { "synthetic" } else { "recorded" },
+                "storage": storage,
+                "hosted": hosted,
+            }),
+        )
         .await
         .map_err(db_error)?;
     let report = serde_json::to_value(&manifest.quality)?;

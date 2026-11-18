@@ -30,6 +30,7 @@ import {
 } from "../../components/ui";
 import { useInspector } from "../../shell/inspector";
 import { paths } from "../../shell/paths";
+import { reasonText } from "../../components/labels";
 import { Workspace } from "../../shell/Workspace";
 import { ClockText, EvidenceLegend } from "./evidence";
 import { eventFields, eventTitle } from "./eventFormat";
@@ -301,8 +302,8 @@ function OrderContext({
         ) : null}
         <p className="note">
           Verdict: <span title={explanation.verdict}>{VERDICT_TEXT[explanation.verdict]}</span>. Rule-based: assembled
-          deterministically from the tape events below. This order was simulated on historical
-          replay; it was never sent to an exchange and did not affect the historical prices.
+          deterministically from the tape events below. This order was simulated on a replay of the run&apos;s
+          dataset; it was never sent to an exchange and did not affect the replayed prices.
         </p>
         <dl className="kv">
           <dt>Filled (simulated)</dt>
@@ -335,7 +336,7 @@ function OrderContext({
           <dt>Traded at price while resting</dt>
           <dd className="mono">
             {fmtQty(order.traded_at_price_qty, instrument)}{" "}
-            <span className="dim">observed market trades</span>
+            <span className="dim">market trades in the dataset (source data)</span>
           </dd>
           <dt>
             <Term term="fees">Fees</Term> <span className="unit">quote</span>
@@ -359,7 +360,7 @@ function OrderContext({
                 <span className="mono">{fmtSince(order.cancel_sent_ts, originNs)}</span> after
                 decision{" "}
                 <span className="dim">
-                  {order.cancel_reason ?? "no reason recorded"}
+                  {order.cancel_reason ? <span title={order.cancel_reason}>{reasonText(order.cancel_reason)}</span> : "no reason recorded"}
                   {order.cancel_rejected ? "; rejected, the order was already gone" : ""}
                 </span>
               </dd>
@@ -630,7 +631,7 @@ function OrderView({
         <Panel title="Order lifecycle" basis="modeled" fill>
           <p className="note">
             Strategy decision and responses run on the local (strategy) clock; arrival, queue, fills and cancels on the
-            exchange clock. Every step is simulated on historical replay.
+            exchange clock. Every step is simulated on a replay of the run&apos;s dataset.
           </p>
           <Lifecycle
             events={events}

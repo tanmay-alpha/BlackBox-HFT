@@ -1,0 +1,47 @@
+Third-party software used by this cross-check
+=============================================
+
+itch-book (https://github.com/groovg/itch-book)
+  Pinned commit: b502b002abf650760b79c010b3ae3a8f82896ae8 (committed 2026-09-22 00:08:36 +0300)
+  Licence: MIT, "Copyright (c) 2026 groovg" (full text below, from LICENSE at that commit).
+  Use: itchbook_adapter.cpp includes itch-book's headers (include/itch/*.hpp) and calls its
+  parser and BookManager unchanged. No itch-book source is copied into this repository;
+  scripts/research/itch-validate.sh clones the repository at the pinned commit outside the
+  tracked tree (default data/itch/tools/itch-book), refuses any other commit or a modified
+  checkout, and compiles the adapter against it.
+
+fixed-decimal (https://github.com/groovg/fixed-decimal), itch-book's only dependency
+  Pinned commit: a25e15801e32977df9abbea6a1819eecc9befaa9, as pinned by itch-book's
+  CMakeLists.txt at the commit above; archive
+  https://github.com/groovg/fixed-decimal/archive/a25e15801e32977df9abbea6a1819eecc9befaa9.tar.gz
+  with SHA-256 aedd636c8ba9874f7fdeda5b7e7d08f4a6a38c9cb0cc330153865bfe7202d5fa (verified by the
+  script before extraction). Licence: MIT, "Copyright (c) 2026 groovg". Header-only; included
+  through itch-book, not copied into this repository.
+
+NASDAQ TotalView-ITCH data
+  Not included and never to be committed. The sample files carry no redistribution grant; the
+  pipeline writes every event-level output under the chosen output directory, which must be
+  under data/ (git-ignored) when inside this repository.
+
+----- itch-book LICENSE -----
+MIT License
+
+Copyright (c) 2026 groovg
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

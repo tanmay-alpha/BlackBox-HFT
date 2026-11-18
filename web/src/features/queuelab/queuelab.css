@@ -1,0 +1,164 @@
+/* Queue Model & Fill Uncertainty Lab (`/queue-lab`). Built on the study viewer's
+   `stc-*` layout and chart classes (features/study/study.css); only lab-specific pieces live here.
+   Evidence-class tags differ by border style as well as colour, and always carry their text. */
+
+.ql-question {
+  max-width: 100ch;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--accent);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font-size: var(--text-md);
+  line-height: var(--lh-md);
+}
+
+.ql-verified {
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.ql-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-2);
+  background: var(--bg-1);
+}
+
+.ql-controls-wrap {
+  gap: var(--sp-2);
+}
+
+.ql-control {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  color: var(--fg-1);
+}
+
+.ql-control select {
+  width: 100%;
+  min-width: 0;
+}
+
+.ql-fixed {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-control);
+  color: var(--fg-0);
+}
+
+.ql-ev {
+  display: inline-block;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-1);
+  color: var(--fg-1);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-2xs);
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ql-ev-reconstructed {
+  border-color: var(--observed);
+}
+
+.ql-ev-estimated {
+  border-style: dashed;
+  border-color: var(--modeled);
+}
+
+.ql-ev-decision {
+  border-style: dotted;
+  border-color: var(--modeled);
+}
+
+.ql-ev-counterfactual {
+  border-width: 3px;
+  border-style: double;
+  border-color: var(--warn);
+}
+
+.ql-ev-derived {
+  border-color: var(--derived);
+}
+
+/* The L3 reference: a ring, so it reads apart from the model dots without colour. */
+.ql-dot-ref {
+  border: 2px solid var(--fg-0);
+  background: var(--bg-0);
+}
+
+.ql-flag {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.ql-km-text {
+  gap: 0;
+  align-items: flex-end;
+}
+
+/* A missing value states its reason; the reason wraps inside its cell instead of widening it. */
+.ql-na {
+  display: inline-block;
+  min-width: 12ch;
+  white-space: normal;
+  text-align: inherit;
+}
+
+.ql-illustration {
+  display: inline-block;
+  padding: 0 var(--sp-1);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-1);
+  color: var(--fg-1);
+  font-size: var(--text-xs);
+}
+
+.ql-outcome {
+  max-width: 100ch;
+  margin: 0;
+}
+
+.ql-quote {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--border-strong);
+  background: var(--bg-1);
+}
+
+.ql-quote blockquote {
+  max-width: 100ch;
+  margin: 0;
+}
+
+.ql-quote blockquote > p {
+  margin: 0 0 var(--sp-2);
+}
+
+.ql-limits {
+  gap: var(--sp-2);
+  max-width: 100ch;
+  margin: 0;
+  padding-left: var(--sp-4);
+}
+
+@media (max-width: 599px) {
+  .ql-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: var(--sp-2);
+  }
+
+  .ql-km-text {
+    align-items: flex-start;
+  }
+}

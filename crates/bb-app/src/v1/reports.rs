@@ -26,7 +26,9 @@ use super::{
 };
 use crate::{artifacts::open_run, wire::at_ns};
 
-const GENERATOR_VERSION: i32 = 1;
+/// Version of the Markdown report format (docs/research/REPORT_FORMAT.md). Saved snapshots keep
+/// the version that rendered them; version 2 is the evidence structure.
+const GENERATOR_VERSION: i32 = 2;
 
 pub fn routes() -> OpenApiRouter<Shared> {
     OpenApiRouter::new()
@@ -103,7 +105,12 @@ pub async fn create_report(
                     &hex::encode(&row.summary_sha256),
                 ));
             }
-            (comparison_markdown(&row)?, None, Some(id), None)
+            (
+                comparison_markdown(&state, &row).await?,
+                None,
+                Some(id),
+                None,
+            )
         }
         "sweep" => {
             let id = uuid_param("sweep", &body.subject_id)?;
@@ -161,12 +168,13 @@ pub async fn store(
 }
 
 /// A saved snapshot of a stored comparison's Markdown report.
-pub fn comparison_snapshot(
+pub async fn comparison_snapshot(
+    state: &Shared,
     workspace: uuid::Uuid,
     comparison: &bb_db::Comparison,
     title: String,
 ) -> Result<NewReport, ApiError> {
-    let markdown = comparison_markdown(comparison)?;
+    let markdown = comparison_markdown(state, comparison).await?;
     Ok(NewReport {
         workspace_id: workspace,
         kind: "comparison".into(),

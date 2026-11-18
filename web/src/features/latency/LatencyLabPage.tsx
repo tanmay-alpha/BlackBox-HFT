@@ -2,14 +2,21 @@
 // baseline. Every number is a stored run metric or a row of a comparison the server stored
 // (`/api/v1/comparisons`); every interpretive sentence is the server's own interpretation note,
 // rendered verbatim with its evidence basis. Missing comparisons are created only on request,
-// through a gated control; nothing is compared in the browser.
+// through a gated control offered to a key that may create them; nothing is compared in the
+// browser.
+//
+// The overview needs no bundle read (docs/rebuild/PHASE6_RELIABILITY.md §A1): runs come from the
+// verified run list with the configuration the experiment declares for each, pairs from the
+// stored comparisons. Only a run outside both is read by id, two at a time; a busy answer is
+// retried a bounded number of times and then shown with Retry, never as a missing comparison.
 
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
-import { api, isAbort } from '../../api/client';
-import type { Comparison, Demo, RunDetail } from '../../api/model';
+import { getApiKey } from '../../api/auth';
+import { api, BUSY_ATTEMPTS, DEMO_WORKSPACE, isAbort, isBusy, retryBusy } from '../../api/client';
+import type { Comparison, Demo, Run, RunDetail } from '../../api/model';
 import type { DatasetManifest, InstrumentMeta, MetricRow, OrderPair, PairClass } from '../../api/types';
 import { ConfigValue, configDiffRows, metricLabel, variedPaths } from '../../components/configValue';
 import { DataTable, type Column } from '../../components/DataTable';
@@ -135,6 +142,52 @@ function settle<T>(p: Promise<T>): Promise<Settled<T>> {
   );
 }
 
+/** `task` over `items` with at most `limit` in flight; results in input order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await task(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/**
+ * `GET /runs/{id}` reads in flight at once. Each may fetch and verify a whole bundle under the
+ * server's heavy-read limit (4 permits), so one page never takes them all.
+ */
+const DETAIL_READS = 2;
+
+/** Stands in for a load that waits for another one (never settles; superseded by its deps). */
+const WAITING: Promise<never> = new Promise<never>(() => undefined);
+
+/**
+ * The set's runs. A run whose verified list summary (`GET /runs`: every row checked against its
+ * stored digest; the demo snapshot for anonymous visitors) and whose configuration (the one the
+ * experiment declares for that run id) are both at hand needs no request of its own. Any other
+ * run is read by id (`GET /runs/{id}`, which verifies its whole bundle), at most
+ * [`DETAIL_READS`] at a time, with bounded retries of a busy answer.
+ */
+async function loadRuns(ids: string[], listed: readonly Run[], demo: Demo | null, signal: AbortSignal): Promise<Settled<RunDetail>[]> {
+  const summaries = new Map(listed.map((r) => [r.run_id, r]));
+  if (demo !== null && getApiKey() !== null && ids.some((id) => !summaries.has(id))) {
+    // A key lists its own workspace; the experiment's runs are in the demo workspace's list.
+    const shared = await retryBusy(() => api.runs({ workspace: DEMO_WORKSPACE }, { signal }), signal);
+    for (const r of shared.items) if (!summaries.has(r.run_id)) summaries.set(r.run_id, r);
+  }
+  const configs = new Map((demo?.runs ?? []).flatMap((r) => (r.run_id === null ? [] : [[r.run_id, r.config] as const])));
+  return mapLimit(ids, DETAIL_READS, (id) => {
+    const summary = summaries.get(id);
+    const config = configs.get(id);
+    if (summary !== undefined && config !== undefined) return Promise.resolve<Settled<RunDetail>>({ ok: true, value: { ...summary, config } });
+    return settle(retryBusy(() => api.run(id, { signal }), signal));
+  });
+}
+
 /**
  * A stored comparison of a run with some other run than the baseline: experiments pair a run that
  * changes two assumptions against the baseline with the run that differs in only one of them.
@@ -145,13 +198,20 @@ interface InsteadPair {
   /** The other run of that comparison, as labelled when stored (may be empty), and its id. */
   otherLabel: string;
   otherId: string;
+  /** `aligned` or `metrics_only`. */
+  status: string;
 }
 
 /** The stored comparison of the baseline (A) with one run (B), as the server holds it. */
 type PairEntry =
   | { kind: 'ok'; cmp: Comparison }
-  /** None stored with A = baseline; `reversedId` names one stored the other way round. */
-  | { kind: 'missing'; reversedId: string | null; instead: InsteadPair | null }
+  /**
+   * None stored with A = baseline among the listed comparisons. `reversedId` names one stored the
+   * other way round, `instead` one with another run; `unlisted`: the list was capped, so one may
+   * exist beyond it.
+   */
+  | { kind: 'missing'; reversedId: string | null; instead: InsteadPair | null; unlisted: boolean }
+  /** Listed, but reading it failed (after bounded retries when the server was busy). */
   | { kind: 'error'; error: unknown };
 
 interface PairLookup {
@@ -159,6 +219,23 @@ interface PairLookup {
   /** The comparison list was capped: an existing comparison may not have been seen. */
   incomplete: boolean;
   listed: number;
+}
+
+/** Missing, and nothing stored about the run elsewhere: the only case creating one could fill. */
+function trulyMissing(e: PairEntry): boolean {
+  return e.kind === 'missing' && e.reversedId === null && e.instead === null && !e.unlisted;
+}
+
+/** The stored comparison of `run` with another run of the set (else any), B = `run` first. */
+function insteadPair(items: readonly Comparison[], base: string, run: string, ids: readonly string[]): InsteadPair | null {
+  const other = (c: Comparison) => (c.run_b === run ? c.run_a : c.run_b);
+  const candidates = items.filter((c) => (c.run_b === run || c.run_a === run) && other(c) !== base);
+  const rank = (c: Comparison) => (ids.includes(other(c)) ? 0 : 2) + (c.run_b === run ? 0 : 1);
+  const alt = [...candidates].sort((x, y) => rank(x) - rank(y))[0];
+  if (alt === undefined) return null;
+  return alt.run_b === run
+    ? { runA: alt.run_a, runB: alt.run_b, otherLabel: alt.label_a, otherId: alt.run_a, status: alt.status }
+    : { runA: alt.run_a, runB: alt.run_b, otherLabel: alt.label_b, otherId: alt.run_b, status: alt.status };
 }
 
 /** The run's label with its experiment named (`Cost of latency: …`), else its id. */
@@ -175,17 +252,18 @@ export default function LatencyLabPage() {
   // With `runs`, the demo is looked up on the baseline's dataset; with a demo alone, its stored
   // runs (`run_id`) are the set. Demo runs are matched by `run_id` only.
   const baseListed = useAsync(
-    (signal) => (listed.length === 0 ? Promise.resolve(null) : api.run(listed[0], { signal })),
+    (signal) => (listed.length === 0 ? Promise.resolve(null) : retryBusy(() => api.run(listed[0], { signal }), signal)),
     [listed[0] ?? null],
   );
   const demoDataset = listed.length === 0 ? undefined : (baseListed.data?.dataset.id ?? null);
   const demos = useAsync(
-    (signal) => (demoId === null || demoDataset === null ? Promise.resolve(null) : api.demos(demoDataset, { signal })),
+    (signal) => (demoId === null || demoDataset === null ? Promise.resolve(null) : retryBusy(() => api.demos(demoDataset, { signal }), signal)),
     [demoId, demoDataset],
   );
   const demo = demos.data?.find((d) => d.id === demoId) ?? null;
   const ids = listed.length > 0 ? listed : (demo?.runs.flatMap((r) => (r.run_id === null ? [] : [r.run_id])) ?? []);
   const key = ids.join(',');
+  const resolvingDemo = demoId !== null && (demos.loading || baseListed.loading);
 
   const setIds = (next: string[]) => {
     const p = new URLSearchParams(params);
@@ -194,49 +272,52 @@ export default function LatencyLabPage() {
     setParams(p);
   };
 
-  const all = useAsync((signal) => api.runs({}, { signal }), []);
-  const runs = useAsync((signal) => Promise.all(ids.map((id) => settle(api.run(id, { signal })))), [key]);
+  const all = useAsync((signal) => retryBusy(() => api.runs({}, { signal }), signal), []);
+  // Waits for the run list and the experiment, which usually cover every run of the set.
+  const runs = useAsync(
+    (signal) => (all.loading || resolvingDemo ? WAITING : loadRuns(ids, all.data?.items ?? [], demo, signal)),
+    [key, all.loading, all.data, resolvingDemo, demo],
+  );
   const [createdIds, setCreatedIds] = useState<Record<string, string>>({});
   const comparisons = useAsync(async (signal): Promise<PairLookup | null> => {
     if (ids.length < 2) return null;
     const base = ids[0];
-    const list = await api.readableComparisons({ signal });
+    const list = await retryBusy(() => api.readableComparisons({ signal }), signal);
     const entries = await Promise.all(
       ids.slice(1).map(async (other): Promise<PairEntry> => {
         const id = createdIds[`${base}|${other}`] ?? list.items.find((c) => c.run_a === base && c.run_b === other)?.id;
         if (id === undefined) {
-          const alt = list.items.find((c) => c.run_b === other && c.run_a !== base) ?? list.items.find((c) => c.run_a === other && c.run_b !== base);
-          const instead: InsteadPair | null = alt
-            ? alt.run_b === other
-              ? { runA: alt.run_a, runB: alt.run_b, otherLabel: alt.label_a, otherId: alt.run_a }
-              : { runA: alt.run_a, runB: alt.run_b, otherLabel: alt.label_b, otherId: alt.run_b }
-            : null;
-          return { kind: 'missing', reversedId: list.items.find((c) => c.run_a === other && c.run_b === base)?.id ?? null, instead };
+          return {
+            kind: 'missing',
+            reversedId: list.items.find((c) => c.run_a === other && c.run_b === base)?.id ?? null,
+            instead: insteadPair(list.items, base, other, ids),
+            unlisted: list.incomplete,
+          };
         }
         // The list omits `alignment`; the resource carries it.
-        const cmp = await settle(api.comparison(id, { signal }));
+        const cmp = await settle(retryBusy(() => api.comparison(id, { signal }), signal));
         return cmp.ok ? { kind: 'ok', cmp: cmp.value } : { kind: 'error', error: cmp.error };
       }),
     );
     return { entries, incomplete: list.incomplete, listed: list.items.length };
   }, [key, createdIds]);
-  const missing = (comparisons.data?.entries ?? []).flatMap((e, i) => (e.kind === 'missing' ? [ids[i + 1]] : []));
-  // Without a key nothing can be created: runs already compared with another run are explained instead.
+  const entries = comparisons.data?.entries ?? [];
+  // Only a key that may create comparisons is offered to fill a truly missing one; nothing about
+  // a curated experiment requires it, and a visitor without a key is not shown a locked control.
   const canCreate = useAccess().reasonFor('run') === null;
-  const missingInstead = (comparisons.data?.entries ?? []).flatMap((e, i) =>
-    e.kind === 'missing' && e.instead !== null ? [{ id: ids[i + 1], instead: e.instead }] : [],
-  );
-  const missingShown = canCreate ? missing : missing.filter((id) => !missingInstead.some((m) => m.id === id));
+  const creatable = entries.flatMap((e, i) => (trulyMissing(e) ? [ids[i + 1]] : []));
+  const missingInstead = entries.flatMap((e, i) => (e.kind === 'missing' && e.instead !== null ? [{ id: ids[i + 1], instead: e.instead }] : []));
+  const failed = entries.filter((e) => e.kind === 'error');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown>(null);
   const createMissing = async () => {
     const base = ids[0];
-    if (base === undefined || missing.length === 0) return;
+    if (base === undefined || creatable.length === 0) return;
     setCreating(true);
     setCreateError(null);
     const next = { ...createdIds };
     try {
-      for (const other of missing) {
+      for (const other of creatable) {
         const cmp = await api.createComparison(base, other);
         next[`${base}|${other}`] = cmp.id;
       }
@@ -251,7 +332,7 @@ export default function LatencyLabPage() {
   const baseRun = runs.data?.[0]?.ok ? runs.data[0].value : null;
   const baseDataset = baseRun?.dataset.id ?? null;
   const dataset = useAsync(
-    (signal) => (baseDataset === null ? Promise.resolve(null) : api.dataset(baseDataset, { signal })),
+    (signal) => (baseDataset === null ? Promise.resolve(null) : retryBusy(() => api.dataset(baseDataset, { signal }), signal)),
     [baseDataset],
   );
   // Prices print with the instrument of the very dataset version the baseline replayed.
@@ -264,7 +345,6 @@ export default function LatencyLabPage() {
   // page has settled, then all panels render at once. Panels filling in one by one pushed the ones
   // below them down while they were being read (layout shift 0.65 on a phone). Latched per
   // experiment: later reloads (Add run, Create comparisons) keep the panels and their own spinners.
-  const resolvingDemo = demoId !== null && (demos.loading || baseListed.loading);
   const settled = !resolvingDemo && !all.loading && !runs.loading && !comparisons.loading && !dataset.loading;
   const [readyFor, setReadyFor] = useState<{ demo: string | null } | null>(null);
   const ready = readyFor !== null && readyFor.demo === demoId;
@@ -325,34 +405,48 @@ export default function LatencyLabPage() {
   }
   const pair: PairPanelProps | null =
     pairState === null && comparisons.data && runs.data
-      ? { ids, runs: runs.data, comparisons: comparisons.data.entries, inst: manifest?.instrument ?? null }
+      ? { ids, runs: runs.data, comparisons: comparisons.data.entries, inst: manifest?.instrument ?? null, canCreate }
       : null;
 
   const comparisonsNote =
-    comparisons.data && (missingShown.length > 0 || (!canCreate && missingInstead.length > 0) || comparisons.data.incomplete || createError) ? (
+    comparisons.data && (failed.length > 0 || missingInstead.length > 0 || creatable.length > 0 || comparisons.data.incomplete || createError) ? (
       <div className="col">
+        {failed.length > 0 ? (
+          <>
+            <Notice tag="Incomplete" tone="warn">
+              {failed.length} of {ids.length - 1} stored comparisons with the baseline could not be read
+              {failed.every((e) => e.kind === 'error' && isBusy(e.error)) ? ` (the server was busy; ${BUSY_ATTEMPTS} attempts each)` : ''}. They
+              are left out of the panels below, which show only what was read.
+            </Notice>
+            <ErrorBox error={failed[0].kind === 'error' ? failed[0].error : null} onRetry={comparisons.reload} />
+          </>
+        ) : null}
         {comparisons.data.incomplete ? (
           <Notice tag="List incomplete">
             First {fmtInt(comparisons.data.listed)} stored comparisons searched; an older comparison of these runs may
             exist beyond them.
           </Notice>
         ) : null}
-        {!canCreate
-          ? missingInstead.map(({ id, instead }) => (
-              <Notice key={id} tag="Compared elsewhere" tone="info">
-                {runLabel(runs.data ?? [], ids, ids.indexOf(id), titles)} differs from the baseline in more than one assumption,
-                so it is compared with {instead.otherLabel ? runLabelText(instead.otherLabel, titles) : instead.otherId} instead:{' '}
-                <Link to={paths.comparePair(instead.runA, instead.runB)}>open that comparison</Link>.
-              </Notice>
-            ))
-          : null}
-        {missingShown.length > 0 ? (
+        {missingInstead.map(({ id, instead }) => (
+          <Notice key={id} tag="Compared elsewhere" tone="info">
+            {runLabel(runs.data ?? [], ids, ids.indexOf(id), titles)} has no stored comparison with the baseline; it is compared with{' '}
+            {instead.otherLabel ? runLabelText(instead.otherLabel, titles) : instead.otherId}
+            {instead.status === 'metrics_only' ? ' (metrics only)' : ''}:{' '}
+            <Link to={paths.comparePair(instead.runA, instead.runB)}>open that comparison</Link>.
+          </Notice>
+        ))}
+        {creatable.length > 0 ? (
           <Notice tag="Not compared" tone="info">
-            {missingShown.length} run{missingShown.length === 1 ? ' has' : 's have'} no stored comparison with the baseline (A =
-            baseline). The server computes comparisons; this page does not.{' '}
-            <GatedButton scope="run" onClick={() => void createMissing()} blockedReason={creating ? 'Creating comparisons\u2026' : null}>
-              {creating ? 'Creating\u2026' : `Create ${missingShown.length} missing comparison${missingShown.length === 1 ? '' : 's'}`}
-            </GatedButton>
+            {creatable.length} run{creatable.length === 1 ? ' has' : 's have'} no stored comparison with the baseline (A =
+            baseline), nor with any other run. The server computes comparisons; this page does not.
+            {canCreate ? (
+              <>
+                {' '}
+                <GatedButton scope="run" onClick={() => void createMissing()} blockedReason={creating ? 'Creating comparisons\u2026' : null}>
+                  {creating ? 'Creating\u2026' : `Create ${creatable.length} missing comparison${creatable.length === 1 ? '' : 's'}`}
+                </GatedButton>
+              </>
+            ) : null}
           </Notice>
         ) : null}
         {createError ? <ErrorBox error={createError} /> : null}
@@ -365,10 +459,13 @@ export default function LatencyLabPage() {
       runs={runs.data}
       loading={runs.loading}
       error={runs.error}
+      onRetry={runs.reload}
       onChange={setIds}
       listError={all.error}
       listIncomplete={all.data?.incomplete ? all.data.items.length : null}
       demo={demo}
+      pairs={comparisons.data?.entries ?? null}
+      pairsLoading={comparisons.loading}
       note={comparisonsNote}
       pending={ready ? null : resolvingDemo ? "Resolving the experiment's stored runs" : 'Loading runs and their comparisons'}
     />
@@ -413,15 +510,49 @@ interface SetRow {
   demoLabel: string | null;
 }
 
+/** What the server holds about one run's comparison with the baseline (`state` for tests). */
+interface PairStatus {
+  state: 'loading' | 'aligned' | 'metrics_only' | 'reversed' | 'elsewhere' | 'unlisted' | 'missing' | 'busy' | 'error';
+  text: string;
+  /** The pair page of the comparison meant. */
+  to: string | null;
+}
+
+function pairStatus(base: string, id: string, entry: PairEntry | undefined, loading: boolean, titles: ReadonlyMap<string, string>): PairStatus {
+  if (entry === undefined) return { state: 'loading', text: loading ? 'looking up\u2026' : DASH, to: null };
+  switch (entry.kind) {
+    case 'ok':
+      return entry.cmp.status === 'aligned'
+        ? { state: 'aligned', text: 'compared, aligned', to: paths.comparePair(base, id) }
+        : { state: 'metrics_only', text: 'compared, metrics only (not like-for-like)', to: paths.comparePair(base, id) };
+    case 'error':
+      return isBusy(entry.error)
+        ? { state: 'busy', text: 'unavailable: server busy', to: null }
+        : { state: 'error', text: 'could not be read', to: null };
+    case 'missing':
+      if (entry.reversedId !== null) return { state: 'reversed', text: 'compared the other way round', to: paths.comparePair(id, base) };
+      if (entry.instead !== null) {
+        const other = entry.instead.otherLabel ? runLabelText(entry.instead.otherLabel, titles) : entry.instead.otherId;
+        return { state: 'elsewhere', text: `compared with ${other} instead`, to: paths.comparePair(entry.instead.runA, entry.instead.runB) };
+      }
+      return entry.unlisted
+        ? { state: 'unlisted', text: 'not among the listed comparisons', to: null }
+        : { state: 'missing', text: 'not compared', to: null };
+  }
+}
+
 function RunSetPanel({
   ids,
   runs,
   loading,
   error,
+  onRetry,
   onChange,
   listError,
   listIncomplete,
   demo,
+  pairs,
+  pairsLoading,
   note,
   pending,
 }: {
@@ -429,11 +560,15 @@ function RunSetPanel({
   runs: Settled<RunDetail>[] | null;
   loading: boolean;
   error: Error | null;
+  onRetry: () => void;
   onChange: (ids: string[]) => void;
   listError: Error | null;
   /** Runs shown in Add run when the run list was capped. */
   listIncomplete: number | null;
   demo: Demo | null;
+  /** One entry per run after the baseline, once the comparisons were looked up. */
+  pairs: PairEntry[] | null;
+  pairsLoading: boolean;
   note: ReactNode;
   /** First load in progress: this spinner stands in for the panel body (no table yet). */
   pending: string | null;
@@ -446,6 +581,7 @@ function RunSetPanel({
     demoLabel: demo?.runs.find((r) => r.run_id === id)?.label ?? null,
   }));
   const failed = rows.filter((r) => r.run && !r.run.ok);
+  const status = (r: SetRow) => pairStatus(ids[0], r.id, pairs?.[r.index - 1], pairsLoading, titles);
   const columns: Column<SetRow>[] = [
     {
       id: 'role',
@@ -498,6 +634,20 @@ function RunSetPanel({
       },
     },
     {
+      id: 'pair',
+      header: 'With the baseline',
+      cell: (r) => {
+        if (r.index === 0) return <span className="dim">{DASH}</span>;
+        const s = status(r);
+        return (
+          <span data-pair-state={s.state} className={s.state === 'busy' || s.state === 'error' ? 'set-failed' : undefined}>
+            {s.to === null ? s.text : <Link to={s.to}>{s.text}</Link>}
+          </span>
+        );
+      },
+      raw: (r) => (r.index === 0 ? '' : status(r).text),
+    },
+    {
       id: 'open',
       header: 'Open',
       cell: (r) => (
@@ -540,7 +690,7 @@ function RunSetPanel({
       {pending === null && (loading || error || listError || listIncomplete !== null || failed.length > 0 || note) ? (
         <div className="set-status col">
           {loading ? <Spinner label="Loading runs" /> : null}
-          {error ? <ErrorBox error={error} /> : null}
+          {error ? <ErrorBox error={error} onRetry={onRetry} /> : null}
           {listError ? <ErrorBox error={listError} /> : null}
           {listIncomplete !== null ? (
             <Notice tag="List incomplete">First {fmtInt(listIncomplete)} runs offered in Add run; older runs are not listed.</Notice>
@@ -550,7 +700,7 @@ function RunSetPanel({
               <p className="note">
                 Run <span className="mono">{r.id}</span> could not be loaded:
               </p>
-              <ErrorBox error={r.run && !r.run.ok ? r.run.error : null} />
+              <ErrorBox error={r.run && !r.run.ok ? r.run.error : null} onRetry={onRetry} />
             </div>
           ))}
           {note}
@@ -667,6 +817,8 @@ interface PairPanelProps {
   comparisons: PairEntry[];
   /** Instrument of the baseline's dataset, for prices and quantities. */
   inst: InstrumentMeta | null;
+  /** The caller's key may create comparisons. */
+  canCreate: boolean;
 }
 
 function ok(pair: PairPanelProps): (Comparison | null)[] {
@@ -685,8 +837,10 @@ function VariablesPanel({ pair, state }: { pair: PairPanelProps | null; state: R
             if (c.kind === 'error') {
               return (
                 <section key={other} className="col set-pair">
+                  <h3 className="set-pair-title">Baseline vs {name}</h3>
                   <p className="note">
-                    The stored comparison of the baseline with <span className="mono">{other}</span> could not be loaded:
+                    The stored comparison of the baseline with <span className="mono">{other}</span> could not be read
+                    {isBusy(c.error) ? ' because the server was busy' : ''}; Retry is in the Run set panel.
                   </p>
                   <ErrorBox error={c.error} />
                 </section>
@@ -711,8 +865,11 @@ function VariablesPanel({ pair, state }: { pair: PairPanelProps | null; state: R
                         It is compared with {c.instead.otherLabel ? runLabelText(c.instead.otherLabel, titles) : c.instead.otherId}{' '}
                         instead (<Link to={paths.comparePair(c.instead.runA, c.instead.runB)}>open that comparison</Link>).
                       </>
-                    ) : null}{' '}
-                    {c.instead === null ? 'Create the missing comparisons from the Run set panel.' : null}
+                    ) : null}
+                    {c.unlisted && c.reversedId === null && c.instead === null
+                      ? ' The comparison list was capped, so an older comparison of these runs may exist beyond it.'
+                      : null}
+                    {trulyMissing(c) ? (pair.canCreate ? ' Create the missing comparisons from the Run set panel.' : ' None is stored for these two runs.') : null}
                   </p>
                 </section>
               );
@@ -823,6 +980,8 @@ function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: Rea
                         <td key={pair.ids[i + 1]} colSpan={2} className="num dim">
                           {entry?.kind === 'ok' ? (
                             DASH
+                          ) : entry?.kind === 'error' ? (
+                            isBusy(entry.error) ? 'unavailable (server busy)' : 'unavailable'
                           ) : entry?.kind === 'missing' && entry.instead !== null && k !== keys[0] ? (
                             'compared elsewhere'
                           ) : entry?.kind === 'missing' && entry.instead !== null ? (
@@ -830,6 +989,10 @@ function MetricsPanel({ pair, state }: { pair: PairPanelProps | null; state: Rea
                               compared with {entry.instead.otherLabel ? runLabelText(entry.instead.otherLabel, titles) : entry.instead.otherId}{' '}
                               instead
                             </Link>
+                          ) : entry?.kind === 'missing' && entry.reversedId !== null ? (
+                            'compared the other way round'
+                          ) : entry?.kind === 'missing' && entry.unlisted ? (
+                            'not among the listed comparisons'
                           ) : (
                             'not compared'
                           )}

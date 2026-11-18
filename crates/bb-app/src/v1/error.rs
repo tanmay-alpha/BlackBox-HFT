@@ -2,7 +2,9 @@
 //! id and structured `details`; always `Cache-Control: no-store`.
 //!
 //! Internal failures (database, storage, I/O, engine errors, panics) never reach the client:
-//! they are logged with the request id and answered with a generic message (SEC-17).
+//! they are logged with the request id and answered with a generic message (SEC-17). The log
+//! event carries `request_id`, `component`, `error_class` and `reason` as safe fields and the raw
+//! diagnostic only through the SEC-18 redactor ([`redacted`]).
 
 use axum::{
     Json,
@@ -13,7 +15,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use utoipa::ToSchema;
 
-use crate::error::AppError;
+use crate::{config::redacted, error::AppError};
 
 tokio::task_local! {
     /// The id of the request being handled (set by the edge middleware).
@@ -209,9 +211,22 @@ impl ApiError {
         e
     }
 
-    /// Logs `detail` under the request id and answers with a generic message.
+    /// Logs `detail` (redacted) under the request id and answers with a generic message.
     pub fn internal(detail: impl std::fmt::Display) -> Self {
-        tracing::error!(request_id = %request_id(), error = %detail, "internal error");
+        Self::internal_class("internal", detail)
+    }
+
+    /// [`ApiError::internal`] for a known failure class (`database`, `migration`, `artifact`,
+    /// `json`, `engine`, `internal`).
+    fn internal_class(class: &'static str, detail: impl std::fmt::Display) -> Self {
+        tracing::error!(
+            request_id = %request_id(),
+            component = "http",
+            error_class = class,
+            reason = "internal",
+            error = %redacted(detail),
+            "internal error"
+        );
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -288,9 +303,8 @@ impl From<AppError> for ApiError {
             }
             AppError::Cancelled(message) => ApiError::conflict("cancelled", message),
             AppError::PlatformMismatch(message) => ApiError::platform_mismatch(message),
-            AppError::SimulationFailed(detail) | AppError::Internal(detail) => {
-                ApiError::internal(detail)
-            }
+            AppError::SimulationFailed(detail) => ApiError::internal_class("engine", detail),
+            AppError::Internal(detail) => ApiError::internal(detail),
         }
     }
 }
@@ -305,23 +319,31 @@ impl From<bb_db::Error> for ApiError {
             bb_db::Error::Invalid(message) => ApiError::invalid_request(message),
             bb_db::Error::Quota(scope) => ApiError::quota_exceeded(scope, 0, 0),
             bb_db::Error::Database(e) if is_unreachable(&e) => {
-                tracing::error!(request_id = %request_id(), error = %e, "database unreachable");
+                tracing::error!(
+                    request_id = %request_id(),
+                    component = "db",
+                    error_class = "database",
+                    reason = "db_unreachable",
+                    error = %redacted(&e),
+                    "database unreachable"
+                );
                 ApiError::unavailable("database", 5)
             }
-            other => ApiError::internal(other),
+            other @ bb_db::Error::Migration(_) => ApiError::internal_class("migration", other),
+            other => ApiError::internal_class("database", other),
         }
     }
 }
 
 impl From<bb_artifacts::ArtifactError> for ApiError {
     fn from(err: bb_artifacts::ArtifactError) -> Self {
-        ApiError::internal(format!("artifact error: {err}"))
+        ApiError::internal_class("artifact", format!("artifact error: {err}"))
     }
 }
 
 impl From<serde_json::Error> for ApiError {
     fn from(err: serde_json::Error) -> Self {
-        ApiError::internal(format!("json error: {err}"))
+        ApiError::internal_class("json", format!("json error: {err}"))
     }
 }
 

@@ -1,4 +1,4 @@
-// The replay chart: the observed best bid and ask of a ≤ 1 s window as step lines, with each
+// The replay chart: the synthetic dataset's best bid and ask of a ≤ 1 s window as step lines, with each
 // scenario's simulated exchange arrivals and fills as markers (scenario colour + shape), and a
 // labelled vertical line at the shared replay time. Hovering shows a tooltip: the marker's
 // scenario, order, side, quantity, price and exchange-clock time, or the observed bid/ask there.
@@ -250,7 +250,7 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
         };
         tip.textContent = m
           ? `${handlers.current.names[m.k]} · order ${m.orderId}\n${m.kind === 'arrival' ? 'Reached the exchange' : 'Simulated fill'}: ${m.side === 'buy' ? 'buy' : 'sell'} ${fmtQty(m.qty, inst)} @ ${fmtPrice(m.priceTick, inst)}\n${(m.ts / 1e9).toFixed(6)} s, exchange clock`
-          : `${unitLabel(p.time, 4)}\nBid ${val(bid)} · Ask ${val(ask)} (observed)`;
+          : `${unitLabel(p.time, 4)}\nBid ${val(bid)} · Ask ${val(ask)} (synthetic source data)`;
         tip.hidden = false;
         const w = host.clientWidth;
         const left = p.point.x + 14 + tip.offsetWidth > w ? p.point.x - 14 - tip.offsetWidth : p.point.x + 14;
@@ -310,7 +310,7 @@ export function PriceChart({ moment, focus, inst, selected, names, t, onSelectOr
   }, [phone, colors]);
 
   const desc = built
-    ? `Price chart from ${(moment.window.t0 / 1e9).toFixed(3)} s to ${(moment.window.t1 / 1e9).toFixed(3)} s, replay time line at ${(t / 1e9).toFixed(3)} s. Observed best bid and ask from ${fmtPrice(
+    ? `Price chart from ${(moment.window.t0 / 1e9).toFixed(3)} s to ${(moment.window.t1 / 1e9).toFixed(3)} s, replay time line at ${(t / 1e9).toFixed(3)} s. Synthetic best bid and ask from ${fmtPrice(
         moment.market.bbo.bid_tick[0] ?? null,
         inst,
       )} / ${fmtPrice(moment.market.bbo.ask_tick[0] ?? null, inst)}. ${(['fast', 'slow'] as const)

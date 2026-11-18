@@ -167,6 +167,12 @@ export function Markdown({ source, className }: { source: string; className?: st
   return createElement('div', { className: className ? `md ${className}` : 'md' }, parseBlocks(source).map(renderBlock));
 }
 
+/**
+ * A run report's final limitations heading: "Limitations" in current reports, "Standard
+ * limitations" in stored older ones; never "Dataset limitations", which is a separate section.
+ */
+export const LIMITATIONS_HEADING = /^(standard )?limitations$/i;
+
 /** The blocks under the first heading matching `title` (until the next heading of that level or higher). */
 export function sectionOf(md: string, title: RegExp): Block[] | null {
   const blocks = parseBlocks(md);

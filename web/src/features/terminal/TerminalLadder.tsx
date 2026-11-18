@@ -35,7 +35,7 @@ function OwnMarks({
           type="button"
           className={`term-own-mark term-own-${o.side === 'buy' ? 'bid' : 'ask'}${o.order_id === selected ? ' is-selected' : ''}`}
           aria-pressed={o.order_id === selected}
-          title={`Simulated ${o.side} order ${o.order_id}, ${fmtQty(o.qty, inst)} (modeled; not part of the historical book)`}
+          title={`Simulated ${o.side} order ${o.order_id}, ${fmtQty(o.qty, inst)} (modeled; not part of the reconstructed book)`}
           onClick={() => onSelect(o.order_id)}
         >
           #{o.order_id} {o.side} {fmtQty(o.qty, inst)}
@@ -63,7 +63,7 @@ export function TerminalLadder({ frame, instrument, rows, resting, selectedOrder
         frame={frame}
         instrument={instrument}
         rows={rows}
-        caption="(observed displayed quantity) · own simulated orders resting at the cursor (modeled)."
+        caption="(displayed quantity from the dataset) · own simulated orders resting at the cursor (modeled)."
         own={{
           header: 'Own orders',
           cell: (tick) => (

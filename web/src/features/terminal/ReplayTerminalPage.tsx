@@ -80,7 +80,7 @@ const LADDER_ROWS = 10;
 const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 5, 20];
 
 const LEAD =
-  "The replayed book as observed in the dataset, with this run's simulated orders and fills replayed on top. Simulated orders never entered the replayed book and did not move prices.";
+  "The book reconstructed from the dataset's events, with this run's simulated orders and fills replayed on top. Simulated orders never entered the replayed book and did not move prices.";
 
 interface Win {
   t0: number;
@@ -857,16 +857,28 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
     moveCursor(o.decision_ts);
   }
 
+  // The run is known before its first window arrives, so the page heading is shown from the start
+  // (the loading line sits under it); only the window summary waits for the data.
+  const title = (
+    <h1 className="term-title">
+      Order book replay <span className="dim">{'\u00b7'}</span>{' '}
+      {run.label ? <span title={run.label}>{runLabelText(run.label, demoTitles)}</span> : <span className="mono">{runId}</span>}
+    </h1>
+  );
+
   let body: ReactNode;
   if (!loaded || !tl || !rp) {
     body = (
-      <div className="book-state col">
-        {loadError ? (
-          <ErrorBox error={loadError} onRetry={() => setReloadNonce((n) => n + 1)} />
-        ) : (
-          <Spinner label={loadingLabel} />
-        )}
-        {jumpError ? <ErrorBox error={jumpError} /> : null}
+      <div className="book-body">
+        <div className="term-head">{title}</div>
+        <div className="book-state col">
+          {loadError ? (
+            <ErrorBox error={loadError} onRetry={() => setReloadNonce((n) => n + 1)} />
+          ) : (
+            <Spinner label={loadingLabel} />
+          )}
+          {jumpError ? <ErrorBox error={jumpError} /> : null}
+        </div>
       </div>
     );
   } else {
@@ -1091,10 +1103,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
       <div className="book-body">
         {/* Title and loaded-window summary share one row, leaving the panes (event log) more height. */}
         <div className="term-head">
-          <h1 className="term-title">
-            Order book replay <span className="dim">{'\u00b7'}</span>{' '}
-            {run.label ? <span title={run.label}>{runLabelText(run.label, demoTitles)}</span> : <span className="mono">{runId}</span>}
-          </h1>
+          {title}
           {tucked ? (
             <details className="book-window">
               <summary>{windowSpan}</summary>
@@ -1223,7 +1232,7 @@ function Terminal({ run, ds }: { run: RunDetail; ds: DatasetManifest }) {
   }
 
   return (
-    <Workspace context={run.label ? runLabelText(run.label, demoTitles) : runId} layout toolbar={toolbar} ownHeading={Boolean(loaded && tl && rp)}>
+    <Workspace context={run.label ? runLabelText(run.label, demoTitles) : runId} layout toolbar={toolbar} ownHeading>
       {body}
     </Workspace>
   );

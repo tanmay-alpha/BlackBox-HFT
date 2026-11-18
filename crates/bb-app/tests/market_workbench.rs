@@ -109,10 +109,48 @@ async fn synthetic_market_is_bounded_paginated_and_private_files_are_unreachable
         "book?event_index=0&orders_per_level=101",
         "metrics?max_points=1",
         "metrics?max_points=501",
+        "events/0?levels=11",
+        "events/0?levels=0",
+        "events/0?orders_per_level=101",
+        "events/first",
+        "events/-1",
     ] {
         let (status, _, body) = server.get(&format!("{root}/{query}"), None).await;
         assert_eq!(status, 400, "{query}: {body}");
     }
+    let (status, _, body) = server.get(&format!("{root}/events/{total}"), None).await;
+    assert_eq!(status, 404, "{body}");
+    // Curated examples resolve to before/after details of that exact event.
+    let (status, _, examples) = server.get(&format!("{root}/examples"), None).await;
+    assert_eq!(status, 200, "{examples}");
+    let items = examples["items"].as_array().unwrap();
+    assert_eq!(items.len(), 5);
+    for example in items {
+        let index = example["event_index"].as_u64().unwrap();
+        assert!(example["rule"].is_string());
+        let (status, _, detail) = server.get(&format!("{root}/events/{index}"), None).await;
+        assert_eq!(status, 200, "{detail}");
+        assert_eq!(detail["event"]["event_index"], index);
+        assert!(detail["event"]["ts_ns"].is_string());
+        assert_eq!(detail["before_event_index"], index - 1);
+        assert!(!detail["affected"].as_array().unwrap().is_empty());
+        assert!(detail["order_before"]["age_ns"].is_string() || detail["order_after"].is_object());
+    }
+    // The largest detail (deepest book, every bound at its maximum) stays below the page target.
+    let response = server
+        .http
+        .get(format!(
+            "{}{root}/events/{}?levels=10&orders_per_level=100",
+            server.base,
+            total - 1
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.bytes().await.unwrap();
+    println!("largest event detail: {} bytes", bytes.len());
+    assert!(bytes.len() <= 256 * 1024);
     let (status, _, body) = server
         .get(&format!("{root}/book?event_index={total}"), None)
         .await;
