@@ -1,7 +1,7 @@
 //! The versioned demo snapshot (FINAL_AUDIT §4 item 6, SECURITY_REVIEW SEC-10): every row the
 //! anonymous list and catalogue routes read (`/runs`, `/experiments`, `/comparisons`, `/reports`,
-//! `/sweeps`, `/datasets`, `/presets`, `/demos`) and the demo comparisons `GET /comparisons/{id}`
-//! answers anonymously, loaded from Postgres once and answered from memory for any query string.
+//! `/sweeps`, `/datasets`, `/presets`, `/demos`), demo run trust rows, and the demo comparisons
+//! `GET /comparisons/{id}` answers anonymously, loaded once and answered from memory.
 //! Filters, sorts, cursors and limits are evaluated here with the semantics of the keyed path's
 //! SQL, so varied anonymous queries cannot reach the database.
 //!
@@ -34,6 +34,8 @@
 //! workspace/key/job/config rows, and public experiment visibility used by the demo catalogue.
 //! Presets and instruments are rendered from version manifests, not mutable instrument rows;
 //! the audited dependency list is in docs/rebuild/PHASE6_RELIABILITY.md.
+//! Run trust rows retain at most [`MAX_ARTIFACT_BYTES`] encoded metadata bytes each (no bundle
+//! payloads). Oversized rows keep the database read path, without disabling the list snapshot.
 //!
 //! [`AppState::data_generation`]: super::AppState::data_generation
 
@@ -47,8 +49,8 @@ use std::{
 };
 
 use bb_db::{
-    Comparison, Cursor, ExperimentQuery, ExperimentView, JobView, ResearchReport, RunKey, RunSort,
-    RunView,
+    Comparison, Cursor, ExperimentQuery, ExperimentView, JobView, ResearchReport, RunArtifact,
+    RunKey, RunSort, RunView,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -65,6 +67,8 @@ use super::{
 
 /// Largest number of rows of one list kept in memory.
 pub const MAX_ROWS: usize = 1000;
+/// Maximum encoded trust-row metadata retained per run (at most [`MAX_ROWS`] runs).
+pub const MAX_ARTIFACT_BYTES: usize = 64 * 1024;
 /// Minimum time between two reads of the database's demo data version (rows written by another
 /// process): the worst-case staleness of such a write, and the most often warm anonymous traffic
 /// can make the server query Postgres.
@@ -88,6 +92,7 @@ pub struct Snapshot {
     /// Live, digest-checked runs listed in the demo workspace (every platform), newest first.
     runs: Vec<RunView>,
     pub runs_by_id: HashMap<Uuid, RunView>,
+    pub artifacts: HashMap<Uuid, Arc<RunArtifact>>,
     /// Demo experiments, newest first.
     experiments: Vec<ExperimentView>,
     pub jobs: HashMap<Uuid, JobView>,
@@ -299,6 +304,25 @@ where
     }
 }
 
+/// Encoded metadata size without allocating a second copy of the row. Bounding the encoded
+/// strings, arrays and objects also bounds their decoded heap storage in the snapshot.
+pub fn artifact_metadata_bytes(row: &RunArtifact) -> Result<usize, serde_json::Error> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, row)?;
+    Ok(count.0)
+}
+
 async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
     let generation = state.data_generation();
     let demo = state.workspaces.demo(state).await?;
@@ -322,9 +346,17 @@ async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
     )
     .await?;
     let mut runs = Vec::with_capacity(rows.len());
+    let mut artifacts = HashMap::new();
     for view in rows {
         // A changed row is quarantined here and left out, as on the database path.
         if listed_summary(state, &view).await?.is_some() {
+            match db.artifact(view.run.id).await {
+                Ok(row) if artifact_metadata_bytes(&row)? <= MAX_ARTIFACT_BYTES => {
+                    artifacts.insert(view.run.id, Arc::new(row));
+                }
+                Ok(_) | Err(bb_db::Error::NotFound) => {}
+                Err(e) => return Err(e.into()),
+            }
             runs.push(view);
         }
     }
@@ -423,6 +455,7 @@ async fn build(state: &Shared) -> Result<Snapshot, ApiError> {
         checked: Mutex::new(at),
         runs,
         runs_by_id,
+        artifacts,
         experiments,
         jobs,
         comparisons,

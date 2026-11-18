@@ -468,7 +468,7 @@ pub fn trust_of(view: &RunView, artifact: &RunArtifact) -> Result<BundleTrust, &
 /// A run whose bundle is verified and cached locally.
 pub struct OpenRun {
     pub view: RunView,
-    pub artifact: RunArtifact,
+    pub artifact: Arc<RunArtifact>,
     pub trust: BundleTrust,
     pub limits: BundleLimits,
     path: PathBuf,
@@ -487,7 +487,25 @@ pub async fn open_run(
     limits: BundleLimits,
     view: RunView,
 ) -> Result<OpenRun, ApiError> {
-    let artifact = db.artifact(view.run.id).await?;
+    open_run_with_artifact(db, storage, cache, metrics, limits, view, None).await
+}
+
+/// Uses the versioned demo snapshot's row for anonymous reads; keyed reads pass `None`.
+/// The snapshot is fingerprint-checked before resolution, never looked up by bundle hash.
+#[allow(clippy::too_many_arguments)]
+pub async fn open_run_with_artifact(
+    db: &Database,
+    storage: &Storage,
+    cache: &Arc<BundleCache>,
+    metrics: &Arc<Metrics>,
+    limits: BundleLimits,
+    view: RunView,
+    artifact: Option<Arc<RunArtifact>>,
+) -> Result<OpenRun, ApiError> {
+    let artifact = match artifact {
+        Some(row) => row,
+        None => Arc::new(db.artifact(view.run.id).await?),
+    };
     let trust = match trust_of(&view, &artifact) {
         Ok(trust) => trust,
         Err(object) => {
@@ -566,7 +584,24 @@ pub async fn verified_trailer(
     limits: BundleLimits,
     view: &RunView,
 ) -> Result<BundleTrailerCore, ApiError> {
-    let artifact = db.artifact(view.run.id).await?;
+    verified_trailer_with_artifact(db, storage, cache, metrics, limits, view, None).await
+}
+
+/// As [`verified_trailer`], using the already resolved demo snapshot's artefact row.
+#[allow(clippy::too_many_arguments)]
+pub async fn verified_trailer_with_artifact(
+    db: &Database,
+    storage: &Storage,
+    cache: &Arc<BundleCache>,
+    metrics: &Arc<Metrics>,
+    limits: BundleLimits,
+    view: &RunView,
+    artifact: Option<Arc<RunArtifact>>,
+) -> Result<BundleTrailerCore, ApiError> {
+    let artifact = match artifact {
+        Some(row) => row,
+        None => Arc::new(db.artifact(view.run.id).await?),
+    };
     let trust = match trust_of(view, &artifact) {
         Ok(trust) => trust,
         Err(object) => {
