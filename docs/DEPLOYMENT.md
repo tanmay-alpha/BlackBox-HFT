@@ -45,8 +45,10 @@ target/release/blackbox --data-dir data serve --web-dir web/dist
 Anonymous demo lists and catalogues (`/runs`, `/experiments`, `/comparisons`, `/reports`, `/datasets`, `/presets`,
 `/demos`) are answered from an in-memory snapshot that `serve` builds at start and rebuilds after any change it makes
 itself, so warm anonymous traffic leaves Postgres idle. Rows written by another process (`demo seed`, `datasets`
-commands, a separate `worker`) appear in anonymous lists after the snapshot's next rebuild: the next change made by
-`serve`, at most one hour, or a restart. Keyed reads always use the database.
+commands, a separate `worker`) are noticed by a cheap demo-data version check (`bb-db` `demo_data_version`) that one
+anonymous reader runs at most every 15 minutes; a change rebuilds the snapshot. Worst-case staleness is 15 minutes plus
+the 30 s anonymous response cache plus one rebuild ([rebuild/PHASE6_RELIABILITY.md](rebuild/PHASE6_RELIABILITY.md)).
+Keyed reads always use the database.
 
 The `hosted` Docker target is the API image that CI publishes to `ghcr.io/tanmay-alpha/blackbox-hft`.
 

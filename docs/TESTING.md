@@ -33,6 +33,12 @@ Database/API Rust tests skip when `BLACKBOX_TEST_DATABASE_URL` is unset; they re
 Postgres 18 database with `CREATEDB`. CI supplies it. Playwright needs a built `blackbox` binary
 (`BLACKBOX_BIN`) and its own `DATABASE_URL`; the `e2e` job supplies both.
 
+`bb-app/tests/strategy_kinds.rs` submits a preset for every `StrategyKind` through
+`POST /api/v1/experiments`, checks the stored strategy label, and waits for the real worker to
+complete each job. Its exhaustive variant match and preset coverage assertion guard against
+Rust strategy variants missing from PostgreSQL's `experiment_configs_strategy_kind_check`
+(migration 0011 adds `glft`).
+
 ## CI
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push to `main` and every pull request.
