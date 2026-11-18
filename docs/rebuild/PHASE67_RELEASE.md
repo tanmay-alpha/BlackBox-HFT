@@ -80,6 +80,20 @@ production suite 15 passed, 1 skipped (keyed), no retries.
 - The mmap threshold costs about 15–20% more CPU under phase-4 concurrency; it is an image `ENV` that can be overridden
   in the Render service settings without a rebuild.
 
+## Follow-up 4: `3ed53cd` (PR #9)
+
+Commits `8c35d57` (hosted memory), `3b61c35` (docs). PR CI 44410135636 and `main` CI green; image
+`sha256:9300ae0696002e0b48b355d871c338675d4c5870e0885a16bda938aeb0b3e4a1`; Render deploy `dep-dbv2jk5g1s2s73e0c8m0`;
+`/status` `git_sha=3ed53cd…`, worker idle; smoke 8/8; Vercel built from `main`; production suite 15 passed, 1 skipped
+(keyed), no retries.
+
+- A cold keyed timeline first page decides `window_too_large` from fills and equity before decoding orders and tape;
+  comparisons read the cached run or only orders and tape. Responses, stored comparison summaries and `summary_sha256`
+  unchanged (tests).
+- AT-5/SEC-6 fixed in the 512 MB Linux fixture: every phase below 286.1 MiB in three pinned repeats; phase 4 (job +
+  concurrent and keyed reads + comparison) 240.0/247.0/252.0 MiB (was 264.0/279.6/300.1), margin 34.1 MiB over a 12.0
+  MiB repeat spread. Measured locally without a CPU quota, not on Render.
+
 ## Rollback
 
 ```
