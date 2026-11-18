@@ -1,15 +1,15 @@
 # Hosted full-process memory (audit AT-5 / SEC-6)
 
-Date: 2026-11-18. Branches `p7/mem` (causes 1–2, rebased on `p6/int` `1c6acab`) and `p7/jobmem`
-(cause 3, on `p6/int` `42d9237`). Requirement: the hosted `blackbox serve` process (API +
-in-process worker + analytics + parsed-run cache + concurrent HTTP heavy reads) peaks below
-**300 MB** on Linux. Result: **not met**. The read path was fixed (peak under 32 concurrent
-anonymous heavy readers 697 → 246 MiB) and resident memory no longer ratchets from job to job
-(all 57 largest admitted jobs now run in a 512 MB container; before, it was OOM-killed at job
-55). What remains is the working set of a job itself: a largest admitted job adds up to 204 MiB
-(512 MB run) / 246 MiB (2 GB run) to a start of 186–292 MiB, so single jobs peak at up to
-460 MiB, and the largest job plus concurrent reads is still OOM-killed at 512 MB. Disposition at
-the end.
+Date: 2026-11-18. Branches `p7/mem` (causes 1–2, rebased on `p6/int` `1c6acab`), `p7/jobmem`
+(cause 3, on `p6/int` `42d9237`) and `p7/amem` (causes 4–6, on the integration with `p7/jobmem`).
+Requirement: the hosted `blackbox serve` process (API + in-process worker + analytics +
+parsed-run cache + concurrent HTTP heavy reads) peaks below **300 MB** on Linux. Result: **not
+met**. The read path was fixed (peak under 32 concurrent anonymous heavy readers 697 → 245 MiB),
+resident memory no longer ratchets from job to job, and a largest job's own working set shrank
+(run analytics state, the analytics report as `Value` trees, the result-hash buffer): the whole
+fixture now completes at 512 MB, single jobs peak at up to 340 MiB (was 452–460), the largest
+job plus concurrent reads at 435 MiB (was OOM-killed), cancellation at 376 MiB, idle 217 MiB.
+Phases 3–5 still exceed 286.1 MiB. Disposition at the end.
 
 All figures below come from the runs named with them; MiB = 2^20 bytes (300 MB = 286.1 MiB).
 
@@ -184,47 +184,154 @@ cap. Phase 4 (2 GB): the job completed, keyed reads 200 except `/timeline` 400, 
 created (201) and read (200). The per-job increment is larger than before because a job no longer
 reuses free memory left in the arenas by earlier jobs; the peaks themselves are lower and stable.
 
-## Residual: the working set of one largest job
+## Cause 4: run analytics kept every order's execution state until the end of the tape
 
-Every phase that runs a largest admitted job exceeds 300 MB: phase 3 by up to 174 MiB (460.0),
-phase 4 by 200 MiB (485.6), phase 5 by 166 MiB (451.6). Phases 1, 2 and 6 stay under it (143.7,
-266.5, 205.4 at most). heaptrack of the one-job run (heap peak 439.9 MB, reached in phase 4)
-names the job's share:
+heaptrack of the `p7/jobmem` image with one largest job (heap peak 439.9 MB, reached in phase 4)
+put 124.4 MB of the peak in the execution analytics pass
+(`bb-analytics` `execution.rs`): one `OrderState` per order in a `BTreeMap` (50.7 MB) with three
+`Spreads` accumulators per order (73.7 MB, 70,251 orders), all alive until the tape ended, about
+1.8 KB per order. Fix (`p7/amem` `387a67d`, `compute_streaming_parts`): the first pass walks the
+tape once, accumulates the run-wide spread, bootstrap and P&L metrics in tape order (reordering
+fills would change the compensated sums and bootstrap bands) and links each order's events by one
+index per event; the second pass replays one order at a time, emits its detail if a sink wants it,
+and frees its state before the next. Run summaries (`compute_execution_summary`, used by
+`run_analytics` and the execution-validation study) build no per-order spread curves or detail
+reports. Exact Kaplan-Meier and quantiles still keep one observation per order.
 
-| allocation site | MB at peak |
+Output identity: the golden test now also pins the SHA-256 of every golden run's analytics JSON
+(`ANALYTICS_SHA256` in `crates/bb-app/tests/golden.rs`), computed by the previous code. Both
+toolchains compute identical analytics bytes, also for the three entries whose result hashes
+differ (the analytics pass calls no platform math function); the new code reproduces all 16 on
+WinLibs (Windows) and glibc (`rust:1.100.0-trixie` container). Result hashes are unchanged.
+
+## Cause 5: the bundle write held the analytics report as two `serde_json::Value` trees
+
+heaptrack of the image with cause 4 fixed (`target/hosted-memory/amem-heaptrack-job`, heap peak
+362.9 MB in phase 4): the worker parsed the encoded report into a `Value` (`worker.rs:949`,
+41.8 MB) and `BundleWriter::write` cloned it into the trailer (`bundle.rs:353`, 38.9 MB), for a
+report of about 11 MB of text. Fix (`d4d59be`): `TrailerAnalytics::from_json` converts the
+report once to exactly the text the trailer stores (compact serialization of the `Value`, keys
+sorted), drops the `Value`, and the writer serializes a borrowed trailer with that text embedded
+verbatim; the worker drops the typed report once encoded. The reader is unchanged. Bundle bytes
+are unchanged: `bb-artifacts` `trailer_analytics_text_writes_the_same_bundle_bytes` pins the
+SHA-256 and size of bundles written by the previous writer, with and without a report, for both
+flate2 backends feature unification can select (`miniz_oxide` when `bb-artifacts` builds alone,
+`zlib-rs` once `bb-data`'s `zip` is in the build, as in `blackbox`), and all 16 golden runs write
+identical bundles before and after (manifest timestamps normalised; checked on Windows).
+
+## Cause 6: the result hash serialized the whole run into one buffer
+
+heaptrack of the image with causes 4–5 fixed (`amem2-heaptrack-job`, heap peak 353.1 MB):
+134.2 MB in `bb_core::hash::sha256_json` → `serde_json::to_vec` of `(tape, fills, equity)` for the
+run's `result_sha256` (`bb-forensics` `result_sha256`, `pipeline.rs:210`). Fix (`bfa7dfb`): the
+encoding streams through a 64 KiB buffer into SHA-256. The hashed bytes are the same (unit test
+`streamed_json_digest_equals_the_buffered_encoding` against the buffered digest on nested maps,
+special floats and 200,000-row arrays; golden pins unchanged).
+
+## Results with causes 1–6 fixed
+
+Runs at 512 MB, identical fixture, 57 candidate jobs (`target/hosted-memory/<run>`): `jobmem-512m`
+(causes 1–3), `amem-512m` (+ cause 4, image `blackbox-hft:hosted-amem`), `amem2-512m` (+ cause 5,
+`hosted-amem2`), `amem3-512m` (+ cause 6, `hosted-amem3`, `p7/amem` `bfa7dfb`). `jobmem-512m` was
+OOM-killed in phase 4; none of the three `amem` runs was, and each completed every phase. The
+cgroup reaching 512 MB is reclaimable page cache (bundles written to the disk cache), not the
+process.
+
+| figure (MiB) | causes 1–3 | + 4 | + 5 | + 6 (final) |
+|---|---:|---:|---:|---:|
+| boot | — | 57.6 | 57.4 | 57.6 |
+| phase 1: cache fill, peak | 140.1 | 141.1 | 108.7 | 141.0 |
+| phase 2: 32 concurrent anonymous heavy readers, peak | 245.7 | 248.5 | 254.0 | **245.0** |
+| phase 3: start RSS of the 57 jobs | 193.2–291.6 | 199.1–265.8 | 188.5–273.9 | 190.3–262.8 |
+| phase 3: highest job peak | 452.0 | 444.4 | 402.9 | **339.9** |
+| phase 3: highest increment of one job over its start | +203.7 | +209.6 | +153.0 | +114.8 |
+| phase 3: highest peak of a budget-stopped job (nothing stored) | — | 361.2 | 344.0 | 321.8 |
+| phase 3: jobs that peaked above 286.1 (of 57) | 37 of 51 | 47 | 33 | **19** |
+| phase 4: largest job + 32 readers + keyed whole-run reads + comparison, peak | OOM-killed | 462.8 | 475.9 | **435.0** |
+| phase 5: cancellation of a running largest job, peak / end | not reached | 473.8 / 233.8 | 431.4 / 215.8 | **375.6** / 214.2 |
+| phase 6: after 40 s idle | not reached | 234.4 | 217.4 | **217.3** |
+| cgroup `memory.peak` (anon + page cache) | 512.0 | 512.5 | 512.0 | 512.2 |
+
+Final run statuses: phase 1 149×200, 5×400; phase 2 480×200, 29×400, 7×409, 84×503 busy,
+9,277×429; phase 3 27 completed, 30 `budget_exceeded` (150,000 tape events, nothing stored;
+the six GLFT candidates now submit and stop on the budget); phase 4 job completed, keyed reads
+200 except `/timeline` 400, comparison created (201) and read (200); phase 5 `cancelled` (202).
+The phase-3 highest peak is `synthetic-stress-wide-spreads/latency_lognormal` without a cap
+(235.6 → 339.9). Phase 4 is noisy between runs (concurrent reads dominate it; see residual).
+
+## Residual
+
+Final run (`amem3-512m`): phases 1, 2 and 6 stay under 286.1 MiB (141.0, 245.0, 217.3). Every
+phase that runs a largest admitted job exceeds it: phase 3 by up to 53.8 MiB (339.9; 19 of 57
+jobs above, 14 completed and 5 budget-stopped), phase 4 by 148.9 MiB (435.0), phase 5 by
+89.5 MiB (375.6).
+
+heaptrack of the final image, one largest job (`amem3-heaptrack-job`, 2 GB, the phase-3 peak job
+`synthetic-stress-wide-spreads/latency_lognormal` without a cap): heap peak **322.8 MB**, reached
+in phase 4. Live allocations at that peak, grouped:
+
+| component (MB at the heap peak) | MB |
 |---|---:|
-| run analytics, per-order state: `BTreeMap<order_id, OrderState>` (`bb-analytics` `execution.rs:1084`) | 50.7 |
-| run analytics, three `Spreads` per order (`split_spreads`, `execution.rs:782`; 70,251 orders) | 73.7 |
+| **job** (worker), total | **91.7** |
 | simulation output: equity sampled every tick (`bb-sim` `lib.rs:741`) | 25.2 |
-| simulation output: tape, 150,000 events (`bb-sim` `tape.rs:547`) | 24.1 |
-| concurrent keyed whole-run reads (`OpenRun::full` decode, `bb-app` `artifacts.rs:779–782`) | 56.3 |
+| simulation output: tape, 150,000 events (`bb-sim` `tape.rs:547`) | 24.2 |
+| analytics row insert, the report JSON copied for the query (`bb-db` `api_reads.rs:668`, worker `persist`) | 11.8 |
+| run analytics computation (exact distributions and KM observations, `bb-analytics`) | 12.0 |
+| orders and fill enrichment (`pipeline.rs:200–205`) | 9.9 |
+| trailer analytics text (`TrailerAnalytics`) | 5.9 |
+| bundle write buffers | 2.7 |
+| **concurrent reads** (phase 4 load, keyed reads, comparison), total | **≈ 196** |
+| keyed whole-run reads: `OpenRun::full` decodes the whole `RunResult` (`artifacts.rs:810–816`) | 88.1 |
+| response bodies being serialized (`respond.rs:46`; market workbench 38.5) | 50.0 |
+| `/analytics`: stored report parsed into a `serde_json::Value` (`v1/runs.rs:1165`) + its DB row | 46.9 |
+| comparison and snapshot rows | 7.3 |
+| long-lived caches: market workbench, L3 demo state, loaded datasets | 32.0 |
+| other | 2.3 |
 
-The analytics pass holds about 1.8 KB per order on top of the whole `RunResult`; it alone is
-larger than the room left under 300 MB. Not changed here (outside the worker): allocating the
-per-order spread accumulators lazily or streaming them, or running the worker as a separate
-process (the paid `worker` in `render.yaml`). Admission limits were not raised or lowered.
+RSS is above the live heap: the process idles at 217 MiB with about 120 MB of live heap (heaptrack
+live heap at exit 122.8 MB); the rest is the binary, thread stacks and partly used arena pages
+that `malloc_trim` cannot return. A job starts from 190–263 MiB RSS, so a 91.7 MB job working set
+alone crosses 286.1 MiB.
 
-## Finding outside memory: GLFT presets cannot be submitted (HTTP 500)
+Next concrete steps, by phase:
 
-`POST /api/v1/experiments` with the `glft_baseline` preset answers 500: the server log shows
-`new row for relation "experiment_configs" violates check constraint
-"experiment_configs_strategy_kind_check"`. The GLFT strategy kind is missing from the database
-constraint; the fixture records these as `submit_http_500`. A repair needs a migration (being
-fixed on a separate branch).
+- **Phase 3 (one job):** run the worker outside the API process (the paid `worker` service in
+  `render.yaml`), so the API's 190–263 MiB baseline and a job's working set are not added; or,
+  in-process, keep the job under ≈ 30–40 MB: stream equity samples and tape events to the bundle
+  instead of holding them in `RunResult` (49.4 MB), and insert the analytics row from the encoded
+  text without a second copy (11.8 MB).
+- **Phase 4 (job + reads):** serve keyed whole-run reads page by page from the bundle instead of
+  decoding the whole `RunResult` (88.1 MB), and serve `/analytics` from the stored JSON text
+  (or a typed, streaming projection) instead of a `serde_json::Value` (46.9 MB).
+- **Phase 5:** the same as phase 3; the cancelled job runs to completion before the cancel lands
+  (observation below).
+
+Admission limits were not raised or lowered.
+
+## GLFT presets now submit
+
+The jobmem runs answered `POST /api/v1/experiments` with HTTP 500 for the GLFT presets (the GLFT
+strategy kind was missing from `experiment_configs_strategy_kind_check`). On `p7/amem` all six
+GLFT candidates are accepted and stop on the 150,000 tape-event budget with nothing stored.
 
 ## Observation: phase 5 cancels a job that has already finished simulating
 
 The largest job simulates in 1–2.5 s; the cancel request is sent 0.5 s after the job is
-`running` and reaches the worker only through the next heartbeat. In every run here the attempt
-ended without a worker log line and the job became `cancelled` 60 s later through the reaper
+`running` and reaches the worker only through the next heartbeat. In every run here (again in
+`amem3-512m`) the attempt ended without a worker log line and the job became `cancelled` 60 s later
+through the reaper
 (`reaper moved job … state=cancelled reason=lease_expired`), with nothing stored (`run_id` null).
 [INFERENCE] The completion transaction found the job `cancelling`, lost the lease and the worker
 abandoned the attempt silently. Memory-wise phase 5 therefore measures one whole largest job.
 
+Confirmed and fixed separately (not in the measured images): a cancellation that reaches the worker after the
+simulation finished was refused at completion and dropped as a lost lease; the worker now records `cancelled` in
+22–28 ms ([CANCELLATION.md](CANCELLATION.md), `af7543e`).
+
 ## Not done / open
 
-- **Bound not met** for any phase that runs a largest admitted job (residual above).
-- Phase 4 is OOM-killed at 512 MB; phases 4–6 were measured at 2 GB.
+- **Bound not met** for phases 3–5, which run a largest admitted job (residual above). Every
+  phase now completes at 512 MB.
 - No CI job: one run needs a release image build (~10–20 min uncached) plus seeding and 57 jobs,
   and the figures depend on thread count and allocator state; it does not meet the "< 10 min,
   deterministic" bar.
@@ -234,11 +341,17 @@ abandoned the attempt silently. Memory-wise phase 5 therefore measures one whole
 > **Open.** Linux full-process fixture `scripts/research/hosted-memory.sh` (hosted image, 512 MB
 > container, Postgres + fake Blob, demo seeded; `docs/rebuild/HOSTED_MEMORY.md`). Fixed: metadata
 > reads no longer build the bundle analytics report (`BundleTrailerCore`), the image caps glibc
-> arenas (`MALLOC_ARENA_MAX=2`), and the worker returns freed heap after every job
-> (`malloc_trim(0)`, Linux glibc). 32 concurrent anonymous heavy readers peak at 245.7 MiB (was
-> 697.2); resident memory no longer ratchets between jobs (all 57 largest admitted jobs run in
-> 512 MB, was OOM-killed at job 55; 205.4 MiB after 40 s idle). Remaining: one largest admitted
-> job adds up to 246 MiB (run analytics ≈ 124 MB of per-order state plus the `RunResult`), so job
-> phases peak at 452–460 MiB alone and 485.6 MiB with concurrent reads, which is OOM-killed at
-> 512 MB. The 300 MB bound is not established; admission and runtime budgets stopped 24
-> over-budget jobs with nothing stored.
+> arenas (`MALLOC_ARENA_MAX=2`), the worker returns freed heap after every job (`malloc_trim(0)`,
+> Linux glibc), run analytics keep one order's execution state at a time (was ≈ 124 MB for
+> 70,251 orders), the bundle write holds the analytics report as its stored text instead of two
+> `serde_json::Value` trees (≈ 81 MB), and the result hash streams instead of buffering the run's
+> JSON (134 MB); analytics bytes, bundle bytes, result hashes and run identities are unchanged
+> (golden, analytics-byte and bundle-byte pins). At 512 MB every phase now completes without an
+> OOM kill: 32 concurrent anonymous heavy readers 245.0 MiB (was 697.2), single largest jobs up to
+> 339.9 MiB (was 452–460), the largest job with concurrent reads and a comparison 435.0 MiB (was
+> OOM-killed), cancellation 375.6 MiB, 217.3 MiB after 40 s idle. Remaining above 300 MB (286.1
+> MiB): phases 3–5. A job's working set is ≈ 92 MB (equity and tape 49 MB, analytics 30 MB) on a
+> 190–263 MiB process baseline; concurrent reads add ≈ 196 MB (whole-run decode 88 MB,
+> `/analytics` as a `Value` 47 MB, response bodies 50 MB). Next steps: worker out of process or a
+> streamed `RunResult`, paged keyed reads, `/analytics` served from the stored text. Admission
+> and runtime budgets stopped 30 over-budget jobs with nothing stored.
