@@ -1,12 +1,14 @@
 # Hosted full-process memory (audit AT-5 / SEC-6)
 
-Date: 2026-11-18. Branches `p7/mem` (causes 1–2, rebased on `p6/int` `1c6acab`), `p7/jobmem`
-(cause 3, on `p6/int` `42d9237`), `p7/amem` (causes 4–6) and `p8/readmem` (read-path follow-up).
+Date: 2026-11-19. Branches `p7/mem` (causes 1–2, rebased on `p6/int` `1c6acab`), `p7/jobmem`
+(cause 3, on `p6/int` `42d9237`), `p7/amem` (causes 4–6), `p8/readmem` (read-path follow-up),
+`p9/baseline` (corrected read set, cache policy) and `p10/phase4` (phase-4 peak).
 Requirement: the hosted `blackbox serve` process (API + in-process worker + analytics +
-parsed-run cache + concurrent HTTP heavy reads) peaks below **300 MB** on Linux. Result: **not
-met**, by a 2.6 MiB residual in one of three controlled repeats (phase 4: 288.7 MiB; the other
-repeats 277.7 and 273.6). See [Corrected read set](#corrected-read-set-p9baseline) for the current
-figures; every other phase stays under 286.1 MiB in all three repeats.
+parsed-run cache + concurrent HTTP heavy reads) peaks below **300 MB** on Linux. Result:
+**met** with `p10/phase4`: in three controlled repeats every phase stays below 286.1 MiB with a
+margin larger than its repeat spread; the highest is phase 4 at 240.0/247.0/252.0 MiB
+(min/median/max; current production image 264.0/279.6/300.1). See
+[Phase 4](#phase-4-p10phase4) for the current figures.
 
 **Every read-phase figure (phases 1, 2 and 4, and summaries quoting them) before the
 corrected-read-set section, including those quoted in `SECURITY_DISPOSITIONS.md` and release
@@ -69,7 +71,9 @@ BBMEM_HEAPTRACK=1 ...                                # same binary under heaptra
 Machine: Docker Desktop 29.9.2, WSL2 kernel 6.18, 24 CPUs visible to containers (no CPU quota).
 Output: `result.json`, `driver.log`, `app.log` under `target/hosted-memory/<name>/` (git-ignored).
 Each phase record also carries the server cgroup's `anon` and `file` (page cache: bundles written
-to the disk cache count against the container limit but are reclaimable). When the server is
+to the disk cache count against the container limit but are reclaimable) and when its peak
+sample fell (`sampled_peak_at_s`, seconds into the phase); phase 4 also records when each driver
+step ended (`marks_s`) and every RSS sample (`rss_trace_mib`). When the server is
 OOM-killed the driver dies with the shared PID namespace and `result.json` stays empty; the
 `boot:` and `phase …:` lines of `driver.log` are the record of that run.
 
@@ -353,16 +357,16 @@ simulation finished was refused at completion and dropped as a lost lease; the w
 
 ## Not done / open
 
-- **Bound not met**: with the corrected read set and the final `p9/baseline` policy, phase 4
-  peaked at 288.7 MiB in one of three repeats (2.6 MiB over 286.1); every other phase of every
-  repeat stays under it ([Corrected read set](#corrected-read-set-p9baseline)).
+- **Bound met** with `p10/phase4` ([Phase 4](#phase-4-p10phase4)); the closest phase is still
+  phase 4 (a largest job's working set plus concurrent reads, 28.5 MiB margin over six repeats),
+  so a change that adds to a job's working set or to concurrent reads needs this fixture rerun.
 - No CI job: one run needs a release image build (~10–20 min uncached) plus seeding and 57 jobs,
   and the figures depend on thread count and allocator state; it does not meet the "< 10 min,
   deterministic" bar.
 
 ## AT-5 / SEC-6 disposition text (historical, superseded)
 
-Superseded by the proposed row in [Corrected read set](#corrected-read-set-p9baseline). Its
+Superseded by the proposed row in [Phase 4](#phase-4-p10phase4). Its
 read-phase figures (32 readers 245.0, combined 435.0, concurrent reads ≈ 196 MB) are †: old read
 set, under-covered: no dataset replay or timeline-window reads.
 
@@ -533,7 +537,8 @@ throughout unrelated jobs.
 
 ## Corrected read set (`p9/baseline`)
 
-These are the current figures. The read-set generator now takes each dataset's span from
+Figures of the `p9/baseline` policy; the current ones are in [Phase 4](#phase-4-p10phase4), with
+the same read set. The read-set generator now takes each dataset's span from
 `current_version.start_ns/end_ns` and a run's dataset from `dataset.id`, and
 `read_family_counts` fails the run if any family has zero URIs. Generated set (identical in
 every run below, seed `20261118`): 1,289 URIs — run detail/analytics/report/engine-check/equity/
@@ -602,14 +607,14 @@ All probes returned 200 with identical bodies. Differences are within a few hund
 Keyed largest-run timeline windows (pool shrink + compaction, `baseline-pool-before/after`):
 5.96–6.50 / 6.55–7.53 ms before versus 5.94–7.92 / 6.93–10.11 ms after (p50 / p95).
 
-### Verdict
+### Verdict (`p9/baseline`, superseded by [Phase 4](#phase-4-p10phase4))
 
 **AT-5 / SEC-6 stays Open.** Phases 1–3, 5 and 6 are under 286.1 MiB in every repeat with
 ≥ 56 MiB margin; phase 4 is 273.6–288.7 MiB, over the bound in one of three repeats by
 2.6 MiB, inside the run-to-run variance (15.1 MiB spread). It is not Fixed until every phase is
 below 286.1 MiB in every repeat.
 
-### Proposed AT-5 / SEC-6 row text
+### Proposed AT-5 / SEC-6 row text (`p9/baseline`, superseded)
 
 > **Open (2.6 MiB residual, phase 4 only).** Linux full-process fixture
 > `scripts/research/hosted-memory.sh` (hosted image, 512 MB container, no swap, Postgres + fake
@@ -626,3 +631,154 @@ below 286.1 MiB in every repeat.
 > largest job + concurrent reads + comparison 273.6/277.7/288.7 (397.3). Remaining: phase 4
 > exceeded 286.1 MiB in one repeat. The mmap threshold costs ≈ 15–20% more CPU in phase 4.
 > Next step: page keyed whole-run reads or run the worker out of process.
+
+## Phase 4 (`p10/phase4`)
+
+Image under test: production code (`main` `926c575`, code `18aed41`) as
+`blackbox-hft:hosted-p10-before`; the change below as `blackbox-hft:hosted-p10-after`. Output
+under `D:/bbwt/p10-phase4/target/hosted-memory/`. Same fixture, read set and pinned phase-4
+candidate as in [Corrected read set](#corrected-read-set-p9baseline).
+
+### Where the phase-4 peak is
+
+heaptrack of the current image (`p10-before-heaptrack`, 2 GB, the pinned candidate as the only
+phase-3 job): process heap peak 255.9 MB, reached in phase 4. The phase has two humps: while
+the job runs together with the keyed reads (heap 242.0 MiB) and when the comparison is created
+after the job (218.7 MiB). Live heap at each, from the trace cut at that instant (allocation
+sites ≥ 64 KiB, MB):
+
+| component | job + keyed reads | comparison |
+|---|---:|---:|
+| whole-run decodes (`OpenRun::full`), total | **77.4** | **146.2** |
+| … tape / equity / orders / fills / page buffers | 46.2 / 16.2 / 12.2 / 0.6 / 2.2 | 88.1 / 31.7 / 23.4 / 0.8 / 2.2 |
+| job: simulation output (tape, equity sampled every tick) | 53.5 | — |
+| job: analytics report, order building, worker | 8.4 / 9.5 / 8.7 | — / — / 0.3 |
+| loaded dataset (`bb_data::store::load`) | 12.1 | 12.1 |
+| timeline page context as `serde_json::Value` trees (`wire_items`) | 19.9 | 7.4 |
+| market workbench (with its L3 analytics) | 25.4 | 16.7 |
+| response cache (exact-size bodies, 32 MiB budget) | 20.4 | 33.5 |
+| other (comparison alignment: 0.3) | 10.0 | 4.7 |
+| total | 245.3 | 220.9 |
+
+In the first hump the whole-run decode is the keyed `GET /runs/{largest}/timeline` (no window:
+the default window is the whole 22 s run). It decoded all four sections of the largest run
+(and cached it, 128 MiB / one-run cache), encoded its fills and equity as `Value` trees up to
+the keyed response cap, and then answered **400 `window_too_large`**: 142,101 equity samples do
+not fit. In the second hump the comparison decoded both runs whole (`OpenRun::full`, not the
+cache), although the comparison reads neither fills nor equity samples.
+
+The fixture now records when the phase-4 peak sample fell (`sampled_peak_at_s`), when each
+driver step ended (`marks_s`) and every 20 ms RSS sample of the phase (`rss_trace_mib`). In
+native 512 MB runs with only the pinned candidate (`p10-*-diag-*`) the peak is the first hump:
+2.0–2.2 s into the phase, while the job is still running and just after the keyed `/timeline`
+(in flight for 0.55–0.65 s). The comparison hump stayed lower (before: 214–233 MiB against a
+268–271 MiB first hump). Accordingly, making the comparison read less (below) lowered the
+comparison hump to 198–207 MiB but **not** the phase-4 peak (two repeats with that change
+alone: 291.4 and 281.2 MiB with only the pinned job; 297.6 and 306.9 MiB in full runs,
+`superseded/p10-after-v1-pinned-*`). The largest correctness-neutral contributor at the peak is
+the refused keyed whole-run timeline read.
+
+### Change
+
+- **Timeline (`v1/runs.rs`, `artifacts.rs`).** On a parsed-run cache miss, a first page (no
+  `cursor`) decodes only the fills and equity pages (`OpenRun::fills_and_equity`).
+  `timeline_context_check` runs the page's own query parsing, window resolution (equity only)
+  and context budget over the fills and equity — the same `timeline_request` and
+  `context_fit` code `timeline_page` uses, in the same order — and returns the page's error if
+  those alone refuse the request. Only otherwise are the order and tape pages decoded and joined
+  to it (`OpenRun::full_shared_from`): the cached run and its decoded-byte charge are the same as
+  before, and no page is decoded twice. The keyed whole-run `/timeline` now answers its 400
+  without decoding orders and tape, without caching the run and without retaining `Value` trees
+  (0.21–0.23 s instead of 0.55–0.65 s in the pinned-only runs; under the full fixture's load
+  0.25–0.80 s, against 0.45 s in the one before repeat that recorded it). Cached runs and cursor
+  pages take the unchanged path.
+- **Comparison (`v1/comparisons.rs`, `artifacts.rs`).** `OpenRun::comparison_run` returns the
+  cached parsed run when there is one, otherwise only the order and tape pages decoded (fills and
+  equity stay empty, not cached). `bb_forensics::compare_runs` reads only manifest, metrics,
+  orders and tape, which is now its documented input contract.
+
+Responses, stored comparison summaries and hashes are unchanged:
+`v1_timeline_context_check_refuses_exactly_what_the_page_refuses` (`tests/integration.rs`)
+compares the check over a fills-and-equity-only run with `timeline_page` over the whole run for
+windowed, default, reversed, malformed, count-only and cursor queries at caps on both sides of
+each context boundary (identical status, code, message and details whenever the check refuses;
+otherwise the page either answers or is refused by its orders). The HTTP timeline tests
+(`api_v1`, `replay_verification`) pass unchanged.
+`ineligible_pairs_read_no_page_and_every_result_equals_the_full_comparison`
+(`tests/comparisons.rs`) checks that a cold `comparison_run` holds no fills or equity, equals the
+full run otherwise, and is the cached `Arc` when the run is cached; that the stored summary
+(bytes and `summary_sha256`) of an aligned pair computed cold and warm equals the comparison of
+the fully decoded runs; and that both `GET /comparisons/{id}` bodies are identical apart from
+`id` and `created_at_ns`. `bb-forensics` `fills_and_equity_samples_are_not_read` checks that
+removing fills and equity samples leaves the serialized comparison unchanged.
+
+### Results
+
+Three controlled full repeats per image, interleaved (512 MB, no swap, 32 readers, 600
+handler-answered phase-2 requests, all 57 jobs, phase-4 job pinned to
+`synthetic-stress-depletion/latency_heavy_tail`, interval 1 ms, offset 22.099 s, no queue cap):
+before = `p10-before-pinned-{1,2,3}`, after = `p10-after-pinned-{1,2,3}`. Peak =
+max(sampled `VmRSS`, per-phase `VmHWM`), MiB, min / median / max.
+
+| phase (peak MiB) | before | after | after: margin to 286.1 / spread |
+|---|---:|---:|---:|
+| boot | 56.6 / 56.6 / 56.7 | 56.6 / 56.7 / 56.7 | — |
+| 1: cache fill | 98.8 / 116.5 / 122.3 | 113.2 / 113.9 / 114.6 | 171.5 / 1.4 |
+| 2: 32 concurrent anonymous heavy readers | 155.9 / 157.0 / 157.4 | 154.4 / 155.6 / 157.6 | 128.5 / 3.2 |
+| 3: highest single-job peak (of 57) | 203.9 / 209.7 / 214.2 | 188.2 / 192.1 / 208.0 | 78.1 / 19.8 |
+| 3: jobs peaking ≥ 286.1 | 0 / 0 / 0 | 0 / 0 / 0 | — |
+| 4: pinned job + concurrent reads + keyed reads + comparison | 264.0 / 279.6 / **300.1** | 240.0 / 247.0 / **252.0** | **34.1 / 12.0** |
+| 5: cancellation of a running largest job | 237.1 / 237.8 / 258.3 | 213.2 / 233.0 / 239.6 | 46.5 / 26.4 |
+| 6: after 40 s idle | 122.8 / 123.3 / 126.4 | 122.8 / 123.3 / 123.4 | 162.7 / 0.6 |
+| cgroup `memory.peak` (anon + page cache) | 343.8 / 359.1 / 382.6 | 319.4 / 327.2 / 330.2 | — |
+
+Three further after repeats (`p10-after-pinned-{4,5,6}`) gave phase 4 257.6, 243.2 and
+255.7 MiB; over all six, phase 4 is 240.0–257.6 (margin 28.5, spread 17.6) and the highest
+peak of any other phase is 239.6 (phase 5). The current production image's phase 4 exceeded
+286.1 MiB in one of its three repeats (300.1), like `p9/baseline` before it (288.7).
+
+Every run: server running, `oom_killed=false`, 27 jobs completed (30 stopped on the tape-event
+budget), phase-4 job completed, keyed reads 200 except the whole-run `/timeline` (400
+`window_too_large`, as before), comparison created (201) and read (200 ×3), cancellation
+`cancelled`. Phase-2 statuses after: 472/478/474×200, 16/26/21×400, 9/4/5×409, 103/92/100×503
+(before 475/480/486×200, 26/17/17×400, 6/8/6×409, 93/95/92×503; the rest 429). Phase 4: wall
+3.7–4.1 s after (4.2–5.1 before), user / system CPU 7.75–8.37 / 3.72–4.56 s (8.28–9.96 /
+3.80–6.36). With the change the phase-4 peak sample falls 2.2–2.9 s into the phase (six
+repeats), while the job and the keyed page reads run.
+
+### Verdict
+
+**AT-5 / SEC-6 Fixed.** In all three controlled repeats every phase is below 286.1 MiB, and
+each phase's margin exceeds its repeat spread; the tightest is phase 4 at 252.0 MiB (margin
+34.1 MiB, spread 12.0 MiB). Three further repeats stay within it (phase 4 ≤ 257.6). Caveat: the
+previous image's phase-4 spread over three repeats was 36.1 MiB (264.0–300.1); the margin is
+larger than the spread observed with the change (12.0, 17.6 over six), not than that one.
+What remains closest to the bound is phase 4's job working set (simulation output ≈ 54 MB at
+the old peak) plus concurrent reads; the next step for more headroom is still a streamed
+`RunResult` or the worker out of process.
+
+### Proposed AT-5 / SEC-6 row text
+
+> **Fixed.** Linux full-process fixture `scripts/research/hosted-memory.sh` (hosted image,
+> 512 MB container, no swap, Postgres + fake Blob, demo seeded; read set of 1,289 URIs with
+> every read family asserted non-empty, including 120 dataset-replay and 96 timeline-window
+> URIs; `docs/rebuild/HOSTED_MEMORY.md`). On top of the `p9/baseline` policy (one-run/128 MiB
+> parsed-run cache, exact-size 32 MiB response cache, `MALLOC_MMAP_THRESHOLD_=131072`, SQLx
+> buffer shrink, lean market workbench), `p10/phase4` removes the largest correctness-neutral
+> contributor at the phase-4 peak (heaptrack): a cold timeline first page decides a
+> `window_too_large` refusal from the run's fills and equity before decoding orders and tape
+> (the keyed whole-run timeline had decoded and cached the whole largest run and built its
+> context as `Value` trees only to answer 400), and comparisons read the cached parsed run or
+> only orders and tape instead of decoding both runs whole; responses, stored comparison
+> summaries and `summary_sha256`, golden hashes and run identities are unchanged. Three
+> controlled repeats (phase-4 job pinned to the worst standalone candidate), peak MiB
+> min/median/max, against the current production image (`18aed41`) in brackets: 32
+> concurrent readers 154.4/155.6/157.6 (155.9/157.0/157.4), largest single job
+> 188.2/192.1/208.0 (203.9/209.7/214.2; 0 of 57 jobs above 286.1), largest job + concurrent
+> reads + keyed reads + comparison 240.0/247.0/252.0 (264.0/279.6/300.1), cancellation
+> 213.2/233.0/239.6 (237.1/237.8/258.3), idle 122.8/123.3/123.4. Every phase stays below
+> 286.1 MiB (300 MB) in every repeat with a margin larger than its repeat spread (tightest:
+> phase 4, margin 34.1 MiB, spread 12.0 MiB); three further repeats peaked at ≤ 257.6 MiB.
+> Residual risk: the previous image's phase-4 spread was 36.1 MiB; a job's working set on top
+> of concurrent reads remains the closest phase to the bound.
+

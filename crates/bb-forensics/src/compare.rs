@@ -23,6 +23,8 @@ const PAIRS_CAP: u64 = 500;
 /// One side of a comparison.
 #[derive(Copy, Clone, Debug)]
 pub struct CompareInput<'a> {
+    /// The run. Only its manifest, metrics, orders and tape are read: a caller may load it
+    /// without fills and equity samples and gets the same comparison.
     pub run: &'a RunResult,
     pub label: &'a str,
     /// Instrument of the run's dataset. `None` when the dataset manifest is unavailable or its
@@ -1259,6 +1261,48 @@ mod tests {
                 .interpretation
                 .iter()
                 .any(|n| n.statement.contains("equals the negative fee difference"))
+        );
+    }
+
+    #[test]
+    fn fills_and_equity_samples_are_not_read() {
+        let mut t = Tape::new();
+        t.rest(10 * MS, 256, Side::Buy, 20_000, 1.0, Tif::Gtc, Some(1.0));
+        let seq = t.fill(20 * MS, 256, 20_000, 1.0, true, 1.0, 0.0);
+        t.resp(20 * MS, 256, OrderStatus::Filled, 0.0);
+        t.rest(30 * MS, 257, Side::Sell, 20_002, 1.0, Tif::Gtc, Some(2.0));
+        let a = run_result(
+            "a",
+            config(),
+            t.0,
+            vec![fill_record(
+                seq,
+                256,
+                20 * MS,
+                Side::Buy,
+                20_000,
+                1.0,
+                true,
+                1.0,
+                1.0,
+            )],
+            vec![equity_sample(3, -1.0, 1.0), equity_sample(4, -0.5, 1.0)],
+        );
+        let mut b = a.clone();
+        b.manifest.run_id = "b".into();
+        b.tape.truncate(b.tape.len() - 1);
+        b.orders = crate::build_orders(&b.tape);
+        let without = |run: &RunResult| RunResult {
+            fills: Vec::new(),
+            equity: Vec::new(),
+            ..run.clone()
+        };
+        let full = serde_json::to_vec(&cmp(&a, &b)).unwrap();
+        assert!(!a.fills.is_empty() && !a.equity.is_empty());
+        assert_eq!(aligned(&cmp(&a, &b)).pairs.len(), 1);
+        assert_eq!(
+            serde_json::to_vec(&cmp(&without(&a), &without(&b))).unwrap(),
+            full
         );
     }
 

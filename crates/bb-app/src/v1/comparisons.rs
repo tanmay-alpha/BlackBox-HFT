@@ -128,8 +128,10 @@ impl Drop for AbandonOnDrop {
 /// Eligibility is decided from the verified bundle trailers (manifest and metrics, read from the
 /// cached bundle or by two ranged reads of the stored header and trailer) first: an ineligible
 /// pair gets its metrics-only result without fetching or decoding any page. Only an eligible
-/// pair loads both runs and aligns them, in blocking work that holds a heavy-read permit until
-/// it ends and stops at its next checkpoint once the request is abandoned.
+/// pair loads what the alignment reads of both runs (orders and tape, or the parsed run already
+/// cached; [`crate::artifacts::OpenRun::comparison_run`]) and aligns them, in blocking work that
+/// holds a heavy-read permit until it ends and stops at its next checkpoint once the request is
+/// abandoned.
 pub async fn compare_and_store(
     state: &Shared,
     workspace: Uuid,
@@ -211,8 +213,8 @@ pub async fn compare_and_store(
                     view.clone(),
                 )
             };
-            let run_a = open(a).await?.full().await?;
-            let run_b = open(b).await?.full().await?;
+            let run_a = open(a).await?.comparison_run().await?;
+            let run_b = open(b).await?.comparison_run().await?;
             let abandoned = Arc::new(AtomicBool::new(false));
             let _guard = AbandonOnDrop(abandoned.clone());
             tokio::task::spawn_blocking(move || {
