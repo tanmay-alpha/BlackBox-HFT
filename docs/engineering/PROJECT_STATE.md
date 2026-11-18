@@ -4,18 +4,19 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Phases 6 and 7 released (2026-11-19).** `main` = `a1d128c` (PR #3). Image
-`ghcr.io/tanmay-alpha/blackbox-hft@sha256:ef148a3b5f4b6a17e54220d041cd323be92d62a701a9eb3b0e3b8f2f8e9cefa0`, Render
-deploy `dep-dbuoh75ckfvc73cqrra0`, migrations through 0011, `/status` `git_sha=a1d128c…`, worker idle. Smoke 8/8;
-anonymous production suite 15 passed, 1 skipped (keyed). Phase 6: compare-set cold `503 busy` and false "missing
+**Phases 6 and 7 released (2026-11-19), with follow-ups `5fe8923` (PR #4) and `36536d0` (PR #5).** `main` = `36536d0`.
+Image `ghcr.io/tanmay-alpha/blackbox-hft@sha256:d5d2562bef5620364c95195d92cb1b4effec48a8640ecbd919cbc091e2d25595`,
+Render deploy `dep-dbutv4u1egvs739lbbf0`, migrations through 0011, `/status` `git_sha=36536d0…`, worker idle. Smoke 8/8;
+anonymous production suite 15 passed, 1 skipped (keyed). First Phase 6/7 release `a1d128c` (image `sha256:ef148a3b…`). Phase 6: compare-set cold `503 busy` and false "missing
 comparison" fixed; demo snapshot freshness ≤ 15 min; SEC-11 §6.3, SEC-17, SEC-18, SEC-25 closed; credential guard;
-read-side memory 697 → 246 MiB. Phase 7: `/research`, `/studies` explorer, `/queue-lab`, Market Data Workbench L3/L2
+read-side memory 697 → 207 MiB; prompt post-simulation cancellation; SEC-10 warm anonymous detail reads DB-free. Phase 7: `/research`, `/studies` explorer, `/queue-lab`, Market Data Workbench L3/L2
 view, evidence-structured reports, ITCH three-way validation (local NASDAQ prefixes, 100% agreement), queue shadow
 experiment. Independent reviews by GPT-6.1 Sol (backend and science, both REJECT before fixes; all must-fix items
-fixed and merged). Open: AT-5/SEC-6 hosted job memory, SEC-10 run-detail DB wake. Record:
+fixed and merged). Open: AT-5/SEC-6 hosted job memory (largest-job phases 362–394 MiB at 512 MB), SEC-10 analytics report query. Record:
 [../rebuild/PHASE67_RELEASE.md](../rebuild/PHASE67_RELEASE.md). Tracker:
-[PHASE6_TRACKER.md](PHASE6_TRACKER.md). Rollback: redeploy `sha256:2c14ea32…4ec4` (`cdde05e`); the migrations are
-compatible with it.
+[PHASE6_TRACKER.md](PHASE6_TRACKER.md). Rollback: redeploy `sha256:0f5fdba1…e6ae3` (`5fe8923`) or `sha256:ef148a3b…`
+(`a1d128c`); no migration since 0011. The pre-Phase-6 image `sha256:2c14ea32…4ec4` (`cdde05e`) is also compatible
+with the migrations.
 
 Previous release:
 
