@@ -414,3 +414,123 @@ async fn warm_anonymous_detail_misses_are_database_free_and_trust_rows_refresh()
     external.pool().close().await;
     tdb.drop_db().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_cache_admission_removes_the_verified_download() {
+    let Some(tdb) = TestDb::create().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server::start(&tdb, dir.path(), Options::default()).await;
+    let manifest = register_dataset(&server.db, dir.path(), 1).await;
+    let (workspace, admin) = workspace_key(&server.db, "demo", &[Scope::Admin]).await;
+    let (id, _) = run(&server, &admin, config_json(&manifest, 100, 1), "cache-cap").await;
+    let view = server
+        .db
+        .run_view(workspace, &id, &server.state.cfg.result_platform)
+        .await
+        .unwrap();
+    let cold = tempfile::tempdir().unwrap();
+    let cache = std::sync::Arc::new(bb_app::artifacts::BundleCache::new(cold.path(), 1).unwrap());
+    for _ in 0..2 {
+        let opened = open_run_with_artifact(
+            &server.db,
+            &server.state.storage,
+            &cache,
+            &server.metrics,
+            server.state.bundle_limits(),
+            view.clone(),
+            None,
+        )
+        .await;
+        assert!(
+            opened.is_err(),
+            "the bundle cannot fit in the one-byte cache"
+        );
+        assert_eq!(cache.fetching_len(), 0);
+        assert_eq!(
+            std::fs::read_dir(cache.dir()).unwrap().count(),
+            0,
+            "failed admission must not leave unaccounted bundle files on disk"
+        );
+    }
+    server.stop().await;
+    tdb.drop_db().await;
+}
+
+#[test]
+fn cancelling_active_and_waiting_decodes_cleans_the_single_flight_map() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap()
+        .block_on(async {
+            let Some(tdb) = TestDb::create().await else {
+                return;
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let server = Server::start(&tdb, dir.path(), Options::default()).await;
+            let manifest = register_dataset(&server.db, dir.path(), 1).await;
+            let (workspace, admin) = workspace_key(&server.db, "demo", &[Scope::Admin]).await;
+            let (id, _) = run(
+                &server,
+                &admin,
+                config_json(&manifest, 100, 1),
+                "decode-cancel",
+            )
+            .await;
+            let view = server
+                .db
+                .run_view(workspace, &id, &server.state.cfg.result_platform)
+                .await
+                .unwrap();
+            let opened = open_run_with_artifact(
+                &server.db,
+                &server.state.storage,
+                &server.state.cache,
+                &server.metrics,
+                server.state.bundle_limits(),
+                view,
+                None,
+            )
+            .await
+            .unwrap();
+
+            // Occupy the only blocking worker so the real decoder stays pending until both
+            // readers have been cancelled. No sleeps or dependence on the bundle's size.
+            let (release, blocked) = std::sync::mpsc::channel::<()>();
+            let (entered, started) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                entered.send(()).unwrap();
+                let _ = blocked.recv();
+            });
+            started.await.unwrap();
+            let mut active = Box::pin(opened.full_shared());
+            let mut waiter = Box::pin(opened.full_shared());
+            for read in [&mut active, &mut waiter] {
+                std::future::poll_fn(|cx| {
+                    assert!(read.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+            }
+            assert_eq!(server.state.cache.loading_len(), 1);
+            drop(active);
+            assert_eq!(
+                server.state.cache.loading_len(),
+                1,
+                "the waiter retains its flight"
+            );
+            drop(waiter);
+            assert_eq!(
+                server.state.cache.loading_len(),
+                0,
+                "cancelled decodes must not leave unbounded per-bundle entries"
+            );
+            drop(release);
+            blocker.await.unwrap();
+            server.stop().await;
+            tdb.drop_db().await;
+        });
+}

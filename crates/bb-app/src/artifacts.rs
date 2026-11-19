@@ -12,6 +12,9 @@
 //!   root in Postgres, and only then cached. Every page read re-verifies the page and metadata
 //!   digests, so a corrupted cache copy is detected; it is discarded and fetched again once,
 //!   and only a store copy that also fails verification quarantines the run.
+//! * Fetch and decode flights release their map entries when the last reader finishes or is
+//!   cancelled. Downloads remain temporary until cache admission succeeds, so failed admission
+//!   cannot bypass the disk-byte budget with orphaned files.
 
 use std::{
     collections::HashMap,
@@ -329,31 +332,47 @@ pub struct BundleCache {
 }
 
 /// Every active or waiting reader owns one reference. The last reader removes the map's
-/// reference on success, failure or cancellation, without letting a new reader get a second gate.
-struct FetchFlight<'a> {
-    cache: &'a BundleCache,
-    sha: &'a str,
-    gate: Option<Arc<tokio::sync::Mutex<()>>>,
+/// reference on success, failure or cancellation, without letting a new reader split the flight.
+struct Flight<'a, T> {
+    flights: &'a Mutex<HashMap<String, Arc<T>>>,
+    key: &'a str,
+    value: Option<Arc<T>>,
 }
 
-impl Drop for FetchFlight<'_> {
-    fn drop(&mut self) {
-        let gate = self.gate.take().expect("flight owns its gate until drop");
-        let mut fetching = self
-            .cache
-            .fetching
+impl<'a, T: Default> Flight<'a, T> {
+    fn new(flights: &'a Mutex<HashMap<String, Arc<T>>>, key: &'a str) -> Self {
+        let value = flights
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if Arc::strong_count(&gate) == 2
-            && fetching
-                .get(self.sha)
-                .is_some_and(|entry| Arc::ptr_eq(entry, &gate))
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(key.to_string())
+            .or_default()
+            .clone();
+        Self {
+            flights,
+            key,
+            value: Some(value),
+        }
+    }
+
+    fn value(&self) -> &T {
+        self.value.as_deref().expect("live flight")
+    }
+}
+
+impl<T> Drop for Flight<'_, T> {
+    fn drop(&mut self) {
+        let value = self.value.take().expect("flight owns its value until drop");
+        let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
+        if Arc::strong_count(&value) == 2
+            && flights
+                .get(self.key)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &value))
         {
-            fetching.remove(self.sha);
+            flights.remove(self.key);
         }
         // Decrement under the same lock as acquisition and other readers' drops: otherwise two
         // simultaneous cancellations can both observe another reader and leave the map behind.
-        drop(gate);
+        drop(value);
     }
 }
 
@@ -396,6 +415,15 @@ impl BundleCache {
     #[doc(hidden)]
     pub fn fetching_len(&self) -> usize {
         self.fetching
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    /// Active or waiting whole-run decodes (diagnostic for cancellation regressions).
+    #[doc(hidden)]
+    pub fn loading_len(&self) -> usize {
+        self.loading
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .len()
@@ -552,21 +580,9 @@ pub async fn open_run_with_artifact(
         None => {
             // Single-flight: the first cold reader fetches; the others wait for it and then find
             // the bundle cached (a failed fetch leaves it uncached, so the next waiter retries).
-            let flight = FetchFlight {
-                cache,
-                sha: &sha,
-                gate: Some(
-                    cache
-                        .fetching
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .entry(sha.clone())
-                        .or_default()
-                        .clone(),
-                ),
-            };
+            let flight = Flight::new(&cache.fetching, &sha);
             let fetched = {
-                let _turn = flight.gate.as_ref().expect("live flight").lock().await;
+                let _turn = flight.value().lock().await;
                 match cache.touch(&sha) {
                     Some(path) => {
                         Metrics::inc(&metrics.artifact_cache_hits_total);
@@ -726,11 +742,8 @@ async fn fetch_verified(
         }
         Err(e) => return Err(ApiError::internal(format!("verify bundle: {e}"))),
     }
-    let kept = temp_path
-        .keep()
-        .map_err(|e| ApiError::internal(format!("cache keep: {e}")))?;
     cache
-        .insert(&trust.sha256, &kept, trust.size_bytes)
+        .insert(&trust.sha256, &temp_path, trust.size_bytes)
         .map_err(|e| ApiError::internal(format!("cache insert: {e}")))
 }
 
@@ -909,14 +922,9 @@ impl OpenRun {
         }
         let sha = &self.trust.sha256;
         let cache = &self.cache;
-        let load = cache
-            .loading
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(sha.clone())
-            .or_default()
-            .clone();
-        let result = load
+        let flight = Flight::new(&cache.loading, sha);
+        flight
+            .value()
             .get_or_try_init(|| async {
                 let (run, bytes) = match part {
                     Some(FillsAndEquity { mut run, decoded }) => {
@@ -937,12 +945,7 @@ impl OpenRun {
                 Ok::<_, ApiError>((run, bytes))
             })
             .await
-            .map(|(run, _)| run.clone());
-        let mut loading = cache.loading.lock().unwrap_or_else(PoisonError::into_inner);
-        if loading.get(sha).is_some_and(|l| Arc::ptr_eq(l, &load)) {
-            loading.remove(sha);
-        }
-        result
+            .map(|(run, _)| run.clone())
     }
 
     /// Decodes the pages of the `wanted` sections, in page-index order; the other sections stay
