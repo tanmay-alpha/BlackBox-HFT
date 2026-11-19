@@ -267,11 +267,13 @@ function Workbench({ datasetId }: { datasetId: string }) {
           <ToolbarDivider />
         </>
       )}
+      {/* Busy, not disabled: disabling the focused button would drop keyboard focus to the page on
+          every press; `step` already ignores presses while a search runs. */}
       <button
         type="button"
         className={phone ? 'btn-icon' : undefined}
         onClick={() => step(-1)}
-        disabled={stepping}
+        aria-disabled={stepping || undefined}
         aria-keyshortcuts="k"
         aria-label={phone ? 'Previous event' : undefined}
         title="Previous event (K)"
@@ -283,7 +285,7 @@ function Workbench({ datasetId }: { datasetId: string }) {
         type="button"
         className={phone ? 'btn-icon' : undefined}
         onClick={() => step(1)}
-        disabled={stepping}
+        aria-disabled={stepping || undefined}
         aria-keyshortcuts="j"
         aria-label={phone ? 'Next event' : undefined}
         title="Next event (J)"

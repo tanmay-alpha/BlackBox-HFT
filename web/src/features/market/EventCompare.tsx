@@ -147,12 +147,15 @@ function L2Cell({ level }: { level: DepthLevel | null | undefined }) {
       </td>
     );
   if (level === null) return <td className="num dim">{'\u2014'}</td>;
+  // Read as "3,200 shares in 7 orders": the order count alone is a bare second number.
   return (
     <td className="num">
       {fmtShares(level.shares)}
+      <span className="visually-hidden"> shares in</span>
       <span className="mk-oc" title={`${fmtInt(level.order_count)} orders`}>
         {fmtInt(level.order_count)}
       </span>
+      <span className="visually-hidden"> {level.order_count === 1 ? 'order' : 'orders'}</span>
     </td>
   );
 }

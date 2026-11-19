@@ -309,3 +309,12 @@
     grid-template-columns: max-content minmax(0, 16ch) minmax(60px, 1fr) max-content;
   }
 }
+
+/* Touch screens: each stacked evidence link is a 44 px target (WCAG 2.5.5). */
+@media (pointer: coarse) {
+  .rh-evidence > a {
+    display: flex;
+    align-items: center;
+    min-height: var(--h-touch);
+  }
+}
