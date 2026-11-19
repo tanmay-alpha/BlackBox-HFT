@@ -1,6 +1,7 @@
 # Production acceptance (M10)
 
-Date: 2026-11-15. Release commit: `d85f743719ae9d46d29c7c9e0df58f476e8bff42` (`main`).
+Date: 2026-11-15. Release commit: `d85f743719ae9d46d29c7c9e0df58f476e8bff42` (`main`). Later releases are appended
+below; the current suite and its latest production result (`3ed53cd`) are in "Phase 6/7 production suite".
 
 ## Release evidence
 
@@ -36,7 +37,7 @@ To roll the frontend back, promote the previous Vercel production deployment. No
 
 ## Not verified in production
 
-- Keyed submission → result was verified locally (RESEARCH_JOURNEY.md, Playwright `research.spec.ts` in CI), not against production, to save free-tier budget.
+- Keyed submission → result was verified locally (RESEARCH_JOURNEY.md, Playwright `research.spec.ts` in CI), not against production, to save free-tier budget. (Verified on production later the same day: "Authenticated production research journey" below.)
 - Render cold start was not measured: the instance was warm.
 
 ## Second release: UI polish (2026-11-15)
@@ -85,16 +86,24 @@ Rollback for this release: redeploy `sha256:212495fa724420186e871fdea9a44cbf09b6
 
 ## Phase 6/7 production suite (`web/e2e-prod/`)
 
-Anonymous, read-only specs added for the Phase 6/7 features. Every on-screen number is compared with the API or
+Current suite: 16 tests in 6 files (`npx playwright test -c playwright.prod.config.ts --list`): `acceptance.spec.ts`
+(the 7 tests above), the four Phase 6/7 specs below (8 tests) and the keyed `research.prod.spec.ts` (1 test, skipped
+unless `PROD_RESEARCH_KEY` is set). Latest result, production `3ed53cd` (2026-11-19): 15 anonymous tests passed, no
+retries ([PHASE67_RELEASE.md](PHASE67_RELEASE.md)); the keyed journey passed with the Phase 11 preset-selector fix to
+the spec: job `01a1f231-a309-7585-8556-e45a2d92b240`, run `c6d47c551e17c5af`, result sha256 `bb34d8c5…` (equal to
+the 2026-11-15 keyed runs), comparison 201, report 200 (25,665 B), anonymous read 404, re-authentication OK, 0 page
+errors ([prod-research-evidence.json](prod-research-evidence.json)).
+
+The Phase 6/7 specs are anonymous and read-only. Every on-screen number is compared with the API or
 artefact response fetched in the same test; each full page load is paced (≥ 2 s) and recorded as a test annotation;
 console errors and failed requests fail the test unless expected.
 
 | Spec | Page loads | Checks |
 |---|---:|---|
-| `market.prod.spec.ts` | 3 | Workbench `l3-demo`: synthetic badge, validation counts, curated example, L2/L3 before/after values vs event-detail API, J/K/Next/Previous and URL, metrics vs API, Back, out-of-range event notice, 390×844 overflow |
-| `studies.prod.spec.ts` | 1 | study artefact SHA-256 = published `.sha256` = badge; net P&L matrix = artefact; stored runs link to existing `/forensics/{id}`; unstored rows show the reproduction command |
-| `compare-set.prod.spec.ts` | 1 | `execution_validation` pairs: aligned ×3, metrics-only ×2, compared elsewhere ×1 (classified independently from `/demos` + `/comparisons`); never "missing"; zero `GET /runs/{id}`; a 503 is accepted only as the explicit busy state with Retry |
-| `errors.prod.spec.ts` | 3 | unknown run 404 page; unsupported study contract (intercepted) shows a contract error; blocked dataset API shows the unreachable state and Retry recovers |
+| `market.prod.spec.ts` (3 tests) | 3 | Workbench `l3-demo`: synthetic badge, validation counts, curated example, L2/L3 before/after values vs event-detail API, J/K/Next/Previous and URL, metrics vs API, Back, out-of-range event notice, 390×844 overflow |
+| `studies.prod.spec.ts` (1) | 1 | study artefact SHA-256 = published `.sha256` = badge; net P&L matrix = artefact; stored runs link to existing `/forensics/{id}`; unstored rows show the reproduction command |
+| `compare-set.prod.spec.ts` (1) | 1 | `execution_validation` pairs: aligned ×3, metrics-only ×2, compared elsewhere ×1 (classified independently from `/demos` + `/comparisons`); never "missing"; zero `GET /runs/{id}`; a 503 is accepted only as the explicit busy state with Retry |
+| `errors.prod.spec.ts` (3) | 3 | unknown run 404 page; unsupported study contract (intercepted) shows a contract error; blocked dataset API shows the unreachable state and Retry recovers |
 
 With the existing acceptance spec (7 loads) a full run is about 15 production page loads (≤ 30 with one retry each),
 well under the Vercel bot-checkpoint threshold. Targets come from `PROD_WEB_URL` and `PROD_API_URL` (origins; default
