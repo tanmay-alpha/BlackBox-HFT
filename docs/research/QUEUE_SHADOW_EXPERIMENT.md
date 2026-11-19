@@ -12,6 +12,16 @@ assumption, never a recorded execution. The L3 reference is a queue *reconstruct
 messages, not an exchange-certified position, and an actual order's reconstructed position is not
 ground truth for a hypothetical order.
 
+**Current summary (§7; three clean OOS acquisitions).** October 2019 / January 2019 /
+January 2020 yield 9 / 36 / 3 nominal H0 rejections out of 243 contrasts per day,
+0 / 11 / 3 H-A-supported cells out of 27, and maximum absolute fill-fraction
+differences 0.0167 / 0.0243 / 0.0258. The single-October outcomes do not replicate
+uniformly. January prefixes cover only 534.128393 s and 271.554873308 s of the
+540 s window. December remains reused validation, not an untouched day; October's
+engine correction followed outcome review, whereas both January acquisitions use
+the already-corrected engine. These are descriptive, nominal/exploratory findings,
+not pooled inference or calibration of real orders.
+
 ## 1. Question and hypotheses
 
 How far is BlackBox's modeled queue position `front`, and the fill timing it implies, from the
@@ -1289,6 +1299,21 @@ time includes decoding and hashing; peak working set was not measured):
 Relevant commands (verification results are recorded by the integrating run, not inferred
 from this list): `cargo test -p bb-analytics --lib shadow_queue` and
 `cargo test -p bb-app --lib queue_study`.
+
+Independent transcription/hash audit (read-only; the optional path supplies only local
+aggregate artefacts, never raw ITCH messages):
+
+```sh
+node docs/research/audit-artefacts.mjs "D:/black box/data"
+```
+
+The audit compares all six cohorts' fill/interval/cause, KM, cancelled-volume and
+checkpoint table rows with their JSON, the execution study's sensitivity, baseline
+summary, divergence, demo-anchor and comparison tables, and the clean-day H-A/H-B1/H0
+tallies and maxima. It also verifies both published `.sha256` files and viewer contract
+versions. `web/src/features/research/artefact-audit.test.ts` checks study chart/matrix
+metrics, accounting, research-home derivations and every queue-lab selector against
+independent raw-field oracles; `queuelab/conclusions.test.ts` guards the three-day quote.
 
 - known answers on hand-built streams: `cancel_ahead_advances_the_l3_queue_and_every_model_agrees_on_a_fifo_fill`,
   `cancel_behind_leaves_l3_unchanged_while_probability_models_advance`,
