@@ -4,13 +4,13 @@ Single source of truth for the current phase, decisions, infrastructure and next
 
 ## Current phase
 
-**Phases 6 and 7 released (2026-11-19), with follow-ups `5fe8923` (PR #4), `36536d0` (PR #5), `18aed41` (PR #7) and
-`3ed53cd` (PR #9).** Production = `3ed53cd`; `main` after it adds documentation and measurement tooling only
-(queue-shadow holdouts, Phase 10 LCP report). Image
-`ghcr.io/tanmay-alpha/blackbox-hft@sha256:9300ae0696002e0b48b355d871c338675d4c5870e0885a16bda938aeb0b3e4a1`, Render
-deploy `dep-dbv2jk5g1s2s73e0c8m0`, migrations through 0011, `/status` `git_sha=3ed53cd…`, worker idle. Smoke 8/8;
-production suite 15 anonymous passed; keyed journey passed (job `01a1f231-a309-7585-8556-e45a2d92b240`, run
-`c6d47c551e17c5af`, [../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md)). First Phase 6/7 release `a1d128c` (image `sha256:ef148a3b…`). Phase 6: compare-set cold `503 busy` and false "missing
+**Phases 6–11 complete and released (2026-11-19).** Production = `main` = `a24ccf9` (PRs #13, #14: Phase 11 final
+audit, [../rebuild/PHASE11_AUDIT.md](../rebuild/PHASE11_AUDIT.md)), after follow-ups `5fe8923` (PR #4), `36536d0`
+(PR #5), `18aed41` (PR #7) and `3ed53cd` (PR #9). Image
+`ghcr.io/tanmay-alpha/blackbox-hft@sha256:631a8111d8e54f11275eb7a64a64f76d7ea855f8eb6928bce6574bb5a2d8c52b`, Render
+deploy `dep-dbvceeu7bikc7387i490`, migrations through 0011, `/status` `git_sha=a24ccf9…`. Smoke passed; production
+suite 16/16 incl. the keyed journey (job `01a1f33e-ce13-7966-95b0-7b1839413274`, run `299f836aa96bd57c`, result hash
+unchanged; [../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md)). First Phase 6/7 release `a1d128c` (image `sha256:ef148a3b…`). Phase 6: compare-set cold `503 busy` and false "missing
 comparison" fixed; demo snapshot freshness ≤ 15 min; SEC-11 §6.3, SEC-17, SEC-18, SEC-25 closed; credential guard;
 hosted memory within 300 MB in the 512 MB fixture (corrected read set; worst phase 397 → 240–252 MiB, idle 201 → 123); prompt post-simulation cancellation; SEC-10 anonymous detail and analytics reads DB-free. Phase 7: `/research`, `/studies` explorer, `/queue-lab`, Market Data Workbench L3/L2
 view, evidence-structured reports, ITCH three-way validation (local NASDAQ prefixes, 100% agreement), queue shadow

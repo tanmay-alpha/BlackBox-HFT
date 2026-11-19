@@ -141,7 +141,9 @@ test('l3-demo: provenance, validation, a curated example against the event API, 
     ] as const) {
       for (const lv of d[when][key]) {
         const row = ladder.locator(`tbody tr.mk-r-${side}`).filter({ has: page.locator('th', { hasText: exact(price(lv.price4)) }) });
-        await expect(row.locator('td').nth(column), `${side} ${price(lv.price4)} ${when}`).toHaveText(int(lv.shares) + int(lv.order_count));
+        // Visible "shares · count", plus the visually hidden words that make it read as a sentence.
+        const text = `${int(lv.shares)} shares in${int(lv.order_count)} ${lv.order_count === 1 ? 'order' : 'orders'}`;
+        await expect(row.locator('td').nth(column), `${side} ${price(lv.price4)} ${when}`).toHaveText(text);
       }
     }
   }
