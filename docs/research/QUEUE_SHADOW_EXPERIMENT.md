@@ -115,6 +115,22 @@ post-freeze implementation change. The October acquisition rule fixed at the fre
 
 ### Deviations from the pre-registered plan
 
+**Prospective two-day extension pre-commitment (2026-11-19; before downloading).**
+Select `01302019.NASDAQ_ITCH50.gz` (2019-01-30) and
+`01302020.NASDAQ_ITCH50.gz` (2020-01-30): the first two actual
+`MMDDYYYY.NASDAQ_ITCH50.gz` data files in the displayed
+[EMI listing](https://emi.nasdaq.com/ITCH/Nasdaq%20ITCH/), excluding
+2019-07-30, 2019-10-30 and 2019-12-30; ignore checksum entries and other naming
+schemes. Selection uses listing order, not inspection of file contents or outcomes.
+Fetch exactly one `curl -r 0-299999999` prefix per selected day, at most
+300,000,000 bytes each; do not extend a prefix if it falls short of 09:39 ET.
+Apply the unchanged activity rule separately to each prefix: QQQ, AAPL and the
+most active other symbol by A/F/E/C/X/D/U count inside the frozen window,
+selected mechanically with `--rank-activity`. Keep the frozen design hash and
+`inclusive-deadlines-v2` implementation unchanged. These two days are new
+prospective data holdouts for the already-corrected engine, not retroactive
+repairs to December's provenance.
+
 - Plan §5 called for the December prefix **plus at least two further days**. Only October
   30 was fetched for this experiment; the further-day coverage was reduced, not completed.
 - December QQQ/AAPL had already been inspected before the queue-design freeze, contrary
