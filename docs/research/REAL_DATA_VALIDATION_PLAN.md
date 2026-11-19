@@ -304,7 +304,7 @@ book?
   the day. This 300 MB prefix ends at 09:39 ET. Mid-day and closing behaviour are untested and
   stay out of scope until a whole file is fetched under an explicit data budget.
 
-**Execution deviations/provenance correction:** see [QUEUE_SHADOW_EXPERIMENT.md §2](QUEUE_SHADOW_EXPERIMENT.md#deviations-from-the-pre-registered-plan): only October was newly acquired; December was already decoded and QQQ/AAPL inspected, and the engine was corrected after outcome review.
+**Execution status/provenance correction (2026-11-19):** see [QUEUE_SHADOW_EXPERIMENT.md §2](QUEUE_SHADOW_EXPERIMENT.md#deviations-from-the-pre-registered-plan) and §6.6–§7: October plus precommitted 2019-01-30/2020-01-30 are clean OOS acquisitions; the two new 300 MB prefixes end at 09:38:54.128393/09:34:31.554873308 ET (full-window coverage incomplete), SPY is mechanically held out on both; December remains previously decoded/inspected validation, and the corrected engine predates the January acquisitions.
 
 **Clock handling.**
 
