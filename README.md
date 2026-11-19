@@ -43,6 +43,18 @@ final audit of the API, worker, security, accessibility, research numbers, perfo
 verification evidence and known limits: [docs/engineering/PROJECT_STATE.md](docs/engineering/PROJECT_STATE.md);
 audit findings and fixes: [docs/rebuild/PHASE11_AUDIT.md](docs/rebuild/PHASE11_AUDIT.md).
 
+## Highlights
+
+| Area | What was built |
+|---|---|
+| Simulation | Rust workspace around hftbacktest 0.9.4 with a flight recorder of every order event on two clocks; six engine defects found and pinned by tests without forking the engine; golden result hashes checked on Linux and Windows in CI |
+| Market data | NASDAQ ITCH 5.0 order-by-order (L3) reconstruction with invariant checks, L3→L2 normalization and three-way validation; an L3 Market Data Workbench |
+| Research | Queue-position model shadow experiment with a frozen pre-registered design and three out-of-sample days (reported as not replicating); execution-model sensitivity studies; evidence-tagged order forensics and reports |
+| Platform | axum `/api/v1` with a generated OpenAPI contract, Postgres job queue with leases, heartbeats and cancellation, content-addressed run bundles in Blob storage, scoped peppered API keys, audit log, metered storage, database-free anonymous reads |
+| Frontend | React + TypeScript console (Vercel) with deep-linkable replay, comparisons, sweeps and studies; keyboard and screen-reader audited; mobile CLS checked under throttling |
+| Operations | Render image deployed by digest, smoke and production browser suites, 512 MB memory budget held in a local fixture, secret scanning per commit, dependency audit |
+| Verification | 591 Rust tests, 321 Vitest tests, 100+ Playwright scenarios locally, production acceptance suite (16 tests including a keyed research journey) |
+
 ## What it does
 
 | Section | What you get |
