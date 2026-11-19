@@ -36,6 +36,13 @@ start ~1 minute after idle). Architecture and limits: [docs/DEPLOYMENT.md](docs/
 |---|---|
 | The replay engine (hftbacktest 0.9.4), the recorded tape of every simulated order, the accounting, the job queue, persistence and integrity checks | Every order, fill and P&L figure; queue position (L2 data cannot reveal it); latency; no market impact; hosted data is synthetic |
 
+**Project status.** Phases 6–11 are complete: production reliability and security, the research studio
+(`/research`, `/studies`, `/queue-lab`, `/market`), memory under the 512 MB host limit (local fixture), database-free
+anonymous reads, three out-of-sample days for the queue experiment (the October result does not replicate) and a
+final audit of the API, worker, security, accessibility, research numbers, performance and docs. Current release,
+verification evidence and known limits: [docs/engineering/PROJECT_STATE.md](docs/engineering/PROJECT_STATE.md);
+audit findings and fixes: [docs/rebuild/PHASE11_AUDIT.md](docs/rebuild/PHASE11_AUDIT.md).
+
 ## What it does
 
 | Section | What you get |
