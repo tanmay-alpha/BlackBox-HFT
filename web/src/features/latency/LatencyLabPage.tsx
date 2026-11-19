@@ -1065,7 +1065,7 @@ function AlignmentPanel({ pair, state }: { pair: PairPanelProps | null; state: R
                 <section key={other} className="col set-pair">
                   <h3 className="set-pair-title">Baseline vs {runLabel(pair.runs, ids, i + 1, titles)}</h3>
                   <p className="note">
-                    Status <span className="mono">{cmp.status}</span>: no per-order alignment; the runs differ in{' '}
+                    Status <span title={cmp.status}>{cmp.status.replace(/_/g, ' ')}</span>: no per-order alignment; the runs differ in{' '}
                     {cmp.eligibility.reasons
                       .filter((r) => r.effect === 'no_alignment')
                       .map((r) => pathLabel(r.field))

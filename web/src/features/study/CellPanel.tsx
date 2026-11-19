@@ -486,7 +486,7 @@ export function CellPanel({ study, sel, linkOf, linkById, checking, onSelect, on
             Close
           </button>
         </div>
-        <h2 id="stc-cell-title" className="stc-h2">
+        <h2 id="stc-cell-title" className="stc-h2" tabIndex={-1}>
           {selectionTitle(sel)}
         </h2>
         <code className="mono small dim stc-full">cell={sel.key}</code>

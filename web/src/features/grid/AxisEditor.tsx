@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 
 import type { RunDetail } from "../../api/model";
 import { baseEntryNs, baseResponseNs, type RunConfig } from "../../api/types";
-import { exchangeModelLabel, fractionToBps, latencyLabel, queueModelLabel, strategyName } from "../../components/describe";
+import { exchangeModelLabel, fractionToBps, latencyLabel, QUEUE_MODEL_INFO, queueModelLabel, strategyName } from "../../components/describe";
 import { fmtDurationExact } from "../../components/fmt";
 import { Term } from "../../components/Tooltip";
 import { BasisBadge, HashText } from "../../components/ui";
@@ -131,7 +131,7 @@ export function AxisEditor({
                   checked={draft.queue[variant]}
                   onChange={(e) => onChange({ ...draft, queue: { ...draft.queue, [variant]: e.target.checked } })}
                 />
-                <span className="mono">{variant}</span>
+                <span title={variant}>{QUEUE_MODEL_INFO[variant].label}</span>
               </label>
               {isPowerVariant(variant) ? (
                 <label className="grd-exponent">
@@ -143,7 +143,7 @@ export function AxisEditor({
                     value={draft.exponents[variant]}
                     disabled={!draft.queue[variant]}
                     placeholder="e.g. 2, 3"
-                    aria-label={`${variant} exponent n, comma separated for several`}
+                    aria-label={`${QUEUE_MODEL_INFO[variant].label} exponent n, comma separated for several`}
                     onChange={(e) =>
                       onChange({
                         ...draft,

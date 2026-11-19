@@ -93,14 +93,21 @@ Commits `8c35d57` (hosted memory), `3b61c35` (docs). PR CI 44410135636 and `main
 - AT-5/SEC-6 fixed in the 512 MB Linux fixture: every phase below 286.1 MiB in three pinned repeats; phase 4 (job +
   concurrent and keyed reads + comparison) 240.0/247.0/252.0 MiB (was 264.0/279.6/300.1), margin 34.1 MiB over a 12.0
   MiB repeat spread. Measured locally without a CPU quota, not on Render.
+- Keyed production journey (2026-11-19 05:04–05:05 UTC, backend `3ed53cd`; spec `research.prod.spec.ts` with the
+  Phase 11 preset-selector fix, spec only): job `01a1f231-a309-7585-8556-e45a2d92b240` completed on attempt 1 on
+  `linux-x86_64+libm-53154a4e`, run `c6d47c551e17c5af` (result sha256 `bb34d8c5…`, the same as the 2026-11-15 keyed
+  runs; 2,051 orders, 1,182 fills), comparison 201, report 200, anonymous read 404, re-authentication OK, 0 page
+  errors ([prod-research-evidence.json](prod-research-evidence.json), [PRODUCTION_ACCEPTANCE.md](PRODUCTION_ACCEPTANCE.md)).
 
 ## Rollback
 
+Roll back to the previous follow-up (`18aed41`), or to an earlier image of this record:
+
 ```
-render deploys create srv-dbs11fm1egvs73chs7lg --image ghcr.io/tanmay-alpha/blackbox-hft@sha256:2c14ea32555019eeeea234e090a1b7318fd9d33c12d44142e61f13ca7d1b4ec4 --wait --confirm
+render deploys create srv-dbs11fm1egvs73chs7lg --image ghcr.io/tanmay-alpha/blackbox-hft@sha256:bac3807b893d5fb99d9882a039c16ac35dc7aeaa656a7a99d52d093da2e84511 --wait --confirm
 vercel rollback <previous production deployment> --scope tanmay-alphas-projects
 ```
 
-Neither follow-up adds a migration; any of the three images can be redeployed against the current schema. The release
-before Phase 6 (`cdde05e`) runs against the migrated schema: 0010 adds a defaulted column it never reads, 0011 only
-widens a CHECK.
+No follow-up adds a migration; every image in this record (`a1d128c`, `5fe8923`, `36536d0`, `18aed41`, `3ed53cd`)
+runs against the current schema. The release before Phase 6 (`cdde05e`, `sha256:2c14ea32…4ec4`) also runs against
+the migrated schema: 0010 adds a defaulted column it never reads, 0011 only widens a CHECK.

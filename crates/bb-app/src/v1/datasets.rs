@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::Response,
 };
@@ -24,7 +24,8 @@ use super::{
         QualitySummary,
     },
     respond::{
-        Cache, Page, byte_cap, conditional, json, json_bytes, json_value, limit_param, ns_param,
+        Cache, Page, Query, byte_cap, conditional, json, json_bytes, json_value, limit_param,
+        ns_param,
     },
     runs::{SeriesQuery, analytics_body, series_page},
 };

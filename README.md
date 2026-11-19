@@ -8,9 +8,10 @@ order, and answers: **why did the strategy behave differently when latency, queu
 answer first (both runs lose; the 50 ms run loses less because it fills less and so pays less in fees, which is not
 evidence that slower is better), then the equity curves, the first divergence, the replayed book with both runs'
 orders, and each order's lifecycle in both scenarios. The console has five sections:
-**Explore** (latency experiment at `/`, all experiments at `/experiments`) · **Research Studio** (Strategy Lab,
-Jobs & Sweeps, Reports; submitting needs an API key) · **Market Lab** (Datasets, Order Book Replay) ·
-**Execution Analysis** (Runs & Forensics, Comparisons, Risk & P&L) · **System** (worker, queue, readiness).
+**Explore** (Research home at `/research`, latency experiment at `/`, all experiments at `/experiments`) ·
+**Research Studio** (Strategy Lab, Jobs & Sweeps, Execution studies at `/studies`, Queue model lab at `/queue-lab`,
+Reports; submitting needs an API key) · **Market Lab** (Datasets, Order Book Replay, Market Data Workbench at
+`/market`) · **Execution Analysis** (Runs & Forensics, Comparisons, Risk & P&L) · **System** (worker, queue, readiness).
 
 - **Event-complete replay.** Run timelines are cursor-paged and byte-bounded; a replay window is loaded completely
   or labelled incomplete, never silently capped.
@@ -34,6 +35,13 @@ start ~1 minute after idle). Architecture and limits: [docs/DEPLOYMENT.md](docs/
 | What is real | What is simulated or modeled |
 |---|---|
 | The replay engine (hftbacktest 0.9.4), the recorded tape of every simulated order, the accounting, the job queue, persistence and integrity checks | Every order, fill and P&L figure; queue position (L2 data cannot reveal it); latency; no market impact; hosted data is synthetic |
+
+**Project status.** Phases 6–11 are complete: production reliability and security, the research studio
+(`/research`, `/studies`, `/queue-lab`, `/market`), memory under the 512 MB host limit (local fixture), database-free
+anonymous reads, three out-of-sample days for the queue experiment (the October result does not replicate) and a
+final audit of the API, worker, security, accessibility, research numbers, performance and docs. Current release,
+verification evidence and known limits: [docs/engineering/PROJECT_STATE.md](docs/engineering/PROJECT_STATE.md);
+audit findings and fixes: [docs/rebuild/PHASE11_AUDIT.md](docs/rebuild/PHASE11_AUDIT.md).
 
 ## What it does
 
@@ -138,6 +146,7 @@ blackbox run --preset <id>          run a simulation offline (no database)
 blackbox market l3-synth --out <new dir>     write synthetic ITCH bytes and a workbench artefact
 blackbox market workbench --input <itch> ... inspect a private ITCH file locally (outputs stay private)
 blackbox study exec-validation --out <dir>   Phase 5 execution-model sensitivity study (offline)
+blackbox study queue-shadow ...     L3 queue versus L2 queue-model shadow study (ITCH input stays local)
 blackbox explain <run> <order>      explain one order
 blackbox compare <run_a> <run_b>    compare two runs
 ```
@@ -213,7 +222,7 @@ explains the concepts from scratch and has a five-minute demo script.
 | [BUILDING.md](docs/BUILDING.md) | Build requirements and Windows notes |
 | [INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md) | Concepts explained from scratch, and a demo script |
 | [rebuild/](docs/rebuild/) | The product rebuild: [FINAL_REVIEW](docs/rebuild/FINAL_REVIEW.md), tracker, [next phases](docs/rebuild/NEXT_PHASES_TRACKER.md), baseline, prototype review, validation, latency sensitivity, performance, security review, reuse matrix |
-| [research/](docs/research/) | Market Data Workbench, L3/L2 validation, execution model validation, microstructure |
+| [research/](docs/research/) | Market Data Workbench, L3/L2 validation, execution model validation, queue-model shadow experiment, microstructure |
 
 ## Acknowledgements
 

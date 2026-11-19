@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
@@ -39,7 +39,7 @@ use super::{
         SweepProgress, SweepReportCell, SweepReportResponse, SweepSubmitted,
     },
     respond::{
-        ApiJson, Cache, Page, TruncatedBy, bounded, byte_cap, check_label, conditional,
+        ApiJson, Cache, Page, Query, TruncatedBy, bounded, byte_cap, check_label, conditional,
         decode_cursor, encode_cursor, if_match, json, json_value, uuid_param,
     },
     runs::markdown_response,

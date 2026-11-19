@@ -188,3 +188,13 @@ test.describe('refused key', () => {
     expect(await page.evaluate(() => sessionStorage.getItem('bb.apiKey'))).toBeNull();
   });
 });
+
+test('sweep queue choices use readable model names', async ({ page }) => {
+  await page.goto('/sim/sweep');
+  const models = page.getByRole('group', { name: 'Y axis queue models' });
+  for (const name of ['Risk-averse', 'Log probability', 'Log probability 2', 'Power probability', 'Power probability 2', 'Power probability 3']) {
+    await expect(models.getByRole('checkbox', { name, exact: true })).toBeVisible();
+  }
+  await expect(models.getByRole('textbox', { name: 'Power probability exponent n, comma separated for several', exact: true })).toBeVisible();
+  await expect(models).not.toContainText(/risk_adverse|log_prob|power_prob/);
+});

@@ -628,7 +628,9 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get_mut(&key)
-        .filter(|c| c.generation == generation && c.at.elapsed() < ttl)
+        .filter(|c| {
+            c.generation == generation && c.at.elapsed() < ttl && !state.snapshot.recheck_due()
+        })
         .map(|c| {
             c.used = Instant::now();
             c.clone()
@@ -640,7 +642,7 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         for (k, v) in c.headers {
             response.headers_mut().insert(k, v);
         }
-        return response;
+        return super::respond::conditional(request.headers(), response);
     }
     tracing::trace!(hit = false, "anonymous response cache lookup");
     let response = next.run(request).await;

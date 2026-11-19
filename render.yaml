@@ -29,6 +29,8 @@ services:
         sync: false
       - key: BLOB_READ_WRITE_TOKEN
         sync: false
+      - key: BB_API_KEY_PEPPER
+        sync: false
       - key: BB_ADMIN_BOOTSTRAP_KEY_SHA256
         sync: false
       # Non-secret configuration.

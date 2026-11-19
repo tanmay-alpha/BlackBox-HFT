@@ -1,7 +1,7 @@
 //! Operator routes (`admin` scope, API_CONTRACT §8.9). All `no-store`.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::Response,
 };
@@ -15,7 +15,7 @@ use super::{
     Shared,
     auth::Caller,
     error::{ApiError, ErrorEnvelope},
-    respond::{Cache, json, limit_param, uuid_param},
+    respond::{Cache, Query, json, limit_param, uuid_param},
 };
 use crate::wire::at_ns;
 

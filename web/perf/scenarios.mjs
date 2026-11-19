@@ -47,6 +47,25 @@ const compareReady = (P) => P.count('table.cmp-metrics tbody tr') > 0 && P.vis(d
 /** Report: the rendered Markdown report has headings and the manifest is present (`ReportsPage.tsx`). */
 const reportReady = (P) => P.count('.report-heading') > 0 && P.count('[data-testid="report-manifest"]') > 0;
 
+/** Research home: all five investigation rows are `data-state="ready"` (`ResearchPage.tsx`, `li.rh-row`). */
+const researchReady = (P) => P.count('li.rh-row') === 5 && P.count('li.rh-row[data-state="ready"]') === 5;
+
+/** Study explorer: the study view is rendered and its artefact hash is verified in the browser (`StudiesPage.tsx`). */
+const studyReady = (P) => P.count('[data-testid="study-view"]') > 0 && /verified/.test(P.text('[data-testid="study-sha256"]') || '');
+
+/**
+ * Queue model lab: the artefact hash is verified and the first content is visible: the fill chart on desktop,
+ * the phone layout's staged Overview (`QueueLabPage.tsx`, `data-stage`; the chart is on the Fills stage there).
+ */
+const queueLabReady = (P) =>
+  /verified/.test(P.text('[data-testid="ql-sha256"]') || '') &&
+  P.vis(document.querySelector('[data-testid="ql-fill-chart"], [data-testid="ql-view"][data-stage] .stc-stage'));
+
+/** Market Data Workbench book step: the curated example's event is selected and the depth ladder is drawn (`MarketWorkbenchPage.tsx`). */
+const marketReady = (P) =>
+  /[?&]event=\d+/.test(location.search) && /#\d/.test(P.text('.mk-cmp-event .mk-event-facts') || '') && P.vis(document.querySelector('.mk-ladder'));
+const marketEvent = (P) => P.text('.mk-cmp-event .mk-event-facts');
+
 const cursorText = (P) => P.text('.book-cursor');
 
 export const SCENARIOS = [
@@ -361,6 +380,51 @@ export const SCENARIOS = [
               ? page.locator('a.nav-sheet-item', { hasText: 'Strategy Lab' })
               : page.locator('a.rail-item[aria-label="Strategy Lab"]'),
           ),
+      },
+    ],
+  },
+  {
+    id: 'research-load',
+    title: 'Research home `/research`',
+    path: '/research',
+    load: true,
+    readyDesc: 'all five li.rh-row investigations are data-state="ready"',
+    ready: researchReady,
+  },
+  {
+    id: 'studies-load',
+    title: 'Study explorer `/studies/exec-validation`',
+    path: '/studies/exec-validation',
+    load: true,
+    readyDesc: '[data-testid=study-view] rendered and [data-testid=study-sha256] says verified',
+    ready: studyReady,
+  },
+  {
+    id: 'queue-lab-load',
+    title: 'Queue model lab `/queue-lab`',
+    path: '/queue-lab',
+    load: true,
+    readyDesc: '[data-testid=ql-sha256] says verified; desktop: [data-testid=ql-fill-chart] visible; phone: the staged Overview (.stc-stage) visible',
+    ready: queueLabReady,
+  },
+  {
+    id: 'market-load',
+    title: 'Market Data Workbench `/market/l3-demo?tab=book`: open, then step one event',
+    path: '/market/l3-demo?tab=book',
+    load: true,
+    readyDesc: 'URL has event=, .mk-cmp-event .mk-event-facts shows #<index>, .mk-ladder visible',
+    ready: marketReady,
+    interactions: [
+      {
+        id: 'market-step',
+        input: 'click / tap the "Next event (J)" button',
+        resultDesc: '.mk-cmp-event .mk-event-facts text changed and .mk-ladder is visible',
+        baseline: marketEvent,
+        result: (P, base) => {
+          const t = P.text('.mk-cmp-event .mk-event-facts');
+          return t !== null && t !== base && P.vis(document.querySelector('.mk-ladder'));
+        },
+        act: ({ page, press }) => press(page.getByTitle('Next event (J)')),
       },
     ],
   },

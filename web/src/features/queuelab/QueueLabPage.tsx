@@ -859,7 +859,7 @@ function Lab({ study, sha256 }: { study: QueueShadowResult; sha256: string }) {
       ) : null}
       <aside className="ql-quote" data-testid="ql-real-data" aria-label="Real-data outcomes quoted from the document">
         <p className="small">
-          <Badge kind="neutral">Quoted text, not data</Badge> Real-data outcomes (NASDAQ ITCH sample days of 2019, the opening minutes). The results
+          <Badge kind="neutral">Quoted text, not data</Badge> Real-data outcomes (NASDAQ ITCH sample days of 2019 and 2020, the opening minutes). The results
           files are not published, so this page neither shows nor verifies these numbers;{' '}
           <a href={docHref('7-hypothesis-outcomes')} target="_blank" rel="noreferrer">
             read §7 of the experiment document
@@ -868,19 +868,23 @@ function Lab({ study, sha256 }: { study: QueueShadowResult; sha256: string }) {
         </p>
         <blockquote cite={docHref('7-hypothesis-outcomes')} className="note">
           <p>
-            Only 2019-10-30 (QQQ, AAPL and AMD; OOS-A) is a clean out-of-sample day. December 30 QQQ/AAPL had already been inspected on November
-            14/15, before the freeze; AMZN is a held-out symbol on that previously decoded day, not an independent held-out day.
-            The boundary implementation was corrected after outcomes were reviewed; this is not an untouched-engine validation.
+            Three clean out-of-sample acquisitions cover 2019-10-30 (QQQ, AAPL and AMD; OOS-A), and 2019-01-30 and 2020-01-30
+            (QQQ, AAPL and mechanically held-out SPY; OOS-C/D). October covers the full 540 s; the January prefixes cover only
+            534.128393 s and 271.554873308 s. December 30 QQQ/AAPL had already been inspected on November 14/15, before the freeze;
+            AMZN is a held-out symbol on that previously decoded day, not an independent held-out day.
+            October&apos;s boundary implementation was corrected after outcomes were reviewed; the corrected engine predates the January acquisitions.
           </p>
           <p>
-            The fixed-engine OOS-A recomputation has 243 model-versus-L3 comparisons and maximum absolute fill-fraction difference 0.0166976.
-            H-A has zero nominally supported cells. Depending on horizon, 7{'\u2013'}9 models have nominal 95% difference intervals containing zero
-            on every symbol. There are 9 nominal H0 rejections: 3 contrasts repeated across L, not 9 independent discoveries. These exploratory
-            decisions are unadjusted for multiplicity, and overlapping shadows share market events.
+            In October / January 2019 / January 2020 order, H0 nominal rejections are 9 / 36 / 3 of 243 model-versus-L3 comparisons per day;
+            H-A nominal support is 0 / 11 / 3 of 27 symbol/L/{'\u03c4'} cells; maximum absolute fill-fraction differences are
+            0.0167 / 0.0243 / 0.0258. The rejection identities, H-A outcomes and October maximum do not replicate uniformly.
+            October&apos;s 9 rejections are 3 contrasts repeated across L, not 9 independent discoveries. These exploratory decisions
+            are unadjusted for multiplicity, and overlapping shadows share market events; unequal coverage changes the eligible populations.
           </p>
           <p>
-            At L = 0 and {'\u03c4'} = 1 s, book-cross and trade-through fills together exceed queue fills for each OOS-A symbol. These shared
-            fill mechanisms limit how strongly the fill-fraction comparisons can distinguish queue models.
+            At L = 0 and {'\u03c4'} = 1 s, book-cross and trade-through fills together exceed queue fills for each October symbol,
+            but not for January 2019 SPY (250 queue versus 55 nonqueue fills). The three-day descriptive tally is not a pooled
+            inferential test or real-order calibration.
           </p>
         </blockquote>
       </aside>

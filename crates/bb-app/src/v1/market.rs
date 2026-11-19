@@ -6,7 +6,7 @@ use std::{
 };
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
@@ -25,7 +25,7 @@ use super::{
     Shared,
     auth::Caller,
     error::{ApiError, ErrorEnvelope},
-    respond::{self, Cache, Page, TruncatedBy},
+    respond::{self, Cache, Page, Query, TruncatedBy},
 };
 
 const DEMO_ID: &str = "l3-demo";

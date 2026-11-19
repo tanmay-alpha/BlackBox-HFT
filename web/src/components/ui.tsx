@@ -193,7 +193,8 @@ export function useElapsedSeconds(): number {
 
 /**
  * Static loading line with an elapsed-time counter; no animation (§4.5, §6.9). While the API is
- * waking it says so (§10.1).
+ * waking it says so (§10.1). The counter is visual only: inside the status region it would be
+ * re-announced every second.
  */
 export function Spinner({ label = 'Loading' }: { label?: string }) {
   const elapsed = useElapsedSeconds();
@@ -202,7 +203,7 @@ export function Spinner({ label = 'Loading' }: { label?: string }) {
     <span className="spinner" role="status">
       {label}
       {'\u2026'}
-      {elapsed > 0 ? <span className="mono">{` ${elapsed} s`}</span> : null}
+      {elapsed > 0 ? <span className="mono" aria-hidden="true">{` ${elapsed} s`}</span> : null}
       {waking ? ' \u2014 the API is waking up (free host; first response can take about a minute)' : null}
     </span>
   );
