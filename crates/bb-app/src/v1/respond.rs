@@ -5,8 +5,8 @@ use std::sync::OnceLock;
 
 use axum::{
     body::Body,
-    extract::{FromRequest, Request},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    extract::{FromRequest, FromRequestParts, Request},
+    http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::Response,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -78,16 +78,18 @@ pub fn apply_cache(h: &mut HeaderMap, cache: Cache, etag: Option<&str>) {
 
 /// Answers 304 when the request's `If-None-Match` matches the response `ETag`.
 pub fn conditional(request_headers: &HeaderMap, response: Response) -> Response {
-    let matches = match (
-        request_headers.get(header::IF_NONE_MATCH),
-        response.headers().get(header::ETAG),
-    ) {
-        (Some(inm), Some(etag)) => inm.to_str().ok().is_some_and(|v| {
-            v.split(',')
-                .any(|t| t.trim() == etag.to_str().unwrap_or(""))
-        }),
-        _ => false,
-    };
+    let matches = response.headers().get(header::ETAG).is_some_and(|etag| {
+        let etag = etag.to_str().unwrap_or("");
+        request_headers
+            .get_all(header::IF_NONE_MATCH)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|tag| {
+                let tag = tag.trim();
+                tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag
+            })
+    });
     if matches {
         let mut not_modified = Response::new(Body::empty());
         *not_modified.status_mut() = StatusCode::NOT_MODIFIED;
@@ -209,6 +211,23 @@ pub fn decode_cursor<P: DeserializeOwned>(cursor: &str, filters: &str) -> Result
         ));
     }
     serde_json::from_slice(&data).map_err(|_| invalid())
+}
+
+/// A query extractor whose deserialization failures use the API error envelope, not Axum's
+/// plain-text rejection. Oversized integers, duplicate fields and missing fields are 400s.
+pub struct Query<T>(pub T);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for Query<T> {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        axum::extract::Query::<T>::from_request_parts(parts, state)
+            .await
+            .map(|query| Self(query.0))
+            .map_err(|_| {
+                ApiError::invalid_request("the query parameters are malformed or out of range")
+            })
+    }
 }
 
 /// A JSON request body: ≤ 1 MiB, `application/json`, nanosecond strings accepted, unknown

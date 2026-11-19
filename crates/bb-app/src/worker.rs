@@ -11,6 +11,10 @@
 //! dependency, engine and panic text only reaches the log, through the SEC-18 redactor, next to
 //! the safe fields `job_id`, `component`, `error_class`, `reason` and `elapsed_ms`. A
 //! [`FaultInjector`] (tests only) can make individual steps fail (SEC-17).
+//!
+//! Cancellation takes precedence over a failed persistence step while the lease is still held.
+//! Between persistence steps a known lost lease or cancellation stops further store requests;
+//! an upload that already landed keeps its intent for garbage collection, never a committed run.
 
 use std::{
     collections::HashMap,
@@ -611,6 +615,20 @@ async fn process(ctx: &Arc<WorkerCtx>, job: Job) {
             .await
             .map(|_| ()),
     };
+    // Cancellation can race any failed step, even before a heartbeat or local API notification
+    // reaches this worker. `fail`/`expire_attempt` correctly refuse `cancelling`; acknowledge it
+    // with the same lease fence instead of abandoning it to the reaper.
+    let (outcome, result) = match result {
+        Err(bb_db::Error::LeaseLost)
+            if matches!(&outcome, Outcome::Failed(..) | Outcome::Expired) =>
+        {
+            match ctx.db.acknowledge_cancel(&lease).await {
+                Ok(_) => (Outcome::Cancelled, Ok(())),
+                Err(e) => (outcome, Err(e)),
+            }
+        }
+        result => (outcome, result),
+    };
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let job_id = job.id;
     match (&outcome, result) {
@@ -753,7 +771,7 @@ async fn execute(
                 Metrics::inc(&ctx.metrics.jobs_deduplicated_total);
                 Outcome::Completed
             }
-            Err(bb_db::Error::LeaseLost) => Outcome::Abandoned,
+            Err(bb_db::Error::LeaseLost) => Outcome::Cancelled,
             Err(_) => Outcome::Released,
         };
     }
@@ -1035,7 +1053,10 @@ async fn persist(
         bb_core::platform::storage_segment(&job.platform),
         run_uuid
     );
-    // A cancel that arrived while analytics and the bundle were built: upload nothing.
+    // A lost lease or cancel while analytics and the bundle were built: upload nothing.
+    if control.lost.load(Ordering::SeqCst) {
+        return Outcome::Abandoned;
+    }
     if control.cancel_requested() {
         return Outcome::Cancelled;
     }
@@ -1043,6 +1064,12 @@ async fn persist(
     if let Err(e) = ctx.db.upload_intent(ctx.storage.backend, &key).await {
         let message = generic(job.id, "database", "upload_intent_failed", &e);
         return Outcome::Failed("storage_failed", "storage_failed", message);
+    }
+    if control.lost.load(Ordering::SeqCst) {
+        return Outcome::Abandoned;
+    }
+    if control.cancel_requested() {
+        return Outcome::Cancelled;
     }
     // 4b: publish (never overwrites); every attempt is charged to the submitting workspace.
     match ctx
@@ -1073,6 +1100,14 @@ async fn persist(
                 "the bundle could not be stored; resubmit to retry".into(),
             );
         }
+    }
+    // An upload can have landed before its response arrives. Leave its intent for GC, but do
+    // not spend a read-back request for an attempt that already stopped.
+    if control.lost.load(Ordering::SeqCst) {
+        return Outcome::Abandoned;
+    }
+    if control.cancel_requested() {
+        return Outcome::Cancelled;
     }
     // 4c: read back the trailer and compare its digest.
     let range = match trust.trailer.range() {
@@ -1106,6 +1141,12 @@ async fn persist(
                 "the stored bundle could not be read back; resubmit to retry".into(),
             );
         }
+    }
+    if control.lost.load(Ordering::SeqCst) {
+        return Outcome::Abandoned;
+    }
+    if control.cancel_requested() {
+        return Outcome::Cancelled;
     }
     // 5: transactional completion with the complete BundleTrust as the trust root.
     let page_index = match serde_json::to_value(&trust) {

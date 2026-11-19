@@ -1,7 +1,7 @@
 //! Jobs: list, detail with live progress, cancel (API_CONTRACT §8.5). Job status is `no-store`.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::Response,
 };
@@ -16,7 +16,7 @@ use super::{
     experiments::Params,
     model::{Empty, Job},
     respond::{
-        Cache, Page, TruncatedBy, bounded, byte_cap, decode_cursor, encode_cursor, json,
+        Cache, Page, Query, TruncatedBy, bounded, byte_cap, decode_cursor, encode_cursor, json,
         json_value, uuid_param,
     },
 };

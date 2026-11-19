@@ -640,7 +640,7 @@ pub async fn anon_cache(State(state): State<Shared>, request: Request, next: Nex
         for (k, v) in c.headers {
             response.headers_mut().insert(k, v);
         }
-        return response;
+        return super::respond::conditional(request.headers(), response);
     }
     tracing::trace!(hit = false, "anonymous response cache lookup");
     let response = next.run(request).await;

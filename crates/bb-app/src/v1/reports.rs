@@ -1,7 +1,7 @@
 //! Saved report snapshots (API_CONTRACT §8.8): immutable Markdown bodies with their sha256.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
@@ -18,7 +18,7 @@ use super::{
     experiments::{Params, WorkspaceParam},
     model::{CreateReport, Report},
     respond::{
-        ApiJson, Cache, Page, TruncatedBy, bounded, byte_cap, check_label, conditional,
+        ApiJson, Cache, Page, Query, TruncatedBy, bounded, byte_cap, check_label, conditional,
         decode_cursor, encode_cursor, json, json_value, uuid_param,
     },
     runs::{markdown_response, resolve_run, run_markdown, verified_summary},
