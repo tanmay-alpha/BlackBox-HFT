@@ -99,15 +99,30 @@ Commits `8c35d57` (hosted memory), `3b61c35` (docs). PR CI 44410135636 and `main
   runs; 2,051 orders, 1,182 fills), comparison 201, report 200, anonymous read 404, re-authentication OK, 0 page
   errors ([prod-research-evidence.json](prod-research-evidence.json), [PRODUCTION_ACCEPTANCE.md](PRODUCTION_ACCEPTANCE.md)).
 
+## Follow-up 5: `a24ccf9` (PRs #13, #14): Phase 11 final audit
+
+Audit fixes ([PHASE11_AUDIT.md](PHASE11_AUDIT.md)): anonymous cache 304s and due snapshot recheck, query error
+envelope, cancellation and lease races, report provenance and backtick fences, artefact admission and decode
+single-flight, accessibility and copy fixes, mobile CLS, `render.yaml` pepper. PR and `main` CI green (all 8 jobs);
+image `sha256:631a8111d8e54f11275eb7a64a64f76d7ea855f8eb6928bce6574bb5a2d8c52b`; Render deploy
+`dep-dbvceeu7bikc7387i490`; `/status` `git_sha=a24ccf9…`; smoke all checks passed.
+
+- Production suite (2026-11-19 09:55–10:00 UTC): 16 tests incl. keyed. 15 passed on the first run; `market.prod.spec.ts`
+  failed because its ladder assertion predated the cells' screen-reader text ("7,000 shares in 11 orders"); spec
+  updated, rerun 3/3 passed.
+- Keyed journey: job `01a1f33e-ce13-7966-95b0-7b1839413274` completed on attempt 1, run `299f836aa96bd57c`, result
+  sha256 `bb34d8c5…` (unchanged), 2,051 orders, 1,182 fills; comparison 201 (aligned, like-for-like); report 200
+  (25,696 B; text changed by the provenance fix); anonymous read 404; re-authentication OK; 0 page errors.
+
 ## Rollback
 
-Roll back to the previous follow-up (`18aed41`), or to an earlier image of this record:
+Roll back to the previous follow-up (`3ed53cd`), or to an earlier image of this record:
 
 ```
-render deploys create srv-dbs11fm1egvs73chs7lg --image ghcr.io/tanmay-alpha/blackbox-hft@sha256:bac3807b893d5fb99d9882a039c16ac35dc7aeaa656a7a99d52d093da2e84511 --wait --confirm
+render deploys create srv-dbs11fm1egvs73chs7lg --image ghcr.io/tanmay-alpha/blackbox-hft@sha256:9300ae0696002e0b48b355d871c338675d4c5870e0885a16bda938aeb0b3e4a1 --wait --confirm
 vercel rollback <previous production deployment> --scope tanmay-alphas-projects
 ```
 
-No follow-up adds a migration; every image in this record (`a1d128c`, `5fe8923`, `36536d0`, `18aed41`, `3ed53cd`)
+No follow-up adds a migration; every image in this record (`a1d128c`, `5fe8923`, `36536d0`, `18aed41`, `3ed53cd`, `a24ccf9`)
 runs against the current schema. The release before Phase 6 (`cdde05e`, `sha256:2c14ea32…4ec4`) also runs against
 the migrated schema: 0010 adds a defaulted column it never reads, 0011 only widens a CHECK.

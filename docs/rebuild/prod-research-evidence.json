@@ -1,25 +1,25 @@
 {
-  "started_at": "2026-11-19T05:04:40.127Z",
-  "backend_git_sha": "3ed53cd87836abab63dca4a01f6d34efa5219fff",
-  "seed": 2026281421,
-  "job_id": "01a1f231-a309-7585-8556-e45a2d92b240",
+  "started_at": "2026-11-19T09:58:59.877Z",
+  "backend_git_sha": "a24ccf976723abaddec082b82165b90453e63718",
+  "seed": 2026255256,
+  "job_id": "01a1f33e-ce13-7966-95b0-7b1839413274",
   "ui_states": [
     {
       "state": "running",
-      "at_ms": 4620
+      "at_ms": 1876
     },
     {
       "state": "completed",
-      "at_ms": 10884
+      "at_ms": 8428
     }
   ],
-  "run_id": "c6d47c551e17c5af",
+  "run_id": "299f836aa96bd57c",
   "job": {
     "state": "completed",
     "attempt": 1,
-    "queued_at_ns": "1795064701661654000",
-    "started_at_ns": "1795064701772000000",
-    "finished_at_ns": "1795064710608879000",
+    "queued_at_ns": "1795082341861327000",
+    "started_at_ns": "1795082341973762000",
+    "finished_at_ns": "1795082348193797000",
     "progress": {
       "done": 1201,
       "tape_events": 0,
@@ -38,7 +38,7 @@
   },
   "comparison": {
     "status": 201,
-    "id": "01a1f231-eb7f-75c0-b3ae-f7fb88e93725",
+    "id": "01a1f33f-097a-7988-9b04-b950117a12db",
     "eligibility": {
       "aligned": true,
       "like_for_like": true,
@@ -51,11 +51,11 @@
   },
   "report": {
     "status": 200,
-    "bytes": 25665,
+    "bytes": 25696,
     "has_title": true
   },
   "anonymous_run_status": 404,
   "reauth_ok": true,
   "page_errors": [],
-  "finished_at": "2026-11-19T05:05:23.992Z"
+  "finished_at": "2026-11-19T09:59:22.081Z"
 }

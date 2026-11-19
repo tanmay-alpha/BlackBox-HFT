@@ -1,7 +1,7 @@
 # Production acceptance (M10)
 
 Date: 2026-11-15. Release commit: `d85f743719ae9d46d29c7c9e0df58f476e8bff42` (`main`). Later releases are appended
-below; the current suite and its latest production result (`3ed53cd`) are in "Phase 6/7 production suite".
+below; the current suite and its latest production result (`a24ccf9`) are in "Phase 6/7 production suite".
 
 ## Release evidence
 
@@ -88,11 +88,12 @@ Rollback for this release: redeploy `sha256:212495fa724420186e871fdea9a44cbf09b6
 
 Current suite: 16 tests in 6 files (`npx playwright test -c playwright.prod.config.ts --list`): `acceptance.spec.ts`
 (the 7 tests above), the four Phase 6/7 specs below (8 tests) and the keyed `research.prod.spec.ts` (1 test, skipped
-unless `PROD_RESEARCH_KEY` is set). Latest result, production `3ed53cd` (2026-11-19): 15 anonymous tests passed, no
-retries ([PHASE67_RELEASE.md](PHASE67_RELEASE.md)); the keyed journey passed with the Phase 11 preset-selector fix to
-the spec: job `01a1f231-a309-7585-8556-e45a2d92b240`, run `c6d47c551e17c5af`, result sha256 `bb34d8c5…` (equal to
-the 2026-11-15 keyed runs), comparison 201, report 200 (25,665 B), anonymous read 404, re-authentication OK, 0 page
-errors ([prod-research-evidence.json](prod-research-evidence.json)).
+unless `PROD_RESEARCH_KEY` is set). Latest result, production `a24ccf9` (2026-11-19, [PHASE67_RELEASE.md](PHASE67_RELEASE.md)
+follow-up 5): 16/16 passed; `market.prod.spec.ts` needed its ladder assertion updated for the cells' screen-reader text
+and passed 3/3 on rerun. Keyed journey: job `01a1f33e-ce13-7966-95b0-7b1839413274`, run `299f836aa96bd57c`, result
+sha256 `bb34d8c5…` (equal to the 2026-11-15 and `3ed53cd` keyed runs), comparison 201, report 200 (25,696 B), anonymous
+read 404, re-authentication OK, 0 page errors ([prod-research-evidence.json](prod-research-evidence.json)). Previous:
+`3ed53cd`, 15 anonymous passed and keyed run `c6d47c551e17c5af`.
 
 The Phase 6/7 specs are anonymous and read-only. Every on-screen number is compared with the API or
 artefact response fetched in the same test; each full page load is paced (≥ 2 s) and recorded as a test annotation;

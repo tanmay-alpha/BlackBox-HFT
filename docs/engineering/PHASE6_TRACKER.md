@@ -6,16 +6,15 @@ Verified, Accepted risk, Blocked. "Verified" means checked on the deployed produ
 
 Baseline (2026-11-17/18): `main` = `af3a284`, production `cdde05e`.
 
-**Released 2026-11-19:** `a1d128c` (PR #3), then follow-ups `5fe8923` (PR #4), `36536d0` (PR #5), `18aed41` (PR #7)
-and `3ed53cd` (PR #9). Production runs `3ed53cd` (image `sha256:9300ae06…b3e4a1`, Render deploy
-`dep-dbv2jk5g1s2s73e0c8m0`, migrations through 0011; [../rebuild/PHASE67_RELEASE.md](../rebuild/PHASE67_RELEASE.md)).
+**Released 2026-11-19:** `a1d128c` (PR #3), then follow-ups `5fe8923` (PR #4), `36536d0` (PR #5), `18aed41` (PR #7),
+`3ed53cd` (PR #9) and the Phase 11 audit `a24ccf9` (PRs #13, #14). Production runs `a24ccf9` (image
+`sha256:631a8111…2d8c52b`, Render deploy `dep-dbvceeu7bikc7387i490`, migrations through 0011;
+[../rebuild/PHASE67_RELEASE.md](../rebuild/PHASE67_RELEASE.md), [../rebuild/PHASE11_AUDIT.md](../rebuild/PHASE11_AUDIT.md)).
 Every row below is in that image. **Verified** rows were checked on production: the production browser suite (16
-tests; on `3ed53cd` 15 anonymous passed, and the keyed journey passed with the spec's preset-selector fix from the
-Phase 11 audit: job `01a1f231-a309-7585-8556-e45a2d92b240`, run `c6d47c551e17c5af`;
-[../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md)), smoke 8/8 and direct
+tests, 16 passed on `a24ccf9` incl. the keyed journey: job `01a1f33e-ce13-7966-95b0-7b1839413274`, run
+`299f836aa96bd57c`; [../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md)), smoke and direct
 page checks of `/research` and `/queue-lab`. **Deployed** rows are in production but were proved by local tests or the
-512 MB local fixture, not by a production measurement. `main` after `3ed53cd` adds documentation and measurement
-tooling only (queue-shadow holdouts, `../rebuild/PHASE10_LCP.md`).
+512 MB local fixture, not by a production measurement.
 
 Model availability: GPT-6.1 Sol returned `usage_limit_reached` on 2026-11-17 and early 2026-11-18 and was used from
 2026-11-18 15:20 IST for the two independent reviews (backend, science), the enum-CHECK audit, the backend review
