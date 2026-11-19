@@ -147,6 +147,22 @@ test.describe('execution study viewer', () => {
     await expect(page).not.toHaveURL(/cell=/);
   });
 
+  test('desktop: from a matrix cell the keyboard reaches the opened detail in two presses', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/studies/exec-validation');
+    const cell = page.getByTestId('study-matrix-normal_liquidity').locator('button[data-cell]').first();
+    await cell.focus();
+    await page.keyboard.press('Enter');
+    const goto = page.getByRole('button', { name: 'Go to cell detail' });
+    await goto.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('cell-panel').getByRole('heading', { level: 2 })).toBeFocused();
+    // The skip control sits before the matrices: Shift+Tab from the selected cell reaches it.
+    await cell.focus();
+    for (let i = 0; i < 40 && !(await goto.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press('Shift+Tab');
+    await expect(goto).toBeFocused();
+  });
+
   test('a stored demo run in the panel links to its order forensics', async ({ page }) => {
     await page.goto('/studies/exec-validation?cell=run.08200b05ca35723f');
     const evidence = page.getByTestId('cell-panel').getByTestId('cell-evidence');

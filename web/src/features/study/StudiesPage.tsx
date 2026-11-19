@@ -417,6 +417,12 @@ function StudyView({ verified }: { verified: VerifiedStudy }) {
         regimes replay different synthetic events, so compare within a table, not across tables. The delta is against the table&apos;s{' '}
         {queueLabel(study.baseline.queue_model)} x {latencyLabel(study.baseline.latency)} cell. Select a cell for its detail.
       </p>
+      {/* Wide screens: the opened detail sits after the whole page in tab order; this skips to it. */}
+      {!phone && sel ? (
+        <button type="button" className="btn-link stc-goto-detail" onClick={() => document.getElementById('stc-cell-title')?.focus()}>
+          Go to cell detail
+        </button>
+      ) : null}
       {sensitivityMatrices(study, metric).map((m) => (
         <Matrix key={m.regime} study={study} view={m} fmt={def.fmt} pick={pick} />
       ))}

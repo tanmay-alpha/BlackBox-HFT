@@ -308,6 +308,13 @@
   .rh-rank {
     grid-template-columns: max-content minmax(0, 16ch) minmax(60px, 1fr) max-content;
   }
+
+  /* The workbench dataset line wraps to four lines on a phone once read; the placeholder holds
+     that space so the rows below do not jump when it arrives (CLS 0.09 at 390x844). */
+  .rh-ds-pending {
+    display: block;
+    min-height: 4lh;
+  }
 }
 
 /* Touch screens: each stacked evidence link is a 44 px target (WCAG 2.5.5). */

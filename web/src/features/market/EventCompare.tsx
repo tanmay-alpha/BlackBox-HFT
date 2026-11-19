@@ -461,10 +461,14 @@ export function EventCompare({
     <div className="mk-cmp">
       {head}
       {body}
-      <details className="mk-expert" open={expert} onToggle={(e) => setExpert(e.currentTarget.open)}>
-        <summary>Expert view: raw L3 order table and L2 ladder after #{fmtInt(eventIndex)}</summary>
-        {expert ? <RawBook datasetId={datasetId} eventIndex={eventIndex} event={d?.event} /> : null}
-      </details>
+      {/* Held back while the first detail loads: drawn under the spinner, the closed summary was
+          pushed off screen when the ladder arrived (phone CLS 0.086). An open one stays put. */}
+      {d || detail.error || expert ? (
+        <details className="mk-expert" open={expert} onToggle={(e) => setExpert(e.currentTarget.open)}>
+          <summary>Expert view: raw L3 order table and L2 ladder after #{fmtInt(eventIndex)}</summary>
+          {expert ? <RawBook datasetId={datasetId} eventIndex={eventIndex} event={d?.event} /> : null}
+        </details>
+      ) : null}
     </div>
   );
 }

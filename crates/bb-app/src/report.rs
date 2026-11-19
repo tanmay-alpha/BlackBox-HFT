@@ -50,12 +50,15 @@ pub(crate) fn fee_bp(fraction: f64) -> String {
     format!("{} bp", num(fraction * 1e4))
 }
 
-/// `text` as an inline code span, widening the fence when the text itself holds a backtick.
+/// `text` as an inline code span. When the text holds backticks the fence is one backtick
+/// longer than its longest backtick run and padded with spaces (CommonMark code spans).
 fn code(text: &str) -> String {
-    if text.contains('`') {
-        format!("`` {text} ``")
-    } else {
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    if longest == 0 {
         format!("`{text}`")
+    } else {
+        let fence = "`".repeat(longest + 1);
+        format!("{fence} {text} {fence}")
     }
 }
 
@@ -1582,6 +1585,14 @@ mod tests {
 
     use super::*;
     use crate::{datasets::DatasetCtx, pipeline, presets};
+
+    #[test]
+    fn code_span_fence_outgrows_backtick_runs() {
+        assert_eq!(code("events.jsonl"), "`events.jsonl`");
+        assert_eq!(code("a`b"), "`` a`b ``");
+        assert_eq!(code("a``b"), "``` a``b ```");
+        assert_eq!(code("```x`"), "```` ```x` ````");
+    }
 
     /// Prose of a Markdown body: fenced blocks and inline code spans removed.
     fn prose(md: &str) -> String {
