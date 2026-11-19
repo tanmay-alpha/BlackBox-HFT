@@ -693,3 +693,14 @@
     text-align: left;
   }
 }
+
+/* Touch screens: chart row labels, seed values and study links are 44 px targets (WCAG 2.5.5).
+   They grow for real: rows of them sit too close for invisible frames. */
+@media (pointer: coarse) {
+  .stc-pick,
+  .stc-index-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--h-touch);
+  }
+}

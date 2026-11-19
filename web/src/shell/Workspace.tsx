@@ -107,7 +107,8 @@ export function Workspace({ context, toolbar, layout = false, children, scroll =
  * Shown in the workspace area while a workspace's code chunk loads: the same frame as
  * `Workspace` (an empty toolbar row of the same height above the body), so the page's first rows
  * do not move when the workspace replaces it. It shows no data; it is marked busy and announces
- * the load (with the elapsed time and the API's waking state, as every loading line does).
+ * the load and the API's waking state (the elapsed time is shown, not announced, as every loading
+ * line does).
  */
 export function WorkspaceLoading() {
   return (

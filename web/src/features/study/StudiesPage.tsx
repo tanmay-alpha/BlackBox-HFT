@@ -220,9 +220,19 @@ function StudyView({ verified }: { verified: VerifiedStudy }) {
     return run ? linkOf(run) : { kind: 'not_stored', reason: 'no_stored_run' };
   };
 
+  // Focus follows the detail (B1, keyboard): a selection made where its control disappears (inside
+  // the detail, or any selection on a phone, which switches to the Cell tab) moves focus to the new
+  // detail's title; closing returns focus to the control that opened the detail, or to the
+  // selected cell's own control when that control was re-rendered or the URL opened the detail.
+  const opener = useRef<HTMLElement | null>(null);
+  const pendingFocus = useRef<{ to: 'detail' } | { to: 'opener'; key: string } | null>(null);
   // A selection is a history entry (Back/Forward restore it); metric and tab changes replace.
   const select = (key: string) => {
     const next = resolveSelection(study, key);
+    const active = document.activeElement;
+    const fromDetail = active instanceof HTMLElement && active.closest('[data-testid="cell-panel"]') !== null;
+    if (active instanceof HTMLElement && active !== document.body && !fromDetail) opener.current = active;
+    if (fromDetail || phone) pendingFocus.current = { to: 'detail' };
     setParams((p) => {
       const q = new URLSearchParams(p);
       q.set('cell', key);
@@ -231,13 +241,15 @@ function StudyView({ verified }: { verified: VerifiedStudy }) {
     });
     if (next) announce(`Selected ${selectionTitle(next)}`);
   };
-  const close = () =>
+  const close = () => {
+    pendingFocus.current = { to: 'opener', key: sel?.key ?? '' };
     setParams((p) => {
       const q = new URLSearchParams(p);
       q.delete('cell');
       if (q.get('tab') === 'cell') q.set('tab', 'matrix');
       return q;
     });
+  };
   const replaceParam = (name: 'tab' | 'metric', value: string) =>
     setParams(
       (p) => {
@@ -260,6 +272,27 @@ function StudyView({ verified }: { verified: VerifiedStudy }) {
     }
     // Wide screens: a newly selected cell's detail starts at its title.
     asideRef.current?.scrollTo({ top: 0 });
+  }, [stage, rawCell]);
+  useEffect(() => {
+    const want = pendingFocus.current;
+    if (want === null) return;
+    if (want.to === 'detail') {
+      const title = document.getElementById('stc-cell-title');
+      if (title === null) return;
+      pendingFocus.current = null;
+      title.focus();
+      return;
+    }
+    if (rawCell !== null) return;
+    pendingFocus.current = null;
+    const back = opener.current;
+    opener.current = null;
+    const target =
+      (back?.isConnected ? back : null) ??
+      document.querySelector<HTMLElement>(`button[data-cell="${CSS.escape(want.key)}"]`) ??
+      document.querySelector<HTMLElement>('.stc-stages [role="tab"][aria-selected="true"]') ??
+      document.getElementById('main');
+    target?.focus();
   }, [stage, rawCell]);
   const groupLabelOf = (r: ChartRow) => labelGroup(study, r.group);
 
