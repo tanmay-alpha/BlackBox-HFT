@@ -26,8 +26,10 @@ authentication, fingerprint coverage, SQLx release hook, log redaction, page str
 visibility and badge contrast (lowest 5.23:1). Performance: no confirmed regression; mobile
 Explore/Replay figures were taken under concurrent build load ([PHASE11_PERF_CHECK.md](PHASE11_PERF_CHECK.md)).
 
-Not fixed (unconfirmed or suggestions): workbench step does not announce the landed event; desktop
-cell detail sits after the page in tab order; research home and workbench mobile CLS 0.086–0.087
-(below 0.1, cause unattributed); consecutive backticks in source-input names may break report
-Markdown fencing; external database quarantine stays visible to anonymous readers until the next
-snapshot recheck (documented window).
+Fixed after the audit (`p11/polish`): workbench steps announce the landed event once in a polite
+live region; the studies matrix has a "Go to cell detail" control that focuses the open detail;
+mobile CLS (390x844, 4x CPU, Slow 4G) came from the workbench's closed expert `<details>` drawn
+under the loading spinner (0.086) and the research home's first dataset line growing by two lines
+(0.094), now 0.0004 and 0.005 (`web/e2e/cls.spec.ts`); report inline code fences outgrow any
+backtick run in source-input names. Not fixed: external database quarantine stays visible to
+anonymous readers until the next snapshot recheck (documented window).

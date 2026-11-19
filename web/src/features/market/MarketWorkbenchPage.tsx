@@ -18,13 +18,22 @@ import { BasisLegend, Empty, ErrorBox, HashText, Notice, Spinner, useAsync } fro
 import { useInspector } from '../../shell/inspector';
 import { paths } from '../../shell/paths';
 import { Workspace } from '../../shell/Workspace';
-import { marketApi, type MarketSummary } from './api';
+import { marketApi, type MarketEvent, type MarketSummary } from './api';
 import { DatasetTab } from './DatasetTab';
 import { EventCompare } from './EventCompare';
 import { EventFacts } from './EventFacts';
 import { DataClassBadge } from './labels';
 import { MetricsTab } from './MetricsTab';
-import { MARKET_TABS, parseExampleParam, parseWorkbenchQuery, stepWithin, type MarketTab, type WorkbenchQuery } from './model';
+import {
+  fmtPrice4,
+  itchTypeName,
+  MARKET_TABS,
+  parseExampleParam,
+  parseWorkbenchQuery,
+  stepWithin,
+  type MarketTab,
+  type WorkbenchQuery,
+} from './model';
 import { EventTouch, TimelineTab } from './TimelineTab';
 import { findNeighbour, PAGE_SIZE, useEventPager, useSelectedEvent } from './useEvents';
 import { ValidationTab } from './ValidationTab';
@@ -120,6 +129,14 @@ function GoToEvent({ selected, max, onGo }: { selected: number | null; max: numb
   );
 }
 
+/** The live-region line for a landed step: `Event #N: <kind> <side> <price>`. */
+function landedNote(index: number | null, event: MarketEvent | null | undefined): string {
+  if (index === null || event === undefined) return '';
+  if (event === null) return `Event #${fmtInt(index)}`;
+  const parts = [itchTypeName(event.message_type), event.side, event.price4 === null ? null : fmtPrice4(event.price4)];
+  return `Event #${fmtInt(index)}: ${parts.filter((p) => p).join(' ')}`;
+}
+
 function Workbench({ datasetId }: { datasetId: string }) {
   const [sp] = useSearchParams();
   const navigate = useNavigate();
@@ -136,6 +153,9 @@ function Workbench({ datasetId }: { datasetId: string }) {
   const [navNote, setNavNote] = useState<string | null>(null);
   const [stepping, setStepping] = useState(false);
   const stepCtl = useRef<AbortController | null>(null);
+  // The event a J/K or Previous/Next step landed on, announced once its details load.
+  const [landed, setLanded] = useState<number | null>(null);
+  const landedEvent = useSelectedEvent(datasetId, landed);
   // The latest selection, ahead of the URL: key repeats arrive before the navigation re-renders.
   const selRef = useRef<number | null>(q.event);
   useEffect(() => {
@@ -164,6 +184,7 @@ function Workbench({ datasetId }: { datasetId: string }) {
       stepCtl.current = null;
       setStepping(false);
       setNavNote(null);
+      setLanded(null);
       selRef.current = index;
       go({ event: index }, true);
     },
@@ -185,6 +206,7 @@ function Workbench({ datasetId }: { datasetId: string }) {
         const local = stepWithin(page.items, from, dir, { from: pager.start, complete: page.next_cursor === null });
         if (local.kind === 'select') {
           select(local.index);
+          setLanded(local.index);
           return;
         }
       }
@@ -192,6 +214,7 @@ function Workbench({ datasetId }: { datasetId: string }) {
       stepCtl.current = ctl;
       setStepping(true);
       setNavNote(null);
+      setLanded(null);
       const type = q.tab === 'events' ? q.type : null;
       findNeighbour(datasetId, type, from, dir, ctl.signal).then(
         (index) => {
@@ -208,6 +231,7 @@ function Workbench({ datasetId }: { datasetId: string }) {
           if (q.tab === 'events' && !onPage) patch.from = dir === 1 ? index : Math.max(0, index - PAGE_SIZE + 1);
           selRef.current = index;
           go(patch, true);
+          setLanded(index);
         },
         (e: unknown) => {
           if (ctl.signal.aborted || isAbort(e)) return;
@@ -292,8 +316,10 @@ function Workbench({ datasetId }: { datasetId: string }) {
       >
         {phone ? <ChevronRight size={18} aria-hidden="true" /> : 'Next'}
       </button>
+      {stepping ? <span className="mk-nav-note">Finding event{'\u2026'}</span> : null}
+      {/* Announces the outcome of a step once, never the search in progress. */}
       <span className="mk-nav-note" role="status" aria-live="polite">
-        {stepping ? 'Finding event\u2026' : (navNote ?? '')}
+        {stepping ? '' : (navNote ?? landedNote(landed, landedEvent.loading ? undefined : landedEvent.data))}
       </span>
     </>
   );

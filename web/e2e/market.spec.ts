@@ -75,6 +75,34 @@ test('J and K step to the next and previous source event; the expert view keeps 
   await expect(page.locator('.mk-raw table.mk-l2')).toBeVisible();
 });
 
+test('each J/K or Previous/Next step announces the landed event once, not the search', async ({ page }) => {
+  const [first] = await examples(page);
+  await page.goto(`${ROOT}?tab=book&event=${first.event_index}`);
+  await ladderReady(page, first.event_index);
+  const status = page.locator('.mk-nav-note[role="status"]');
+  await expect(status).toHaveAttribute('aria-live', 'polite');
+  // Every non-empty text the live region ever holds, in order, kept on the region itself.
+  await status.evaluate((el) => {
+    const seen: string[] = [];
+    new MutationObserver(() => {
+      const t = el.textContent ?? '';
+      if (t !== '' && seen[seen.length - 1] !== t) seen.push(t);
+      el.setAttribute('data-announced', JSON.stringify(seen));
+    }).observe(el, { childList: true, subtree: true, characterData: true });
+  });
+  await page.locator('.mk-ladder').click();
+  await page.keyboard.press('j');
+  await ladderReady(page, first.event_index + 1);
+  const next = new RegExp(`^Event #${(first.event_index + 1).toLocaleString('en-US')}(: .+)?$`);
+  await expect(status).toHaveText(next);
+  await page.getByRole('button', { name: 'Previous' }).click();
+  await ladderReady(page, first.event_index);
+  const back = new RegExp(`^Event #${first.event_index.toLocaleString('en-US')}(: .+)?$`);
+  await expect(status).toHaveText(back);
+  const announced: unknown = JSON.parse((await status.getAttribute('data-announced')) ?? '[]');
+  expect(announced).toEqual([expect.stringMatching(next), expect.stringMatching(back)]);
+});
+
 for (const [width, height] of [
   [1440, 900],
   [1024, 768],

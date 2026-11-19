@@ -361,7 +361,7 @@ function QueueInvestigation({ view }: { view: View<{ summary: MarketSummary; res
             {fmtInt(summary.events)} source frames, source SHA-256 <HashText hash={summary.dataset_version} />
           </span>
         ) : (
-          <span className="note">Market Data Workbench dataset {WORKBENCH_DATASET} (read from the API)</span>
+          <span className="note rh-ds-pending">Market Data Workbench dataset {WORKBENCH_DATASET} (read from the API)</span>
         )
       }
       method={
