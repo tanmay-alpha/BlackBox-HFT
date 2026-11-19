@@ -80,7 +80,7 @@ mix with local development data.
 | Task | Command |
 |---|---|
 | Apply migrations by hand | `scripts/ops/prod-run.sh data/secrets/prod-ops.env target/release/blackbox --data-dir data/ops migrate` |
-| Mint an admin key (printed once) | `… target/release/blackbox --data-dir data/ops keys mint --workspace lab --scopes read,run,admin --label lead` |
+| Mint an admin key (printed once; expires after 30 days unless `--expires-in`, at most 90 days) | `… target/release/blackbox --data-dir data/ops keys mint --workspace lab --scopes read,run,admin --label lead` |
 | List / revoke keys | `… blackbox --data-dir data/ops keys list` / `… keys revoke <key-id>` |
 | Queue the demo runs | `… blackbox --data-dir data/ops demo seed --platform <result_platform from /api/v1/status>` |
 | Store curated comparisons and reports (second pass) | same command again, with `BLOB_READ_WRITE_TOKEN` enabled in the file |

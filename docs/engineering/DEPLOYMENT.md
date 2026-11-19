@@ -140,7 +140,7 @@ cook` = dependency layer, then `cargo build --release --locked --target x86_64-u
 |---|---|---|
 | Built by | publish.yml (`--target hosted`) | `docker build .` (CI `docker` job, users) |
 | Web assets | none (the SPA is on Vercel) | `/app/web` |
-| Command | `blackbox --data-dir /var/lib/blackbox serve` | `blackbox --data-dir /data demo --addr 0.0.0.0:8787 --web-dir /app/web` |
+| Command | `blackbox --data-dir /var/lib/blackbox serve` | `scripts/docker/local-start.sh`: `migrate`, `demo seed --wait`, first-start `keys mint`, then `serve --addr 0.0.0.0:8787 --web-dir /app/web` (data dir `/data`) |
 | Data | `/var/lib/blackbox`, ephemeral scratch (synthetic datasets, verified-bundle cache) | volume `/data` |
 | Env baked in | `PORT=8787` (Render overrides), `BB_GIT_SHA=<commit>`, `MALLOC_ARENA_MAX=2`, `MALLOC_MMAP_THRESHOLD_=131072` | `MALLOC_ARENA_MAX=2` |
 
@@ -181,8 +181,7 @@ keeping it (see `docs/rebuild/HOSTED_MEMORY.md`). Recheck those trade-offs if th
   `HEALTHCHECK` would need `curl`/`wget` in the image, and Render's docs do not mention using it.
 
 Local use of the hosted image (needs Postgres; `my-hosted.env` is your own git-ignored file holding the §5 variables,
-inside a container the host's local cluster is `host.docker.internal:55432`, not `127.0.0.1`; this works only once
-bb-app implements §15):
+inside a container the host's local cluster is `host.docker.internal:55432`, not `127.0.0.1`):
 
 ```
 docker build --target hosted -t blackbox-hft:hosted .
@@ -253,13 +252,20 @@ no second `BLACKBOX_` convention.
 | `BB_WORKER_SLOTS` | yes | no | `1` (`0` = API only) | render.yaml | in-process worker pool size |
 | `BB_SHUTDOWN_GRACE_MS` | no | no | `25000` (default) | render.yaml | drain budget, inside Render's 30 s (TARGET_ARCHITECTURE §12) |
 | `BB_ADMIN_BOOTSTRAP_KEY_SHA256` | no | **yes** | 64 lowercase hex = sha256 of a `bbk_…` key | Render secret (may stay empty) | startup: ensure one active `admin` key with this digest exists (§8 step 7) |
+| `BB_API_KEY_PEPPER` | yes | **yes** | long random string | Render secret (not declared in `render.yaml`: add it on the Environment page) and the operator env file | HMAC pepper of the API key check tag; hosted startup fails without it; local profile falls back to a public development pepper. Changing it invalidates every key (OPERATOR_PRODUCTION §5) |
 | `BB_GIT_SHA` | baked in | no | 40-hex commit | Dockerfile `ARG GIT_SHA` ← publish.yml | `/api/v1/status` `git_sha`; smoke test waits for it |
 | `RUST_LOG` | no | no | `info` | render.yaml | `tracing-subscriber` filter |
 | `BB_PARSED_RUN_CACHE_BYTES` | no | no | hosted `134217728` (128 MiB), local `67108864` (64 MiB); `0` disables retention | profile default | timeline parsed-run LRU (hosted: at most one run; local: two; decoded section-byte estimate); fits the measured largest admitted runs, concurrent misses still share one decode |
 | `BB_RESPONSE_CACHE_BYTES` | no | no | `33554432` (32 MiB); `0` disables retention | default | anonymous response-body cache (at most 512 entries); expired bodies released during maintenance |
-| `BB_ARTIFACT_DISK_CACHE_BYTES` | no | no | `268435456` (256 MiB) | default | verified bundle files on disk; Linux's reclaimable cgroup file cache is not a separately configured process page cache (`BB_PAGE_CACHE_BYTES` is not implemented) |
-| `BB_RESULT_PLATFORM`, `BB_ARTIFACT_WHOLE_FETCH_MAX`, `BB_MAX_RESPONSE_BYTES`, `BB_COMPARISON_TIMEOUT_S` (default 60, 1–600; API_CONTRACT §8.6) | no | no | defaults in TARGET_ARCHITECTURE §7–§9, §17 and API_CONTRACT §7 | – | tuning; unset on Render |
-| `BB_ALLOW_CLOUD_CREDENTIALS` | never on Render | no | `true` | operator env file only (`scripts/ops/prod-run.sh`) | local profile: permit `BLOB_READ_WRITE_TOKEN` or a non-local database URL for one operator command; startup logs `cloud_credentials_override` |
+| `BB_ARTIFACT_DISK_CACHE_BYTES` | no | no | `268435456` (256 MiB) | default | verified bundle files on disk; Linux's reclaimable cgroup file cache is not a separately configured process page cache (there is no `BB_PAGE_CACHE_BYTES`) |
+| `BB_MAX_RESPONSE_BYTES` | no | no | `4194304` (4 MiB; at least `65536`) | default | keyed response-body cap (anonymous: 1 MiB, fixed; API_CONTRACT §7) |
+| `BB_COMPARISON_TIMEOUT_S` | no | no | `60` (1–600) | default | `POST /comparisons` timeout (API_CONTRACT §8.6) |
+| `BB_HEARTBEAT_INTERVAL_MS`, `BB_LEASE_SECONDS` | no | no | `15000`, `60` (lease must exceed the heartbeat interval) | default | worker heartbeat and job lease |
+| `BB_RESULT_PLATFORM` | no | no | `linux-x86_64+libm-53154a4e` (default: this build's class) | default | platform class recorded for submitted jobs |
+| `BB_ARTIFACT_DIR` | no (local only) | no | default `<data-dir>/artifacts` | operator | filesystem artefact store when `BLOB_READ_WRITE_TOKEN` is unset (local profile; hosted requires Blob) |
+| `BB_ALLOW_CLOUD_CREDENTIALS` | never on Render | no | `true` | set by `scripts/ops/prod-run.sh` for its child only | local profile: permit `BLOB_READ_WRITE_TOKEN` or a non-local database URL for one operator command; startup logs `cloud_credentials_override` |
+| `MALLOC_ARENA_MAX` | baked in | no | `2` | Dockerfile `runtime` stage (both targets) | glibc: at most two malloc arenas (§3) |
+| `MALLOC_MMAP_THRESHOLD_` | baked in | no | `131072` | Dockerfile `hosted` target | glibc: fixed 128 KiB mmap threshold (§3; costs about 15–20% CPU under concurrent load, `../rebuild/PHASE67_RELEASE.md`); can be overridden in the Render environment without a rebuild |
 
 Outside the container:
 
@@ -309,7 +315,7 @@ See §2 for the flow and §5 for secrets. Additional behaviour:
   `Not deployed` (§2). Without `RENDER_SERVICE_URL` it deploys and warns that no smoke test ran.
 - The smoke step runs `scripts/deploy/smoke.sh` from the same commit (sparse checkout).
 
-## 8. First-time setup (operator, once bb-app implements §15)
+## 8. First-time setup (operator)
 
 1. **Merge to `main`.** Let `ci` pass. `publish` pushes the first image; `deploy` is skipped (no secrets).
 2. **Make the package public.** A first-published package is private [G1]. On
@@ -330,6 +336,9 @@ See §2 for the flow and §5 for secrets. Additional behaviour:
    - `DATABASE_URL`, `DATABASE_URL_UNPOOLED`: from `data/secrets/neon.env` (git-ignored).
    - `BLOB_READ_WRITE_TOKEN`: from `data/secrets/vercel-prod.env`.
    - `BB_ADMIN_BOOTSTRAP_KEY_SHA256`: see step 7, or leave empty.
+   - `BB_API_KEY_PEPPER`: not in `render.yaml`, so Render does not prompt for it; add it on the service's
+     Environment page before the first start (hosted startup refuses to run without it) and keep the same value in
+     the operator env file.
 
    CLI alternative without a Blueprint (render.yaml then only documents and validates the config; it is not
    synced). The flags are from `render services create --help`; the value spellings `web_service` and `image` are
@@ -341,7 +350,7 @@ See §2 for the flow and §5 for secrets. Additional behaviour:
      --env-var BB_MIGRATE_ON_START=true --env-var BB_CORS_ALLOWED_ORIGINS=https://blackbox-hft.vercel.app \
      --env-var BB_WORKER_SLOTS=1 --env-var BB_SHUTDOWN_GRACE_MS=25000 --env-var RUST_LOG=info -o json --confirm
    ```
-   Then enter the three secrets in the service's Environment page. Do not pass them as `--env-var`, which leaves
+   Then enter the secrets (including `BB_API_KEY_PEPPER`) in the service's Environment page. Do not pass them as `--env-var`, which leaves
    them in shell history.
 5. **Record the service URL**: `gh variable set RENDER_SERVICE_URL --body https://<host>.onrender.com`. Render
    appends a suffix if the name is taken, so copy the URL from the dashboard. If the host differs from
@@ -352,7 +361,9 @@ See §2 for the flow and §5 for secrets. Additional behaviour:
    machine against Neon with the direct URL, in an isolated child environment (the local profile refuses cloud
    credentials unless `BB_ALLOW_CLOUD_CREDENTIALS=true`; see [../OPERATOR_PRODUCTION.md](../OPERATOR_PRODUCTION.md)):
    `scripts/ops/prod-run.sh <operator env file> blackbox keys mint --workspace lab --scopes read,run,admin --label lead`,
-   where the env file sets `DATABASE_URL` to the direct URL and `BB_ALLOW_CLOUD_CREDENTIALS=true`.
+   where the env file sets `DATABASE_URL` to the direct URL and `BB_API_KEY_PEPPER` to the service's pepper;
+   `prod-run.sh` sets `BB_ALLOW_CLOUD_CREDENTIALS=true` for that one child. Admin keys expire after 30 days by
+   default (`--expires-in`, at most 90 days).
    The local ISP resolver refuses `*.neon.tech` (PROJECT_STATE), so pin `hostaddr=<resolved IP>` in the URL.
    Fallback without local DB access: generate a key locally
    (`printf 'bbk_%s\n' "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"`), store
@@ -471,10 +482,10 @@ The deployment files use these implemented command/runtime interfaces; acceptanc
 2. **Listen address:** `--addr` > `BB_ADDR` > `0.0.0.0:$PORT` (if `PORT` is set) > `127.0.0.1:8787`. Log the bound
    address.
 3. **Env names in §5**, especially `BB_PROFILE`, `BB_MIGRATE_ON_START`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`,
-   `BLOB_READ_WRITE_TOKEN`, `BB_CORS_ALLOWED_ORIGINS`, `BB_ALLOWED_HOSTS`, `BB_WORKER_SLOTS` (0 disables the
-   in-process worker), `BB_SHUTDOWN_GRACE_MS`, `BB_GIT_SHA`, `BB_ADMIN_BOOTSTRAP_KEY_SHA256`, `RUST_LOG`; Render's
-   `RENDER_EXTERNAL_HOSTNAME` and `RENDER_INSTANCE_ID`. Missing required variables under `BB_PROFILE=hosted` must
-   fail startup with a message naming the variable. Secret values are never logged.
+   `BLOB_READ_WRITE_TOKEN`, `BB_API_KEY_PEPPER`, `BB_CORS_ALLOWED_ORIGINS`, `BB_ALLOWED_HOSTS`, `BB_WORKER_SLOTS`
+   (0 disables the in-process worker), `BB_SHUTDOWN_GRACE_MS`, `BB_GIT_SHA`, `BB_ADMIN_BOOTSTRAP_KEY_SHA256`,
+   `RUST_LOG`; Render's `RENDER_EXTERNAL_HOSTNAME` and `RENDER_INSTANCE_ID`. Missing required variables under
+   `BB_PROFILE=hosted` must fail startup with a message naming the variable. Secret values are never logged.
 4. **Migrations at start:** with `BB_MIGRATE_ON_START=true`, run the embedded migrations over
    `DATABASE_URL_UNPOOLED` (sqlx advisory lock) **before** binding. On error, exit non-zero.
 5. **Signals:** handle `SIGTERM` and `SIGINT` (tokio `signal::unix`). The process is a child of tini, not PID 1.

@@ -5,10 +5,12 @@ Single source of truth for the current phase, decisions, infrastructure and next
 ## Current phase
 
 **Phases 6 and 7 released (2026-11-19), with follow-ups `5fe8923` (PR #4), `36536d0` (PR #5), `18aed41` (PR #7) and
-`3ed53cd` (PR #9).** `main` = `3ed53cd`. Image
+`3ed53cd` (PR #9).** Production = `3ed53cd`; `main` after it adds documentation and measurement tooling only
+(queue-shadow holdouts, Phase 10 LCP report). Image
 `ghcr.io/tanmay-alpha/blackbox-hft@sha256:9300ae0696002e0b48b355d871c338675d4c5870e0885a16bda938aeb0b3e4a1`, Render
 deploy `dep-dbv2jk5g1s2s73e0c8m0`, migrations through 0011, `/status` `git_sha=3ed53cd…`, worker idle. Smoke 8/8;
-anonymous production suite 15 passed, 1 skipped (keyed). First Phase 6/7 release `a1d128c` (image `sha256:ef148a3b…`). Phase 6: compare-set cold `503 busy` and false "missing
+production suite 15 anonymous passed; keyed journey passed (job `01a1f231-a309-7585-8556-e45a2d92b240`, run
+`c6d47c551e17c5af`, [../rebuild/PRODUCTION_ACCEPTANCE.md](../rebuild/PRODUCTION_ACCEPTANCE.md)). First Phase 6/7 release `a1d128c` (image `sha256:ef148a3b…`). Phase 6: compare-set cold `503 busy` and false "missing
 comparison" fixed; demo snapshot freshness ≤ 15 min; SEC-11 §6.3, SEC-17, SEC-18, SEC-25 closed; credential guard;
 hosted memory within 300 MB in the 512 MB fixture (corrected read set; worst phase 397 → 240–252 MiB, idle 201 → 123); prompt post-simulation cancellation; SEC-10 anonymous detail and analytics reads DB-free. Phase 7: `/research`, `/studies` explorer, `/queue-lab`, Market Data Workbench L3/L2
 view, evidence-structured reports, ITCH three-way validation (local NASDAQ prefixes, 100% agreement), queue shadow
@@ -55,7 +57,7 @@ comes from the image):
 |---|---|---|
 | Console (SPA) | https://blackbox-hft.vercel.app | Vercel project `blackbox-hft`, built from Git (root `web`, Vite), env `VITE_API_BASE_URL=https://blackbox-hft-api.onrender.com/api/v1`; no backend secrets in the project (SEC-20: removal recorded and env-name listing independently verified 2026-11-14, FINAL_AUDIT §3) |
 | API + worker | https://blackbox-hft-api.onrender.com | Render free web service `srv-dbs11fm1egvs73chs7lg` (singapore), image `ghcr.io/tanmay-alpha/blackbox-hft:main` (public, built by `publish.yml` after green CI), `BB_PROFILE=hosted`, `BB_WORKER_SLOTS=1`, migrations on start |
-| Database | Neon free `blackbox-hft-db` (sin1, PostgreSQL 18.7) | audit observed 7 migrations applied; source now embeds migrations through 0009; `sslmode=verify-full` |
+| Database | Neon free `blackbox-hft-db` (sin1, PostgreSQL 18.7) | migrations through 0011 applied (production `3ed53cd`); `sslmode=verify-full` |
 | Artefacts | Vercel Blob private store `blackbox-hft-artifacts` (`store_eod21bxLMlokHq3Z`, sin1) | one verified bundle per run |
 | Demo data | synthetic dataset `synthetic-demo` v1 (events sha256 `0bc26426…`), demo experiments computed by the hosted Linux worker (canonical platform `linux-x86_64+libm-53154a4e`) | seeded with `blackbox demo seed --platform linux-x86_64+libm-53154a4e` |
 
@@ -114,8 +116,9 @@ acceptance criteria. All other rebuild agents ran on Opus 5.5.
 
 ## Open items
 
-Open items: [../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md) "Phase 2 (2026-11-15)" and the
-remaining Open rows of [../rebuild/SECURITY_DISPOSITIONS.md](../rebuild/SECURITY_DISPOSITIONS.md).
+Open items: the "Remaining" column of [PHASE6_TRACKER.md](PHASE6_TRACKER.md) (mobile LCP above 2.5 s locally, C3
+static fast path, AT-5/SEC-6 measured in the local fixture only) and [../rebuild/FINAL_REVIEW.md](../rebuild/FINAL_REVIEW.md)
+"Phase 2 (2026-11-15)". [../rebuild/SECURITY_DISPOSITIONS.md](../rebuild/SECURITY_DISPOSITIONS.md) has no Open row.
 Test counts: see CI, not this file. The paragraph below is the 2026-11-14 record.
 
 All ten ranked defects of `FINAL_AUDIT.md` §4 have source fixes on `main` (§7, with commits and
