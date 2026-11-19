@@ -51,6 +51,40 @@ const cursorText = (P) => P.text('.book-cursor');
 
 export const SCENARIOS = [
   {
+    id: 'shell-palette',
+    title: 'Explore `/`: open the cold command palette',
+    path: '/',
+    load: false,
+    readyDesc: 'Explore result numbers visible (as explore-load)',
+    ready: exploreNumbers,
+    interactions: [
+      {
+        id: 'open-palette',
+        input: 'Ctrl+K',
+        resultDesc: 'the command palette and its combobox are visible',
+        result: (P) => P.vis(document.querySelector('dialog.palette[open] input[role="combobox"]')),
+        act: ({ page }) => page.keyboard.press('Control+k'),
+      },
+    ],
+  },
+  {
+    id: 'shell-help',
+    title: 'Explore `/`: open cold help and settings',
+    path: '/',
+    load: false,
+    readyDesc: 'Explore result numbers visible (as explore-load)',
+    ready: exploreNumbers,
+    interactions: [
+      {
+        id: 'open-help',
+        input: 'click / tap Help, shortcuts and settings',
+        resultDesc: 'the help dialog and its keyboard table are visible',
+        result: (P) => P.vis(document.querySelector('dialog[open] table.help-keys')),
+        act: ({ page, press }) => press(page.getByRole('button', { name: 'Help, shortcuts and settings', exact: true })),
+      },
+    ],
+  },
+  {
     id: 'explore-load',
     title: 'Explore `/`: result numbers visible',
     path: '/',
