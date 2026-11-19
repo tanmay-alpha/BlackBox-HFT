@@ -16,11 +16,14 @@ const DEMO_RUN = '253bbc23b342f373';
 
 test.skip(!KEY, 'PROD_RESEARCH_KEY is not set');
 
-test('bounded keyed experiment: submit, complete, inspect, compare, report, reload, sign out', async ({ page, request }) => {
+test('bounded keyed experiment: submit, complete, inspect, compare, report, reload, sign out', async ({ page, request }, testInfo) => {
   test.setTimeout(600_000);
   const evidence: Record<string, unknown> = { started_at: new Date().toISOString() };
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
+  const screenshot = (name: string) => page.screenshot({
+    path: IS_PRODUCTION ? `../docs/rebuild/img/${name}.png` : testInfo.outputPath(`${name}.png`),
+  });
 
   const signIn = async () => {
     await page.getByTestId('access-badge').click();
@@ -35,8 +38,8 @@ test('bounded keyed experiment: submit, complete, inspect, compare, report, relo
 
   // 1–6: Strategy Lab, key, dataset, preset, a small change, validation.
   await page.goto('/strategy?dataset=synthetic-demo');
-  await signIn(page);
-  await page.getByRole('radio', { name: 'Touch maker: baseline', exact: true }).check();
+  await signIn();
+  await page.getByTitle('Touch maker: baseline', { exact: true }).getByRole('radio').check();
   const entry = page.getByLabel('Entry latency', { exact: true });
   await entry.fill('5');
   await entry.blur();
@@ -49,7 +52,7 @@ test('bounded keyed experiment: submit, complete, inspect, compare, report, relo
   await page.getByRole('tab', { name: /Seed/ }).click();
   await page.getByLabel('Seed', { exact: true }).and(page.locator('input')).fill(String(seed));
   await page.getByLabel('Run label').fill(`prod acceptance ${seed}`);
-  await page.screenshot({ path: '../docs/rebuild/img/prodj-01-lab.png' });
+  await screenshot('prodj-01-lab');
 
   // 7–10: submit; observe states until completed.
   const t0 = Date.now();
@@ -72,7 +75,7 @@ test('bounded keyed experiment: submit, complete, inspect, compare, report, relo
   const runId = ((await detail.locator('.job-run-links a').first().textContent()) ?? '').trim();
   expect(runId).toMatch(/^[0-9a-f]{16}$/);
   evidence.run_id = runId;
-  await page.screenshot({ path: '../docs/rebuild/img/prodj-02-job-completed.png' });
+  await screenshot('prodj-02-job-completed');
 
   const auth = { Origin: ORIGIN, Authorization: `Bearer ${KEY}` };
   const job = await (await request.get(`${API}/jobs/${jobId}`, { headers: auth })).json();
@@ -92,11 +95,11 @@ test('bounded keyed experiment: submit, complete, inspect, compare, report, relo
   await expect(page.getByRole('heading', { name: /Order blotter/i })).toBeVisible();
   await page.locator(`a[href^="/forensics/${runId}/orders/"]`).first().click();
   await expect(page).toHaveURL(new RegExp(`/forensics/${runId}/orders/\\d+`));
-  await page.screenshot({ path: '../docs/rebuild/img/prodj-03-order.png' });
+  await screenshot('prodj-03-order');
   await page.goto(`/book/runs/${runId}`);
   await expect(page.getByText('Depth at cursor').first()).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.error-box')).toHaveCount(0);
-  await page.screenshot({ path: '../docs/rebuild/img/prodj-04-replay.png' });
+  await screenshot('prodj-04-replay');
 
   // 15: comparison with the public demo run (aligned; the configs differ in latency and seed).
   const cmpRes = await request.post(`${API}/comparisons`, { headers: auth, data: { run_a: DEMO_RUN, run_b: runId } });
@@ -120,13 +123,13 @@ test('bounded keyed experiment: submit, complete, inspect, compare, report, relo
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByTestId('access-badge')).toContainText('DEMO');
   await expect(page.getByText(`Run ${runId} was not found`)).toBeVisible();
-  await page.screenshot({ path: '../docs/rebuild/img/prodj-05-signed-out.png' });
+  await screenshot('prodj-05-signed-out');
   const anon = await request.get(`${API}/runs/${runId}`, { headers: { Origin: ORIGIN } });
   evidence.anonymous_run_status = anon.status();
   expect(anon.status()).toBe(404);
 
   // 22: sign in again; access restored.
-  await signIn(page);
+  await signIn();
   await expect(page.getByRole('heading', { name: /Order blotter/i })).toBeVisible();
   evidence.reauth_ok = true;
 
