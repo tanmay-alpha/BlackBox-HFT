@@ -45,7 +45,8 @@ test('execution_validation: every pair classified from stored comparisons, no bu
   // The pair panels show what was stored: aligned pairs with a first divergence or none, the
   // metrics-only pairs without alignment.
   await expect(page.getByRole('heading', { name: 'Key metrics' })).toBeVisible();
-  await expect(page.getByText(/Status metrics_only: no per-order alignment/)).toHaveCount(2);
+  await expect(page.getByText(/Status metrics only: no per-order alignment/)).toHaveCount(2);
+  await expect(page.getByText(/Status metrics_only:/)).toHaveCount(0);
 
   // A1: nothing was read by id (each such read verifies a whole bundle on the server).
   expect(api.filter((p) => DETAIL_RUN.test(p)), api.join('\n')).toEqual([]);
