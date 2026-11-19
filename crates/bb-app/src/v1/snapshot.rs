@@ -167,6 +167,15 @@ impl DemoSnapshot {
         self.recheck_ms.store(ms, Ordering::Relaxed);
     }
 
+    /// A cached HTTP response must not hide a due data-version check from its handler.
+    pub(super) fn recheck_due(&self) -> bool {
+        self.current
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|s| now(&s.checked).elapsed() >= self.recheck())
+    }
+
     /// The snapshot for an anonymous caller (keyed callers always read the database).
     pub async fn for_read(&self, state: &Shared, caller: &Caller) -> Option<Arc<Snapshot>> {
         if caller.is_anonymous() {

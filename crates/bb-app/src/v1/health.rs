@@ -5,7 +5,7 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
 use axum::{
-    extract::{Query, State},
+    extract::State,
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -23,7 +23,7 @@ use super::{
         Health, KeyRef, LimitsSummary, QueueSummary, QuotaUse, Quotas, Ready, Status, Whoami,
         WorkerSummary, WorkspaceRef,
     },
-    respond::{Cache, json},
+    respond::{Cache, Query, json},
 };
 use crate::{DISCLAIMER, wire::at_ns};
 
